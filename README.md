@@ -19,6 +19,7 @@ Luna AI is your intelligent desktop companion that combines the power of modern 
 - 🔧 **MCP Superpowers** - Connect to tools and services through Model Context Protocol
 - 🎨 **Beautiful Interface** - Native COSMIC design that feels right at home
 - 💾 **Memory Management** - Save, organize, and revisit your conversations
+- 🔌 **Flexible Backends** - Support for multiple AI providers and local models
 
 ## 🚀 What Can Luna Do?
 
@@ -57,6 +58,23 @@ Luna's MCP integration opens up a world of possibilities:
 # Task management
 "Add 'fix the bug in login module' to my todo list"
 ```
+
+## 🔌 Supported Backends
+
+Luna AI supports multiple AI providers, giving you flexibility and choice:
+
+### 🌐 Cloud Providers
+- **OpenAI** - GPT-4, GPT-3.5, and other OpenAI models
+- **Anthropic** - Claude models with advanced reasoning
+- **Google** - Gemini models and Google AI services
+- **Azure OpenAI** - Enterprise-grade OpenAI deployments
+
+### 💻 Local Models
+- **Ollama** - Run local models like Llama, Mistral, and more
+- **Custom endpoints** - Connect to any OpenAI-compatible API
+
+### 🔧 Configuration
+Easily switch between backends in the settings or configure multiple providers for different use cases.
 
 ## 🛠️ Installation
 
