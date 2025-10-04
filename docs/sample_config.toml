@@ -1,0 +1,64 @@
+# Cosmic LLM Configuration File
+# This is a sample configuration file for Cosmic LLM
+# Place this file at: ~/.local/share/cosmic_llm/config.toml
+
+# Default profile to use for new conversations
+default = "openai"
+
+# LLM Profiles configuration
+[profiles]
+
+# OpenAI profile
+[profiles.openai]
+backend = "openai"
+api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"  # Replace with your OpenAI API key
+model = "gpt-4o"
+endpoint = "https://api.openai.com/v1"
+temperature = 0.7
+max_tokens = 4000
+
+# Anthropic profile
+[profiles.anthropic]
+backend = "anthropic"
+api_key = "sk-ant-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"  # Replace with your Anthropic API key
+model = "claude-3-5-sonnet-20241022"
+endpoint = "https://api.anthropic.com"
+temperature = 0.7
+max_tokens = 4000
+
+# Ollama profile (local models)
+[profiles.ollama]
+backend = "ollama"
+api_key = ""  # Not needed for Ollama
+model = "llama3.1:8b"
+endpoint = "http://localhost:11434"
+temperature = 0.7
+max_tokens = 4000
+
+# Google Gemini profile
+[profiles.gemini]
+backend = "gemini"
+api_key = "AIzaSyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"  # Replace with your Google AI API key
+model = "gemini-1.5-pro"
+endpoint = "https://generativelanguage.googleapis.com"
+temperature = 0.7
+max_tokens = 4000
+
+# Prompt configuration
+[prompts]
+system_prompt_file = "~/.local/share/cosmic_llm/system_prompt.md"
+user_prompt_file = "~/.local/share/cosmic_llm/user_prompt.md"
+
+# MCP Configuration
+[mcp]
+[mcp.servers]
+
+# Example MCP server configuration
+# [mcp.servers.filesystem]
+# command = "npx"
+# args = ["@modelcontextprotocol/server-filesystem", "/home/user/documents"]
+#
+# [mcp.servers.weather]
+# command = "npx"
+# args = ["@modelcontextprotocol/server-weather"]
+# env = { "OPENWEATHER_API_KEY" = "your-api-key-here" }

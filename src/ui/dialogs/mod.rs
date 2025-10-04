@@ -39,20 +39,14 @@ impl DialogPage {
                     .control(
                         widget::column::with_children(vec![
                             // Instructions
-                            widget::text::body("Select and copy the message text below:")
-                                .into(),
-                            
-                            // Selectable text display using text_editor
-                            widget::container(
-                                widget::text_editor(content)
-                                    .id(text_editor_id.clone())
-                                    .height(Length::Fixed(300.0))
-                                    .on_action(|action| Message::DialogAction(DialogAction::TextEditorAction(action)))
-                            )
-                            .width(Length::Fill)
-                            .padding(8)
-                            .class(cosmic::style::Container::Card)
-                            .into(),
+                            widget::text("Click Copy to copy the message text to clipboard").size(14).into(),
+                            widget::Space::with_height(Length::Fixed(16.0)).into(),
+                            // Text editor with the content
+                            text_editor(content)
+                                .id(text_editor_id.clone())
+                                .height(Length::Fixed(300.0))
+                                .on_action(|action| Message::DialogAction(DialogAction::TextEditorAction(action)))
+                                .into()
                         ])
                         .spacing(spacing.space_s)
                     )

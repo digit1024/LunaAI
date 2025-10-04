@@ -18,7 +18,7 @@ struct OpenAIRequest {
 #[derive(Debug, Serialize, Deserialize)]
 struct OpenAIMessage {
     role: String,
-    content: Option<String>,
+    content: Option<serde_json::Value>,
     tool_calls: Option<Vec<OpenAIToolCall>>,
     tool_call_id: Option<String>,
 }
@@ -100,16 +100,72 @@ impl LlmClient for OpenAIClient {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>, LlmError> {
         let openai_messages: Vec<OpenAIMessage> = messages
             .into_iter()
-            .map(|msg| OpenAIMessage {
-                role: match msg.role {
-                    Role::User => "user".to_string(),
-                    Role::Assistant => "assistant".to_string(),
-                    Role::System => "system".to_string(),
-                    Role::Tool => "tool".to_string(),
-                },
-                content: Some(msg.content),
-                tool_calls: None,
-                tool_call_id: msg.tool_call_id,
+            .map(|msg| {
+                println!("🔍 DEBUG: Converting message to OpenAI: role={:?}, content={}, attachments={:?}", 
+                    msg.role, msg.content, msg.attachments);
+                
+                // Handle attachments for multimodal content
+                let content = if let Some(attachments) = &msg.attachments {
+                    if !attachments.is_empty() {
+                        // Create multimodal content with text and images
+                        let mut content_parts = vec![
+                            serde_json::json!({
+                                "type": "text",
+                                "text": msg.content
+                            })
+                        ];
+                        
+                        for attachment in attachments {
+                            match attachment.mime_type.as_str() {
+                                mime if mime.starts_with("image/") => {
+                                    // For images, we need to read and encode them
+                                    if let Some(content) = &attachment.content {
+                                        content_parts.push(serde_json::json!({
+                                            "type": "image_url",
+                                            "image_url": {
+                                                "url": format!("data:{};base64,{}", attachment.mime_type, content)
+                                            }
+                                        }));
+                                    }
+                                }
+                                mime if mime.starts_with("text/") => {
+                                    // For text files, include content in text
+                                    if let Some(content) = &attachment.content {
+                                        content_parts.push(serde_json::json!({
+                                            "type": "text",
+                                            "text": format!("File: {}\nContent:\n{}", attachment.file_name, content)
+                                        }));
+                                    }
+                                }
+                                _ => {
+                                    // For other files, just mention them
+                                    content_parts.push(serde_json::json!({
+                                        "type": "text",
+                                        "text": format!("File attached: {} ({} bytes)", attachment.file_name, attachment.file_size)
+                                    }));
+                                }
+                            }
+                        }
+                        
+                        serde_json::Value::Array(content_parts)
+                    } else {
+                        serde_json::Value::String(msg.content)
+                    }
+                } else {
+                    serde_json::Value::String(msg.content)
+                };
+                
+                OpenAIMessage {
+                    role: match msg.role {
+                        Role::User => "user".to_string(),
+                        Role::Assistant => "assistant".to_string(),
+                        Role::System => "system".to_string(),
+                        Role::Tool => "tool".to_string(),
+                    },
+                    content: Some(content),
+                    tool_calls: None,
+                    tool_call_id: msg.tool_call_id,
+                }
             })
             .collect();
 
@@ -195,6 +251,9 @@ impl LlmClient for OpenAIClient {
         let openai_messages: Vec<OpenAIMessage> = messages
             .into_iter()
             .map(|msg| {
+                println!("🔍 DEBUG: Converting message to OpenAI (tools): role={:?}, content={}, attachments={:?}", 
+                    msg.role, msg.content, msg.attachments);
+                
                 let tool_calls = if let Some(tool_calls) = msg.tool_calls {
                     Some(tool_calls.into_iter().map(|tc| OpenAIToolCall {
                         id: tc.id,
@@ -208,6 +267,57 @@ impl LlmClient for OpenAIClient {
                     None
                 };
                 
+                // Handle attachments for multimodal content
+                let content = if let Some(attachments) = &msg.attachments {
+                    if !attachments.is_empty() {
+                        // Create multimodal content with text and images
+                        let mut content_parts = vec![
+                            serde_json::json!({
+                                "type": "text",
+                                "text": msg.content
+                            })
+                        ];
+                        
+                        for attachment in attachments {
+                            match attachment.mime_type.as_str() {
+                                mime if mime.starts_with("image/") => {
+                                    // For images, we need to read and encode them
+                                    if let Some(content) = &attachment.content {
+                                        content_parts.push(serde_json::json!({
+                                            "type": "image_url",
+                                            "image_url": {
+                                                "url": format!("data:{};base64,{}", attachment.mime_type, content)
+                                            }
+                                        }));
+                                    }
+                                }
+                                mime if mime.starts_with("text/") => {
+                                    // For text files, include content in text
+                                    if let Some(content) = &attachment.content {
+                                        content_parts.push(serde_json::json!({
+                                            "type": "text",
+                                            "text": format!("File: {}\nContent:\n{}", attachment.file_name, content)
+                                        }));
+                                    }
+                                }
+                                _ => {
+                                    // For other files, just mention them
+                                    content_parts.push(serde_json::json!({
+                                        "type": "text",
+                                        "text": format!("File attached: {} ({} bytes)", attachment.file_name, attachment.file_size)
+                                    }));
+                                }
+                            }
+                        }
+                        
+                        serde_json::Value::Array(content_parts)
+                    } else {
+                        serde_json::Value::String(msg.content)
+                    }
+                } else {
+                    serde_json::Value::String(msg.content)
+                };
+                
                 OpenAIMessage {
                     role: match msg.role {
                         Role::User => "user".to_string(),
@@ -215,7 +325,7 @@ impl LlmClient for OpenAIClient {
                         Role::System => "system".to_string(),
                         Role::Tool => "tool".to_string(),
                     },
-                    content: Some(msg.content),
+                    content: Some(content),
                     tool_calls,
                     tool_call_id: msg.tool_call_id,
                 }
@@ -267,7 +377,22 @@ impl LlmClient for OpenAIClient {
             .first()
             .ok_or_else(|| LlmError::Api("No response from OpenAI".to_string()))?;
 
-        let content = choice.message.content.clone().unwrap_or_default();
+        let content = match choice.message.content.clone() {
+            Some(serde_json::Value::String(s)) => s,
+            Some(serde_json::Value::Array(parts)) => {
+                // For multimodal content, extract text parts
+                let mut text_parts = Vec::new();
+                for part in parts {
+                    if let serde_json::Value::Object(obj) = part {
+                        if let Some(serde_json::Value::String(text)) = obj.get("text") {
+                            text_parts.push(text.clone());
+                        }
+                    }
+                }
+                text_parts.join(" ")
+            }
+            _ => String::new(),
+        };
         
         let tool_calls = if let Some(tool_calls) = &choice.message.tool_calls {
             tool_calls.iter().map(|tc| ToolCall {

@@ -3,6 +3,7 @@ use cosmic::{
     iced::{Length, Subscription},
     widget::{self, text_input, scrollable, menu, text_editor},
     Application, Element,
+    dialog::file_chooser::{self, FileFilter},
 };
 use futures::StreamExt;
 use std::sync::{Arc, Mutex};
@@ -31,6 +32,8 @@ pub enum Message {
     AttachFile,
     FileSelected(String), // file path
     RemoveFile(String), // file path
+    FileChooserCancelled,
+    FileChooserError(Arc<file_chooser::Error>),
     NavigateTo(NavigationPage),
     SelectConversation(Uuid),
     DeleteConversation(Uuid),
@@ -77,6 +80,7 @@ pub enum MenuAction {
     NewConversation,
     Settings,
     Quit,
+    SendMessage,
 }
 
 impl menu::Action for MenuAction {
@@ -88,6 +92,7 @@ impl menu::Action for MenuAction {
             MenuAction::NewConversation => Message::NewConversation,
             MenuAction::Settings => Message::OpenSettings,
             MenuAction::Quit => Message::Quit,
+            MenuAction::SendMessage => Message::SendMessage,
         }
     }
 }
@@ -164,6 +169,10 @@ pub struct CosmicLlmApp {
     last_user_message: Option<String>,
     // Store attached files
     attached_files: Vec<String>,
+    // Store current error message
+    current_error: Option<String>,
+    // Store prepared LLM messages with attachments for the current request
+    pending_llm_messages: Option<Vec<crate::llm::Message>>,
 }
 
 #[derive(Debug, Clone)]
@@ -283,6 +292,8 @@ impl CosmicLlmApp {
             available_mcp_tools: Vec::new(),
             last_user_message: None,
             attached_files: Vec::new(),
+            current_error: None,
+            pending_llm_messages: None,
         }
     }
     
@@ -318,6 +329,15 @@ impl CosmicLlmApp {
             MenuAction::Settings,
         );
         
+        // Send message shortcut
+        key_binds.insert(
+            KeyBind {
+                modifiers: vec![Modifier::Ctrl],
+                key: Key::Named(cosmic::iced::keyboard::key::Named::Enter),
+            },
+            MenuAction::SendMessage,
+        );
+        
         key_binds
     }
     
@@ -332,36 +352,46 @@ impl CosmicLlmApp {
         let prompt_manager = self.prompt_manager.clone();
         let messages = self.messages.clone();
         let mcp_registry = self.mcp_registry.clone();
+        let pending_messages = self.pending_llm_messages.clone();
         
         Subscription::run_with_id(id, stream::channel(100, move |mut output| async move {
-            // Build LLM messages with system prompt
-            let mut llm_messages = Vec::new();
-            
-            // Add system prompt if available
-            if let Some(system_prompt) = prompt_manager.get_system_prompt() {
-                llm_messages.push(crate::llm::Message::new(
-                    crate::llm::Role::System,
-                    system_prompt.to_string()
-                ));
-            }
-            
-            // Add conversation history, filtering out placeholder assistant messages
-            for msg in &messages {
-                let content_trimmed = msg.content.trim();
-                if !msg.is_user {
-                    // Skip placeholder or empty assistant messages
-                    if content_trimmed.is_empty() || content_trimmed == "🤔 Thinking..." {
-                        continue;
-                    }
+            // Use prepared messages if available (which includes attachments), otherwise rebuild
+            let llm_messages = if let Some(prepared_messages) = pending_messages {
+                println!("🔍 DEBUG: Using prepared messages with attachments");
+                prepared_messages
+            } else {
+                println!("🔍 DEBUG: Rebuilding messages from history");
+                // Build LLM messages with system prompt
+                let mut llm_messages = Vec::new();
+                
+                // Add system prompt if available
+                if let Some(system_prompt) = prompt_manager.get_system_prompt() {
+                    llm_messages.push(crate::llm::Message::new(
+                        crate::llm::Role::System,
+                        system_prompt.to_string()
+                    ));
                 }
+                
+                // Add conversation history, filtering out placeholder assistant messages
+                for msg in &messages {
+                    let content_trimmed = msg.content.trim();
+                    if !msg.is_user {
+                        // Skip placeholder or empty assistant messages
+                        if content_trimmed.is_empty() || content_trimmed == "🤔 Thinking..." {
+                            continue;
+                        }
+                    }
 
-                let role = if msg.is_user {
-                    crate::llm::Role::User
-                } else {
-                    crate::llm::Role::Assistant
-                };
-                llm_messages.push(crate::llm::Message::new(role, msg.content.clone()));
-            }
+                    let role = if msg.is_user {
+                        crate::llm::Role::User
+                    } else {
+                        crate::llm::Role::Assistant
+                    };
+                    llm_messages.push(crate::llm::Message::new(role, msg.content.clone()));
+                }
+                
+                llm_messages
+            };
             
             // Create channel for agent updates
             let (tx_agent, mut rx_agent) = mpsc::unbounded_channel::<AgentUpdate>();
@@ -527,7 +557,6 @@ impl Application for CosmicLlmApp {
     fn subscription(&self) -> Subscription<Self::Message> {
         // Create a subscription for streaming LLM responses
         if self.is_streaming {
-            // Return a subscription that streams LLM responses
             self.create_streaming_subscription(self.current_streaming_id)
         } else {
             Subscription::none()
@@ -540,7 +569,10 @@ impl Application for CosmicLlmApp {
                 self.input = input;
             }
             Message::SendMessage => {
-                if !self.input.trim().is_empty() {
+                println!("🔍 DEBUG: SendMessage received. Input: '{}', Attachments: {}", 
+                    self.input, self.attached_files.len());
+                // Allow sending if there's text OR if there are attachments
+                if !self.input.trim().is_empty() || !self.attached_files.is_empty() {
                     // Create new conversation if none exists
                     if self.current_conversation_id.is_none() {
                         let conv_id = self.storage.create_conversation("Generating title...".to_string())
@@ -568,14 +600,8 @@ impl Application for CosmicLlmApp {
                         println!("💾 Saved title to storage for conversation {}: {}", conv_id, fallback_title);
                     }
                     
-                    // Create user message content with attached files
-                    let mut message_content = self.input.clone();
-                    if !self.attached_files.is_empty() {
-                        message_content.push_str("\n\nAttached files:\n");
-                        for file in &self.attached_files {
-                            message_content.push_str(&format!("📎 {}\n", file));
-                        }
-                    }
+                    // Create user message content
+                    let message_content = self.input.clone();
                     
                     // Add user message
                     let user_msg = ChatMessage {
@@ -594,10 +620,35 @@ impl Application for CosmicLlmApp {
                     // Send to LLM and get response
                     let input_text = self.input.clone();
                     self.input.clear();
-                    self.attached_files.clear();
                     
                     // Do not create a placeholder bubble; BeginTurn will create the assistant bubble
                     self.current_ai_message_index = None;
+                    
+                    // Create attachments for the current message FIRST
+                    let mut attachments = Vec::new();
+                    println!("🔍 DEBUG: Processing {} attached files: {:?}", self.attached_files.len(), self.attached_files);
+                    for file_path in &self.attached_files {
+                        println!("🔍 DEBUG: Processing file: {}", file_path);
+                        match crate::llm::file_utils::create_attachment(file_path) {
+                            Ok(attachment) => {
+                                println!("🔍 DEBUG: Created attachment: {:?}", attachment);
+                                // Validate file for LLM
+                                if let Err(e) = crate::llm::file_utils::validate_file_for_llm(&attachment) {
+                                    println!("❌ DEBUG: File validation failed: {}", e);
+                                    self.current_error = Some(format!("File validation error for {}: {}", file_path, e));
+                                    return app::Task::none();
+                                }
+                                println!("✅ DEBUG: File validation passed");
+                                attachments.push(attachment);
+                            }
+                            Err(e) => {
+                                println!("❌ DEBUG: Failed to create attachment: {}", e);
+                                self.current_error = Some(format!("Failed to process file {}: {}", file_path, e));
+                                return app::Task::none();
+                            }
+                        }
+                    }
+                    println!("🔍 DEBUG: Final attachments count: {}", attachments.len());
                     
                     // Convert messages to LLM format
                     let mut llm_messages = Vec::new();
@@ -609,7 +660,31 @@ impl Application for CosmicLlmApp {
                         };
                         llm_messages.push(crate::llm::Message::new(role, msg.content.clone()));
                     }
-                    llm_messages.push(crate::llm::Message::new(crate::llm::Role::User, input_text.clone()));
+                    
+                    // Create the current user message with attachments
+                    let current_user_message = if attachments.is_empty() {
+                        crate::llm::Message::new(crate::llm::Role::User, input_text.clone())
+                    } else {
+                        crate::llm::Message::new_with_attachments(crate::llm::Role::User, input_text.clone(), attachments)
+                    };
+                    
+                    // Debug: Print the final message that will be sent to LLM
+                    println!("🔍 DEBUG: Final LLM message with attachments: {:?}", current_user_message);
+                    
+                    llm_messages.push(current_user_message);
+                    
+                    // Clear attached files after processing
+                    self.attached_files.clear();
+                    
+                    // Debug: Print all messages being sent to LLM
+                    println!("🔍 DEBUG: All LLM messages being sent:");
+                    for (i, msg) in llm_messages.iter().enumerate() {
+                        println!("  Message {}: role={:?}, content={}, attachments={:?}", 
+                            i, msg.role, msg.content, msg.attachments);
+                    }
+                    
+                    // Store the prepared messages for the subscription to use
+                    self.pending_llm_messages = Some(llm_messages);
                     
                     // Start streaming LLM response
                     let streaming_id = uuid::Uuid::new_v4();
@@ -628,6 +703,7 @@ impl Application for CosmicLlmApp {
                     // Stop the current streaming
                     self.is_streaming = false;
                     self.current_streaming_id = None;
+                    self.pending_llm_messages = None; // Clear prepared messages
                     
                     // Remove any incomplete assistant message
                     if let Some(index) = self.current_ai_message_index {
@@ -660,17 +736,83 @@ impl Application for CosmicLlmApp {
                 }
             }
             Message::AttachFile => {
-                // TODO: Open file dialog
-                // For now, we'll just add a placeholder
-                println!("File attachment requested");
+                println!("🔍 DEBUG: AttachFile message received");
+                // Use libcosmic's file chooser
+                return cosmic::task::future(async move {
+                    // Create file filters for supported file types
+                    let text_filter = FileFilter::new("Text files")
+                        .extension("txt")
+                        .extension("md")
+                        .extension("json")
+                        .extension("xml")
+                        .extension("csv")
+                        .extension("log")
+                        .extension("yaml")
+                        .extension("yml")
+                        .extension("rs")
+                        .extension("py")
+                        .extension("js")
+                        .extension("ts")
+                        .extension("html")
+                        .extension("css");
+                    
+                    let image_filter = FileFilter::new("Image files")
+                        .extension("jpg")
+                        .extension("jpeg")
+                        .extension("png")
+                        .extension("gif")
+                        .extension("bmp")
+                        .extension("webp")
+                        .extension("svg");
+                    
+                    let document_filter = FileFilter::new("Document files")
+                        .extension("pdf")
+                        .extension("doc")
+                        .extension("docx")
+                        .extension("xls")
+                        .extension("xlsx")
+                        .extension("ppt")
+                        .extension("pptx");
+                    
+                    let dialog = file_chooser::open::Dialog::new()
+                        .title("Select File to Attach")
+                        .filter(text_filter)
+                        .filter(image_filter)
+                        .filter(document_filter);
+                    
+                    match dialog.open_file().await {
+                        Ok(response) => {
+                            let url = response.url();
+                            if let Ok(path) = url.to_file_path() {
+                                Message::FileSelected(path.to_string_lossy().to_string())
+                            } else {
+                                Message::FileChooserError(Arc::new(file_chooser::Error::UrlAbsolute))
+                            }
+                        }
+                        Err(file_chooser::Error::Cancelled) => Message::FileChooserCancelled,
+                        Err(why) => Message::FileChooserError(Arc::new(why)),
+                    }
+                });
             }
             Message::FileSelected(file_path) => {
+                println!("🔍 DEBUG: File selected: {}", file_path);
                 if !self.attached_files.contains(&file_path) {
                     self.attached_files.push(file_path);
+                    println!("🔍 DEBUG: File added to attached_files. Current count: {}", self.attached_files.len());
+                } else {
+                    println!("🔍 DEBUG: File already in attached_files");
                 }
             }
             Message::RemoveFile(file_path) => {
                 self.attached_files.retain(|f| f != &file_path);
+            }
+            Message::FileChooserCancelled => {
+                // User cancelled file selection - do nothing
+            }
+            Message::FileChooserError(error) => {
+                if let Some(error) = Arc::into_inner(error) {
+                    self.current_error = Some(format!("File selection error: {}", error));
+                }
             }
             Message::NavigateTo(page) => {
                 self.current_page = page;
@@ -842,6 +984,7 @@ impl Application for CosmicLlmApp {
                         self.is_streaming = false;
                         self.current_streaming_id = None;
                         self.current_ai_message_index = None;
+                        self.pending_llm_messages = None; // Clear prepared messages
                         // Clear any leftover active tool rows (e.g., from placeholders)
                         self.active_tool_calls.clear();
                     }
@@ -1431,16 +1574,38 @@ impl CosmicLlmApp {
                 cosmic::widget::container(
                     cosmic::widget::column::with_capacity(3)
                         .push(
-                            // Attached files display (simplified for now)
+                            // Attached files display
                             if !self.attached_files.is_empty() {
-                                cosmic::widget::text("📎 Files attached").size(12)
+                                cosmic::widget::column::with_children(
+                                    self.attached_files.iter().map(|file_path| {
+                                        let file_name = std::path::Path::new(file_path)
+                                            .file_name()
+                                            .and_then(|name| name.to_str())
+                                            .unwrap_or(file_path);
+                                        
+                                        cosmic::widget::row::with_children(vec![
+                                            cosmic::widget::text(format!("📎 {}", file_name)).size(12).into(),
+                                            cosmic::widget::Space::with_width(Length::Fill).into(),
+                                            cosmic::widget::button::standard("✕")
+                                                .on_press(Message::RemoveFile(file_path.clone()))
+                                                .padding([4, 8])
+                                                .into(),
+                                        ])
+                                        .spacing(8)
+                                        .align_y(cosmic::iced::Alignment::Center)
+                                        .into()
+                                    }).collect()
+                                )
+                                .spacing(4)
                             } else {
-                                cosmic::widget::text("").size(12)
+                                cosmic::widget::column::with_children(vec![
+                                    cosmic::widget::text("").size(12).into()
+                                ])
                             }
                         )
                         .push(
                             // Text input for message
-                            text_input("Type your message... (Ctrl+Enter to send)", &self.input)
+                            text_input("Type your message and press Enter to send...", &self.input)
                                 .id(self.input_id.clone())
                                 .on_input(Message::InputChanged)
                                 .on_submit(|_| Message::SendMessage)
@@ -1449,7 +1614,13 @@ impl CosmicLlmApp {
                         )
                         .push(
                             // Button row
-                            cosmic::widget::row::with_capacity(5)
+                            cosmic::widget::row::with_capacity(6)
+                                .push(
+                                    // Send button
+                                    widget::button::suggested("Send")
+                                        .on_press(Message::SendMessage)
+                                        .padding([8, 16])
+                                )
                                 .push(
                                     // Attach file button
                                     widget::button::standard("📎 Attach")
@@ -1480,11 +1651,6 @@ impl CosmicLlmApp {
                                 )
                                 .push(
                                     cosmic::widget::Space::with_width(Length::Fill)
-                                )
-                                .push(
-                                    widget::button::suggested("Send")
-                                        .on_press(Message::SendMessage)
-                                        .padding([8, 16])
                                 )
                                 .spacing(8)
                                 .align_y(cosmic::iced::Alignment::Center)

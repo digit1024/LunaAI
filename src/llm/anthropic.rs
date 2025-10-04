@@ -110,14 +110,51 @@ impl LlmClient for AnthropicClient {
 
         let anthropic_messages: Vec<AnthropicMessage> = user_assistant
             .into_iter()
-            .map(|m| AnthropicMessage {
-                role: match m.role {
-                    Role::User => "user".to_string(),
-                    Role::Assistant => "assistant".to_string(),
-                    Role::System => "user".to_string(),
-                    Role::Tool => "user".to_string(),
-                },
-                content: vec![AnthropicContentBlock::Text { text: m.content }],
+            .map(|m| {
+                println!("🔍 DEBUG: Converting message to Anthropic: role={:?}, content={}, attachments={:?}", 
+                    m.role, m.content, m.attachments);
+                
+                let mut content_blocks = vec![AnthropicContentBlock::Text { text: m.content }];
+                
+                // Handle attachments
+                if let Some(attachments) = m.attachments {
+                    for attachment in attachments {
+                        match attachment.mime_type.as_str() {
+                            mime if mime.starts_with("image/") => {
+                                // For images, we need to read and encode them
+                                if let Some(content) = &attachment.content {
+                                    content_blocks.push(AnthropicContentBlock::Text { 
+                                        text: format!("[Image: {} - {} bytes]", attachment.file_name, attachment.file_size)
+                                    });
+                                }
+                            }
+                            mime if mime.starts_with("text/") => {
+                                // For text files, include content in text
+                                if let Some(content) = &attachment.content {
+                                    content_blocks.push(AnthropicContentBlock::Text { 
+                                        text: format!("File: {}\nContent:\n{}", attachment.file_name, content)
+                                    });
+                                }
+                            }
+                            _ => {
+                                // For other files, just mention them
+                                content_blocks.push(AnthropicContentBlock::Text { 
+                                    text: format!("File attached: {} ({} bytes)", attachment.file_name, attachment.file_size)
+                                });
+                            }
+                        }
+                    }
+                }
+                
+                AnthropicMessage {
+                    role: match m.role {
+                        Role::User => "user".to_string(),
+                        Role::Assistant => "assistant".to_string(),
+                        Role::System => "user".to_string(),
+                        Role::Tool => "user".to_string(),
+                    },
+                    content: content_blocks,
+                }
             })
             .collect();
 
@@ -206,9 +243,44 @@ impl LlmClient for AnthropicClient {
         for m in user_assistant.into_iter() {
             match m.role {
                 Role::User => {
+                    println!("🔍 DEBUG: Converting message to Anthropic (tools): role={:?}, content={}, attachments={:?}", 
+                        m.role, m.content, m.attachments);
+                    
+                    let mut content_blocks = vec![AnthropicContentBlock::Text { text: m.content }];
+                    
+                    // Handle attachments
+                    if let Some(attachments) = m.attachments {
+                        for attachment in attachments {
+                            match attachment.mime_type.as_str() {
+                                mime if mime.starts_with("image/") => {
+                                    // For images, we need to read and encode them
+                                    if let Some(content) = &attachment.content {
+                                        content_blocks.push(AnthropicContentBlock::Text { 
+                                            text: format!("[Image: {} - {} bytes]", attachment.file_name, attachment.file_size)
+                                        });
+                                    }
+                                }
+                                mime if mime.starts_with("text/") => {
+                                    // For text files, include content in text
+                                    if let Some(content) = &attachment.content {
+                                        content_blocks.push(AnthropicContentBlock::Text { 
+                                            text: format!("File: {}\nContent:\n{}", attachment.file_name, content)
+                                        });
+                                    }
+                                }
+                                _ => {
+                                    // For other files, just mention them
+                                    content_blocks.push(AnthropicContentBlock::Text { 
+                                        text: format!("File attached: {} ({} bytes)", attachment.file_name, attachment.file_size)
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    
                     anthropic_messages.push(AnthropicMessage {
                         role: "user".to_string(),
-                        content: vec![AnthropicContentBlock::Text { text: m.content }],
+                        content: content_blocks,
                     });
                 }
                 Role::Assistant => {

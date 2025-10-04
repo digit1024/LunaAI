@@ -104,16 +104,41 @@ impl LlmClient for OllamaClient {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>, LlmError> {
         let ollama_messages: Vec<OllamaMessage> = messages
             .into_iter()
-            .map(|msg| OllamaMessage {
-                role: match msg.role {
-                    Role::User => "user".to_string(),
-                    Role::Assistant => "assistant".to_string(),
-                    Role::System => "system".to_string(),
-                    Role::Tool => "tool".to_string(),
-                },
-                content: Some(msg.content),
-                tool_calls: None,
-                tool_call_id: msg.tool_call_id,
+            .map(|msg| {
+                println!("🔍 DEBUG: Converting message to Ollama: role={:?}, content={}, attachments={:?}", 
+                    msg.role, msg.content, msg.attachments);
+                
+                // Handle attachments by including them in the content
+                let mut content = msg.content;
+                if let Some(attachments) = msg.attachments {
+                    for attachment in attachments {
+                        match attachment.mime_type.as_str() {
+                            mime if mime.starts_with("image/") => {
+                                content.push_str(&format!("\n[Image: {} - {} bytes]", attachment.file_name, attachment.file_size));
+                            }
+                            mime if mime.starts_with("text/") => {
+                                if let Some(file_content) = &attachment.content {
+                                    content.push_str(&format!("\n\nFile: {}\nContent:\n{}", attachment.file_name, file_content));
+                                }
+                            }
+                            _ => {
+                                content.push_str(&format!("\nFile attached: {} ({} bytes)", attachment.file_name, attachment.file_size));
+                            }
+                        }
+                    }
+                }
+                
+                OllamaMessage {
+                    role: match msg.role {
+                        Role::User => "user".to_string(),
+                        Role::Assistant => "assistant".to_string(),
+                        Role::System => "system".to_string(),
+                        Role::Tool => "tool".to_string(),
+                    },
+                    content: Some(content),
+                    tool_calls: None,
+                    tool_call_id: msg.tool_call_id,
+                }
             })
             .collect();
 
@@ -204,6 +229,9 @@ impl LlmClient for OllamaClient {
         let ollama_messages: Vec<OllamaMessage> = messages
             .into_iter()
             .map(|msg| {
+                println!("🔍 DEBUG: Converting message to Ollama (tools): role={:?}, content={}, attachments={:?}", 
+                    msg.role, msg.content, msg.attachments);
+                
                 let tool_calls = if let Some(tool_calls) = msg.tool_calls {
                     Some(tool_calls.into_iter().map(|tc| OllamaToolCall {
                         id: tc.id,
@@ -217,6 +245,26 @@ impl LlmClient for OllamaClient {
                     None
                 };
                 
+                // Handle attachments by including them in the content
+                let mut content = msg.content;
+                if let Some(attachments) = msg.attachments {
+                    for attachment in attachments {
+                        match attachment.mime_type.as_str() {
+                            mime if mime.starts_with("image/") => {
+                                content.push_str(&format!("\n[Image: {} - {} bytes]", attachment.file_name, attachment.file_size));
+                            }
+                            mime if mime.starts_with("text/") => {
+                                if let Some(file_content) = &attachment.content {
+                                    content.push_str(&format!("\n\nFile: {}\nContent:\n{}", attachment.file_name, file_content));
+                                }
+                            }
+                            _ => {
+                                content.push_str(&format!("\nFile attached: {} ({} bytes)", attachment.file_name, attachment.file_size));
+                            }
+                        }
+                    }
+                }
+                
                 OllamaMessage {
                     role: match msg.role {
                         Role::User => "user".to_string(),
@@ -224,7 +272,7 @@ impl LlmClient for OllamaClient {
                         Role::System => "system".to_string(),
                         Role::Tool => "tool".to_string(),
                     },
-                    content: Some(msg.content),
+                    content: Some(content),
                     tool_calls,
                     tool_call_id: msg.tool_call_id,
                 }

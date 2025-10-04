@@ -145,6 +145,9 @@ impl GeminiClient {
         let mut current_parts: Vec<GeminiPart> = Vec::new();
 
         for msg in messages {
+            println!("🔍 DEBUG: Converting message to Gemini: role={:?}, content={}, attachments={:?}", 
+                msg.role, msg.content, msg.attachments);
+                
             let role = match msg.role {
                 Role::User => "user",
                 Role::Assistant => "model",
@@ -186,8 +189,29 @@ impl GeminiClient {
                     });
                 }
             } else {
-                // Regular text message
-                current_parts.push(GeminiPart::Text { text: msg.content });
+                // Regular text message with potential attachments
+                let mut text_content = msg.content;
+                
+                // Handle attachments
+                if let Some(attachments) = msg.attachments {
+                    for attachment in attachments {
+                        match attachment.mime_type.as_str() {
+                            mime if mime.starts_with("image/") => {
+                                text_content.push_str(&format!("\n[Image: {} - {} bytes]", attachment.file_name, attachment.file_size));
+                            }
+                            mime if mime.starts_with("text/") => {
+                                if let Some(file_content) = &attachment.content {
+                                    text_content.push_str(&format!("\n\nFile: {}\nContent:\n{}", attachment.file_name, file_content));
+                                }
+                            }
+                            _ => {
+                                text_content.push_str(&format!("\nFile attached: {} ({} bytes)", attachment.file_name, attachment.file_size));
+                            }
+                        }
+                    }
+                }
+                
+                current_parts.push(GeminiPart::Text { text: text_content });
             }
 
             current_role = Some(role.to_string());

@@ -1,6 +1,6 @@
 <div align="center">
   <br>
-  <h1>🚀 Luna AI</h1>
+  <h1>🌙 Luna AI</h1>
 
   <p><strong>Your brilliant AI companion for the COSMIC™ desktop!</strong></p>
   
@@ -74,7 +74,7 @@ Luna AI supports multiple AI providers, giving you flexibility and choice:
 - **Custom endpoints** - Connect to any OpenAI-compatible API
 
 ### 🔧 Configuration
-Easily switch between backends in the settings or configure multiple providers for different use cases.
+Easily switch between backends in the settings or configure multiple providers for different use cases. See the [Configuration Guide](docs/configuration.md) for detailed setup instructions.
 
 ## 🛠️ Installation
 
