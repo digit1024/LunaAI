@@ -1,2 +1,4 @@
 /target
 .agentic_tool_calls.log
+agentic_tool_calls.log
+mcp_server.log
