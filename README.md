@@ -1,6 +1,6 @@
 <div align="center">
   <br>
-  <h1>🚀 Luna AI</h1>
+  <h1>\U0001f31c\ufe0f  Luna AI</h1>
 
   <p><strong>Your brilliant AI companion for the COSMIC™ desktop!</strong></p>
   
