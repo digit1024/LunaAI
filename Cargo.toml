@@ -1,0 +1,114 @@
+[package]
+name = "cosmic_llm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# COSMIC desktop framework
+libcosmic = { git = "https://github.com/pop-os/libcosmic.git", branch = "master", default-features = false, features = ["multi-window", "tokio", "winit", "about", "wgpu", "dbus-config"] }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# HTTP client for LLM APIs
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Configuration
+config = "0.15"
+anyhow = "1.0"
+
+# CLI
+clap = { version = "4.0", features = ["derive"] }
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUIDs
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# Async traits
+async-trait = "0.1"
+
+# Error handling
+thiserror = "2.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# WebSocket support for MCP
+tokio-tungstenite = "0.27"
+tungstenite = "0.27"
+
+# Futures
+futures = "0.3"
+
+# Pin project for async
+pin-project = "1.0"
+
+# Logging
+fern = "0.7"
+log = "0.4"
+
+# Internationalization
+i18n-embed-fl = "0.9.4"
+rust-embed = "8"
+
+# File operations
+dirs = "6.0.0"
+
+# Clipboard
+cli-clipboard = "0.4.0"
+
+# Data structures
+slotmap = "1.0.7"
+
+# Configuration format
+ron = "0.10.1"
+
+# Base64 encoding
+base64 = "0.22.1"
+
+# Hashing
+sha2 = "0.10.9"
+
+# Random
+rand = "0.9.2"
+
+# HTTP server for MCP
+tiny_http = "0.12.0"
+
+# URL handling
+url = "2.5.4"
+
+# Web browser
+webbrowser = "1.0.5"
+
+# Environment logger
+env_logger = "0.11.8"
+
+# Keyring for secure storage
+keyring = "2.0"
+
+# License handling
+license = { version = "3.7.0", include = ["/license-list-data/json"] }
+
+# Internationalization
+i18n-embed = { version = "0.15.4", features = ["fluent-system", "desktop-requester"] }
+
+# SQLite for storage
+rusqlite = { version = "0.32", features = ["bundled", "chrono", "uuid"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[features]
+default = ["openai", "anthropic"]
+openai = []
+anthropic = []
+deepseek = []

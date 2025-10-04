@@ -1,0 +1,163 @@
+warning: unused manifest key: dependencies.license.include
+   Compiling cosmic_llm v0.1.0 (/home/digit1024/proj/cosmic_llm)
+error[E0425]: cannot find function `events_with` in module `cosmic::iced_futures::subscription`
+   --> src/ui/app.rs:534:53
+    |
+534 |                 cosmic::iced_futures::subscription::events_with(|event, _status| {
+    |                                                     ^^^^^^^^^^^ not found in `cosmic::iced_futures::subscription`
+
+error[E0425]: cannot find function `text_editor` in module `text_editor`
+    --> src/ui/app.rs:1431:42
+     |
+1431 | ...                   text_editor::text_editor(&self.input)
+     |                                    ^^^^^^^^^^^ not found in `text_editor`
+     |
+help: consider importing one of these functions
+     |
+1    + use crate::ui::app::text_editor;
+     |
+1    + use cosmic::widget::text_editor;
+     |
+help: if you import `text_editor`, refer to it directly
+     |
+1431 -                             text_editor::text_editor(&self.input)
+1431 +                             text_editor(&self.input)
+     |
+
+error[E0425]: cannot find function `secondary` in module `widget::button`
+    --> src/ui/app.rs:1449:57
+     |
+1449 | ...                   widget::button::secondary("Stop")
+     |                                       ^^^^^^^^^ not found in `widget::button`
+     |
+help: consider importing one of these functions
+     |
+1    + use crate::ui::app::widget::checkbox::secondary;
+     |
+1    + use crate::ui::app::widget::progress_bar::secondary;
+     |
+1    + use cosmic::widget::checkbox::secondary;
+     |
+1    + use cosmic::widget::progress_bar::secondary;
+     |
+help: if you import `secondary`, refer to it directly
+     |
+1449 -                                         widget::button::secondary("Stop")
+1449 +                                         secondary("Stop")
+     |
+
+error[E0425]: cannot find function `secondary` in module `widget::button`
+    --> src/ui/app.rs:1456:57
+     |
+1456 | ...                   widget::button::secondary("Retry")
+     |                                       ^^^^^^^^^ not found in `widget::button`
+     |
+help: consider importing one of these functions
+     |
+1    + use crate::ui::app::widget::checkbox::secondary;
+     |
+1    + use crate::ui::app::widget::progress_bar::secondary;
+     |
+1    + use cosmic::widget::checkbox::secondary;
+     |
+1    + use cosmic::widget::progress_bar::secondary;
+     |
+help: if you import `secondary`, refer to it directly
+     |
+1456 -                                         widget::button::secondary("Retry")
+1456 +                                         secondary("Retry")
+     |
+
+error[E0425]: cannot find function `secondary` in module `widget::button`
+    --> src/ui/app.rs:1460:57
+     |
+1460 | ...                   widget::button::secondary("Retry")
+     |                                       ^^^^^^^^^ not found in `widget::button`
+     |
+help: consider importing one of these functions
+     |
+1    + use crate::ui::app::widget::checkbox::secondary;
+     |
+1    + use crate::ui::app::widget::progress_bar::secondary;
+     |
+1    + use cosmic::widget::checkbox::secondary;
+     |
+1    + use cosmic::widget::progress_bar::secondary;
+     |
+help: if you import `secondary`, refer to it directly
+     |
+1460 -                                         widget::button::secondary("Retry")
+1460 +                                         secondary("Retry")
+     |
+
+warning: unused imports: `keyboard` and `text_input`
+ --> src/ui/app.rs:3:34
+  |
+3 |     iced::{Length, Subscription, keyboard},
+  |                                  ^^^^^^^^
+4 |     widget::{self, text_input, scrollable, menu, text_editor},
+  |                    ^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `cosmic::iced_futures::stream`
+   --> src/ui/app.rs:522:13
+    |
+522 |         use cosmic::iced_futures::stream;
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `self`
+ --> src/ui/pages/history.rs:3:14
+  |
+3 |     widget::{self, scrollable},
+  |              ^^^^
+
+warning: unused import: `futures::StreamExt`
+ --> src/ui/app.rs:7:5
+  |
+7 | use futures::StreamExt;
+  |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `title_receiver`
+   --> src/ui/app.rs:196:32
+    |
+196 |         let (title_sender, mut title_receiver) = tokio::sync::mpsc::unbounded_channel::<(Uuid, String)>();
+    |                                ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_title_receiver`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: variable does not need to be mutable
+   --> src/ui/app.rs:196:28
+    |
+196 |         let (title_sender, mut title_receiver) = tokio::sync::mpsc::unbounded_channel::<(Uuid, String)>();
+    |                            ----^^^^^^^^^^^^^^
+    |                            |
+    |                            help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` on by default
+
+warning: variable does not need to be mutable
+  --> src/ui/pages/chat.rs:38:13
+   |
+38 |         let mut tasks = vec![];
+   |             ----^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> src/ui/pages/history.rs:40:13
+   |
+40 |         let mut tasks = vec![];
+   |             ----^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: unused variable: `is_selected`
+   --> src/ui/pages/history.rs:113:29
+    |
+113 |                         let is_selected = self.selected_index == Some(index);
+    |                             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_is_selected`
+
+For more information about this error, try `rustc --explain E0425`.
+warning: `cosmic_llm` (lib) generated 9 warnings
+error: could not compile `cosmic_llm` (lib) due to 5 previous errors; 9 warnings emitted
