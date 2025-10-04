@@ -1,82 +1,104 @@
-# cosmic_llm
+<div align="center">
+  <br>
+  <h1>🚀 Luna AI</h1>
 
-A modern desktop LLM chat application built with the COSMIC desktop framework.
+  <p><strong>Your brilliant AI companion for the COSMIC™ desktop!</strong></p>
+  
+  <p>A modern, native desktop application that brings powerful AI conversations right to your desktop with seamless MCP integration.</p>
 
-## Overview
+  <a href='https://github.com/digit1024/LunaAI/releases'>
+    <img width='200' alt='Download Flatpak Release' src='https://img.shields.io/badge/Download-Flatpak%20Release-blue?style=for-the-badge&logo=flatpak&logoColor=white'/>
+  </a>
+</div>
 
-cosmic_llm is a desktop application that provides a modern, native interface for interacting with Large Language Models (LLMs). It features a clean, professional UI with real-time streaming responses, conversation management, and MCP (Model Context Protocol) server integration.
+## ✨ What is Luna AI?
 
-## Features
+Luna AI is your intelligent desktop companion that combines the power of modern AI with the beauty of native desktop integration. Built specifically for the COSMIC desktop environment, Luna brings you:
 
-- 🎨 **Modern UI**: Built with libcosmic for native COSMIC desktop integration
-- 💬 **Real-time Chat**: Streaming responses with smooth UI updates
-- 📚 **Conversation Management**: Save, load, and organize chat conversations
-- 🔧 **MCP Integration**: Support for Model Context Protocol servers
-- ⚙️ **Configurable**: Multiple LLM providers and settings
-- ⌨️ **Keyboard Shortcuts**: Efficient navigation and control
-- 🔄 **Async Operations**: Non-blocking UI during processing
+- 🤖 **Smart Conversations** - Real-time streaming responses that feel natural and engaging
+- 🔧 **MCP Superpowers** - Connect to tools and services through Model Context Protocol
+- 🎨 **Beautiful Interface** - Native COSMIC design that feels right at home
+- 💾 **Memory Management** - Save, organize, and revisit your conversations
 
-## Architecture
+## 🚀 What Can Luna Do?
 
-### UI Structure
+### 🎯 Core Features
+- **Real-time Chat**: Watch responses stream in with smooth, non-blocking UI
+- **Conversation History**: Never lose a brilliant idea - save and search all your chats
+- **MCP Integration**: Connect to external tools, APIs, and services
+- **Keyboard Shortcuts**: Navigate like a pro with efficient keyboard controls
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    cosmic_llm UI Architecture               │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────────┐  ┌─────────────────────────────────┐   │
-│  │   Side Panel    │  │        Main Content Area        │   │
-│  │   (Navigation)  │  │                                 │   │
-│  │                 │  │  ┌─────────────────────────────┐ │   │
-│  │  ┌─────────────┐ │  │  │        Chat Page            │ │   │
-│  │  │ New Chat    │ │  │  │  - Message List              │ │   │
-│  │  └─────────────┘ │  │  │  - Streaming Responses       │ │   │
-│  │  ─────────────── │  │  │  - Input Field               │ │   │
-│  │  ┌─────────────┐ │  │  │  - Status Bar                │ │   │
-│  │  │ History     │ │  │  └─────────────────────────────┘ │   │
-│  │  └─────────────┘ │  │                                 │   │
-│  │  ┌─────────────┐ │  │  ┌─────────────────────────────┐ │   │
-│  │  │ MCP Config  │ │  │  │     History Page             │ │   │
-│  │  └─────────────┘ │  │  │  - Conversation List         │ │   │
-│  │  ┌─────────────┐ │  │  │  - Search & Filter           │ │   │
-│  │  │ Settings    │ │  │  │  - Conversation Details      │ │   │
-│  │  └─────────────┘ │  │  └─────────────────────────────┘ │   │
-│  └─────────────────┘  └─────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-```
+### 🔧 MCP Magic
+Luna's MCP integration opens up a world of possibilities:
+- **File Operations**: Read, write, and manage files directly from conversations
+- **Web Search**: Fetch real-time information from the internet
+- **Email Management**: Send, receive, and organize emails
+- **Task Management**: Integrate with your todo lists and productivity tools
+- **Custom Tools**: Extend Luna's capabilities with your own MCP servers
 
-### Key Components
-
-- **Side Panel**: Navigation controls (New Chat, History, MCP Config, Settings)
-- **Chat Page**: Main conversation interface with streaming messages
-- **History Page**: Conversation management and search
-- **Settings Dialog**: Configuration and preferences
-- **MCP Integration**: Tool calling and server management
-
-## Development Status
-
-See [implementation_progress.md](implementation_progress.md) for detailed development status.
-
-## Building
+### 💡 Examples of What You Can Do
 
 ```bash
+# Ask Luna to help with programming
+"Write a Rust function that sorts a vector of integers"
+
+# Get real-time information
+"What's the current weather in Warsaw?"
+
+# File management
+"Read the contents of my project's README file"
+
+# Email tasks
+"Send an email to my team about the project update"
+
+# Web research
+"Find the latest news about AI developments"
+
+# Task management
+"Add 'fix the bug in login module' to my todo list"
+```
+
+## 🛠️ Installation
+
+### Building from Source
+```bash
+git clone https://github.com/digit1024/LunaAI.git
+cd LunaAI
 cargo build
 ```
 
-## Running
-
+### Running
 ```bash
 cargo run
 ```
 
-## Dependencies
+## 🏗️ Architecture
 
-- libcosmic: COSMIC desktop framework
-- tokio: Async runtime
-- serde: Serialization
-- uuid: Unique identifiers
-- chrono: Date/time handling
+Luna AI is built with modern Rust and the COSMIC desktop framework:
 
-## License
+- **libcosmic**: Native desktop integration
+- **tokio**: Async runtime for smooth performance
+- **MCP Protocol**: Tool calling and external service integration
+- **Real-time Streaming**: Live response updates
 
-MIT License
+## 🎯 Development Status
+
+Luna AI is actively developed! Check [implementation_progress.md](implementation_progress.md) for the latest updates on features and improvements.
+
+## 🤝 Contributing
+
+We welcome contributions! Whether it's bug reports, feature requests, or code contributions, feel free to:
+- Open an issue
+- Submit a pull request
+- Join the discussion
+
+## 📄 License
+
+MIT License - Feel free to use, modify, and distribute!
+
+---
+
+<div align="center">
+  <p><strong>Ready to experience intelligent desktop computing?</strong></p>
+  <p>Clone the repo and start chatting with Luna today! 🚀</p>
+</div>
