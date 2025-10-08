@@ -57,14 +57,14 @@ impl ToolCallWidget {
         let expand_icon = if self.is_expanded { "▼" } else { "▶" };
 
         let header = row()
-            .push(text(status_icon).size(16).style(status_color))
+            .push(text(status_icon).size(16).class(cosmic::theme::Text::Color(status_color)))
             .push(text(&self.tool_name).font(font::Font::MONOSPACE))
             .push(Space::with_width(Length::Fill))
-            .push(text(status_text).style(status_color))
+            .push(text(status_text).class(cosmic::theme::Text::Color(status_color)))
             .push(
-                button(text(expand_icon))
+                button::text(expand_icon)
                     .on_press(Message::ToggleExpanded)
-                    .style(cosmic::theme::Button::Text),
+                    .class(cosmic::theme::Button::Text)
             )
             .spacing(10)
             .align_y(cosmic::iced::Alignment::Center)
@@ -74,7 +74,7 @@ impl ToolCallWidget {
 
         if self.is_expanded {
             let params_widget = column()
-                .push(text("Parameters").size(14).style(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
+                .push(text("Parameters").size(14).class(cosmic::theme::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6))))
                 .push(
                     container(
                         scrollable(
@@ -84,7 +84,7 @@ impl ToolCallWidget {
                         )
                         .height(Length::Fixed(80.0))
                     )
-                    .style(cosmic::theme::Container::Card)
+                    .class(cosmic::theme::Container::Card)
                     .padding(8)
                 )
                 .spacing(5);
@@ -92,7 +92,7 @@ impl ToolCallWidget {
 
             if let Some(ref result) = self.result {
                 let result_widget = column()
-                    .push(text("Result").size(14).style(cosmic::iced::Color::from_rgb(0.2, 0.7, 0.2)))
+                    .push(text("Result").size(14).class(cosmic::theme::Text::Color(cosmic::iced::Color::from_rgb(0.2, 0.7, 0.2))))
                     .push(
                         container(
                             scrollable(
@@ -102,14 +102,14 @@ impl ToolCallWidget {
                             )
                             .height(Length::Fixed(120.0))
                         )
-                        .style(cosmic::theme::Container::Card)
+                        .class(cosmic::theme::Container::Card)
                         .padding(8)
                     )
                     .spacing(5);
                 content = content.push(result_widget);
             } else if let Some(ref error) = self.error {
                 let error_widget = column()
-                    .push(text("Error").size(14).style(cosmic::iced::Color::from_rgb(0.8, 0.2, 0.2)))
+                    .push(text("Error").size(14).class(cosmic::theme::Text::Color(cosmic::iced::Color::from_rgb(0.8, 0.2, 0.2))))
                     .push(
                         container(
                             scrollable(
@@ -119,7 +119,7 @@ impl ToolCallWidget {
                             )
                             .height(Length::Fixed(80.0))
                         )
-                        .style(cosmic::theme::Container::Card)
+                        .class(cosmic::theme::Container::Card)
                         .padding(8)
                     )
                     .spacing(5);
@@ -130,7 +130,7 @@ impl ToolCallWidget {
         container(content)
             .width(Length::Fill)
             .padding(Padding::from([10, 15]))
-            .style(cosmic::theme::Container::Card)
+            .class(cosmic::theme::Container::Card)
             .into()
     }
 }
