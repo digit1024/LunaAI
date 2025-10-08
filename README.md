@@ -102,14 +102,17 @@ Luna AI is built with modern Rust and the COSMIC desktop framework:
 ## 📸 Screenshots
 
 <div align="center">
+  <img src="res/screenshots/emails.png" alt="Email Integration" width="800"/>
+  <p><em>Agentic capabilities with MCP!</em></p>
+
   <img src="res/screenshots/history.png" alt="Conversation History" width="800"/>
   <p><em>Manage and revisit your conversation history</em></p>
   
-  <img src="res/screenshots/emails.png" alt="Email Integration" width="800"/>
-  <p><em>Seamless email management through MCP</em></p>
-  
   <img src="res/screenshots/settings.png" alt="Settings" width="800"/>
   <p><em>Configure your AI backends and preferences</em></p>
+
+  <img src="res/screenshots/mcp.png" alt="MCP Integration" width="800"/>
+  <p><em>Powerful MCP tool integration and configuration</em></p>
 </div>
 
 ## 🤝 Contributing

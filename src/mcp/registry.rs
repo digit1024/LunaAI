@@ -42,6 +42,7 @@ pub struct MCPServerRegistry {
     pub servers: HashMap<String, Arc<RwLock<MCPTransportEnum>>>,
     pub tool_index: HashMap<String, String>, // tool_name -> server_name
     pub all_tools: Vec<ToolDefinition>,
+    pub enabled_tools: HashMap<String, bool>, // tool_name -> enabled
 }
 
 impl MCPServerRegistry {
@@ -50,11 +51,43 @@ impl MCPServerRegistry {
             servers: HashMap::new(),
             tool_index: HashMap::new(),
             all_tools: Vec::new(),
+            enabled_tools: HashMap::new(),
         }
     }
     
     pub fn get_available_tools(&self) -> Vec<ToolDefinition> {
         self.all_tools.clone()
+    }
+    
+    pub fn get_enabled_tools(&self) -> Vec<ToolDefinition> {
+        self.all_tools.iter()
+            .filter(|tool| self.is_tool_enabled(&tool.name))
+            .cloned()
+            .collect()
+    }
+    
+    pub fn is_tool_enabled(&self, tool_name: &str) -> bool {
+        self.enabled_tools.get(tool_name).copied().unwrap_or(true)
+    }
+    
+    pub fn set_tool_enabled(&mut self, tool_name: &str, enabled: bool) {
+        self.enabled_tools.insert(tool_name.to_string(), enabled);
+    }
+    
+    pub fn enable_all_tools(&mut self) {
+        for tool in &self.all_tools {
+            self.enabled_tools.insert(tool.name.clone(), true);
+        }
+    }
+    
+    pub fn disable_all_tools(&mut self) {
+        for tool in &self.all_tools {
+            self.enabled_tools.insert(tool.name.clone(), false);
+        }
+    }
+    
+    pub fn get_tool_states(&self) -> HashMap<String, bool> {
+        self.enabled_tools.clone()
     }
     
     pub fn get_server_for_tool(&self, tool_name: &str) -> Result<&String> {
@@ -106,6 +139,8 @@ impl MCPServerRegistry {
                 for tool in &tools {
                     info!("MCP server {} tool: {}", name, tool.name);
                     self.tool_index.insert(tool.name.clone(), name.clone());
+                    // Enable new tools by default
+                    self.enabled_tools.insert(tool.name.clone(), true);
                 }
                 self.all_tools.extend(tools);
                 

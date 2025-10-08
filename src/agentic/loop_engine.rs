@@ -40,11 +40,11 @@ impl AgenticLoop {
                 });
             }
             
-            // Get available tools from MCP registry
+            // Get enabled tools from MCP registry
             let available_tools = {
                 let registry = self.mcp_registry.read().await;
-                let tools = registry.get_available_tools();
-                log::debug!("🔧 Available tools count: {}", tools.len());
+                let tools = registry.get_enabled_tools();
+                log::debug!("🔧 Enabled tools count: {}", tools.len());
                 tools
             };
             
@@ -58,6 +58,13 @@ impl AgenticLoop {
                 Ok(response) => response,
                 Err(e) => {
                     log::error!("❌ LLM call failed: {}", e);
+                    // Send model error via AgentUpdate
+                    if let Some(tx) = agent_tx.as_ref() {
+                        let _ = tx.send(AgentUpdate::ModelError { 
+                            turn_id, 
+                            error: format!("Model communication failed: {}", e)
+                        });
+                    }
                     return Err(anyhow::anyhow!("LLM call failed: {}", e));
                 },
             };

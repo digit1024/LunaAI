@@ -53,6 +53,10 @@ pub enum AgentUpdate {
     EndConversation {
         final_text: String,
     },
+    ModelError {
+        turn_id: Uuid,
+        error: String,
+    },
     Heartbeat {
         turn_id: Uuid,
         ts_ms: i64,
