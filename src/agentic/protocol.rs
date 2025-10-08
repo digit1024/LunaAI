@@ -57,6 +57,9 @@ pub enum AgentUpdate {
         turn_id: Uuid,
         ts_ms: i64,
     },
+    Error {
+        message: String,
+    },
 }
 
 

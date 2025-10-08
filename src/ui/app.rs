@@ -64,6 +64,7 @@ pub enum Message {
     RefreshMCPTools,
     // Markdown link handling
     MarkdownLinkClicked(widget::markdown::Url),
+    DismissError,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1000,6 +1001,12 @@ impl Application for CosmicLlmApp {
                         self.active_tool_calls.clear();
                     }
                     AgentUpdate::Heartbeat { turn_id: _, ts_ms: _ } => {}
+                    AgentUpdate::Error { message } => {
+                        self.current_error = Some(message);
+                        self.is_streaming = false;
+                        self.current_streaming_id = None;
+                        self.pending_llm_messages = None;
+                    }
                 }
             }
             Message::ToolCallStarted(tool_name, parameters) => {
@@ -1206,6 +1213,9 @@ impl Application for CosmicLlmApp {
             Message::MarkdownLinkClicked(url) => {
                 let _ = webbrowser::open(url.as_str());
             }
+            Message::DismissError => {
+                self.current_error = None;
+            }
         }
         
         app::Task::none()
@@ -1352,7 +1362,31 @@ impl CosmicLlmApp {
     fn chat_view(&self) -> Element<Message> {
         use cosmic::iced::{Length, Padding};
         
-        cosmic::widget::column::with_capacity(4)
+        cosmic::widget::column::with_capacity(5)
+            .push(
+                // Error message display
+                if let Some(error_msg) = &self.current_error {
+                    cosmic::widget::container(
+                        cosmic::widget::row::with_capacity(2)
+                            .push(
+                                cosmic::widget::text(format!("Error: {}", error_msg))
+                                    .size(14)
+                                    .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(1.0, 0.4, 0.4)))
+                            )
+                            .push(cosmic::widget::Space::with_width(Length::Fill))
+                            .push(
+                                widget::button::standard("Dismiss")
+                                    .on_press(Message::DismissError)
+                            )
+                            .spacing(12)
+                            .align_y(cosmic::iced::Alignment::Center)
+                    )
+                    .padding(12)
+                    .class(cosmic::style::Container::Card)
+                } else {
+                    cosmic::widget::container(cosmic::widget::Space::with_height(Length::Fixed(0.0)))
+                }
+            )
             .push(
                 // Top panel with title, model, created at, message count, and New Chat
                 {

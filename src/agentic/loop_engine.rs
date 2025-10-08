@@ -50,14 +50,18 @@ impl AgenticLoop {
             
             // Call LLM with current messages and available tools
             let response = match self.llm_client.send_message_with_tools(
-                messages.clone(), 
-                available_tools, 
-                None, 
+                messages.clone(),
+                available_tools,
+                None,
                 None
             ).await {
                 Ok(response) => response,
                 Err(e) => {
                     log::error!("❌ LLM call failed: {}", e);
+                    if let Some(tx) = agent_tx.as_ref() {
+                        let _ = tx.send(AgentUpdate::Error { message: e.to_string() });
+                        let _ = tx.send(AgentUpdate::EndConversation { final_text: String::new() });
+                    }
                     return Err(anyhow::anyhow!("LLM call failed: {}", e));
                 },
             };
