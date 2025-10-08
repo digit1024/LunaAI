@@ -1,7 +1,7 @@
 use cosmic::{
     app::{self, Core},
     iced::{Length, Subscription},
-    widget::{self, text_input, scrollable, menu, text_editor},
+    widget::{self, text_input, scrollable, menu, text_editor, markdown},
     Application, Element,
     dialog::file_chooser::{self, FileFilter},
 };
@@ -62,6 +62,8 @@ pub enum Message {
     // MCP actions
     MCPToolsUpdated(Vec<crate::llm::ToolDefinition>),
     RefreshMCPTools,
+    // Markdown link handling
+    MarkdownLinkClicked(widget::markdown::Url),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1192,6 +1194,9 @@ impl Application for CosmicLlmApp {
                     self.available_mcp_tools = registry.get_available_tools();
                 }
             }
+            Message::MarkdownLinkClicked(url) => {
+                let _ = webbrowser::open(&url);
+            }
         }
         
         app::Task::none()
@@ -1439,14 +1444,21 @@ impl CosmicLlmApp {
                         let message_widget = cosmic::widget::container(
                             cosmic::widget::row::with_capacity(2)
                                 .push(
-                                    cosmic::widget::text(&msg.content)
-                                        .size(14)
-                                        .width(Length::Fill)
-                                        .class(if msg.is_user {
-                                            cosmic::style::Text::Color(cosmic::iced::Color::WHITE)
-                                        } else {
-                                            cosmic::style::Text::Color(cosmic::theme::active().cosmic().palette.neutral_9.into())
+                                    if msg.is_user {
+                                        cosmic::widget::text(&msg.content)
+                                            .size(14)
+                                            .width(Length::Fill)
+                                            .class(cosmic::style::Text::Color(cosmic::iced::Color::WHITE))
+                                            .into()
+                                    } else {
+                                        widget::lazy(&msg.content, |_| {
+                                            let items = markdown::parse(&msg.content).collect::<Vec<_>>();
+                                            widget::markdown(&items)
+                                                .map(Message::MarkdownLinkClicked)
                                         })
+                                        .width(Length::Fill)
+                                        .into()
+                                    }
                                 )
                                 .push(
                                     cosmic::widget::button::text("📋")
@@ -1619,34 +1631,28 @@ impl CosmicLlmApp {
                                     // Send button
                                     widget::button::suggested("Send")
                                         .on_press(Message::SendMessage)
-                                        .padding([8, 16])
                                 )
                                 .push(
                                     // Attach file button
-                                    widget::button::standard("📎 Attach")
+                                    widget::button::icon(widget::icon::from_name("document-attach-symbolic"))
                                         .on_press(Message::AttachFile)
-                                        .padding([8, 16])
                                 )
                                 .push(
                                     // Stop button (only visible when streaming)
                                     if self.is_streaming {
-                                        widget::button::destructive("Stop")
+                                        widget::button::destructive(widget::icon::from_name("process-stop-symbolic"))
                                             .on_press(Message::StopMessage)
-                                            .padding([8, 16])
                                     } else {
-                                        widget::button::standard("Stop")
-                                            .padding([8, 16])
+                                        widget::button::destructive(widget::icon::from_name("process-stop-symbolic"))
                                     }
                                 )
                                 .push(
                                     // Retry button (only visible when there's a last message)
                                     if self.last_user_message.is_some() && !self.is_streaming {
-                                        widget::button::standard("Retry")
+                                        widget::button::icon(widget::icon::from_name("view-refresh-symbolic"))
                                             .on_press(Message::RetryMessage)
-                                            .padding([8, 16])
                                     } else {
-                                        widget::button::standard("Retry")
-                                            .padding([8, 16])
+                                        widget::button::icon(widget::icon::from_name("view-refresh-symbolic"))
                                     }
                                 )
                                 .push(

@@ -1,6 +1,7 @@
 use cosmic::{
+    font,
     iced::{Length, Padding},
-    widget::{button, container, row, column, text, scrollable},
+    widget::{button, container, row, column, text, scrollable, Space},
     Element,
 };
 
@@ -47,132 +48,90 @@ impl ToolCallWidget {
     }
 
     pub fn view(&self) -> Element<Message> {
-        let status_icon = match self.status {
-            ToolCallStatus::Started => "⏳",
-            ToolCallStatus::Completed => "✅",
-            ToolCallStatus::Error => "❌",
-        };
-
-        let status_text = match self.status {
-            ToolCallStatus::Started => "Running",
-            ToolCallStatus::Completed => "Completed",
-            ToolCallStatus::Error => "Failed",
+        let (status_icon, status_text, status_color) = match self.status {
+            ToolCallStatus::Started => ("...", "Executing", cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5)),
+            ToolCallStatus::Completed => ("✓", "Completed", cosmic::iced::Color::from_rgb(0.2, 0.7, 0.2)),
+            ToolCallStatus::Error => ("✕", "Error", cosmic::iced::Color::from_rgb(0.8, 0.2, 0.2)),
         };
 
         let expand_icon = if self.is_expanded { "▼" } else { "▶" };
 
-        container(
-            column::with_capacity(4)
+        let header = row()
+            .push(text(status_icon).size(16).style(status_color))
+            .push(text(&self.tool_name).font(font::Font::MONOSPACE))
+            .push(Space::with_width(Length::Fill))
+            .push(text(status_text).style(status_color))
+            .push(
+                button(text(expand_icon))
+                    .on_press(Message::ToggleExpanded)
+                    .style(cosmic::theme::Button::Text),
+            )
+            .spacing(10)
+            .align_y(cosmic::iced::Alignment::Center)
+            .width(Length::Fill);
+
+        let mut content = column().push(header).spacing(10);
+
+        if self.is_expanded {
+            let params_widget = column()
+                .push(text("Parameters").size(14).style(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
                 .push(
-                    // Header row with tool name, status, and expand button
-                    row::with_capacity(3)
-                        .push(
-                            text("🔧")
-                                .size(14)
-                        )
-                        .push(
-                            text(format!("Agent function called: {}", self.tool_name))
+                    container(
+                        scrollable(
+                            text(&self.parameters)
                                 .size(12)
-                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.2, 0.6, 1.0)))
+                                .font(font::Font::MONOSPACE)
                         )
-                        .push(
-                            button::text(expand_icon)
-                                .on_press(Message::ToggleExpanded)
-                                .class(cosmic::style::Button::Text)
-                        )
-                        .spacing(6)
-                        .align_y(cosmic::iced::Alignment::Center)
+                        .height(Length::Fixed(80.0))
+                    )
+                    .style(cosmic::theme::Container::Card)
+                    .padding(8)
                 )
-                .push(
-                    // Status indicator
-                    row::with_capacity(2)
-                        .push(
-                            text(status_icon)
-                                .size(12)
+                .spacing(5);
+            content = content.push(params_widget);
+
+            if let Some(ref result) = self.result {
+                let result_widget = column()
+                    .push(text("Result").size(14).style(cosmic::iced::Color::from_rgb(0.2, 0.7, 0.2)))
+                    .push(
+                        container(
+                            scrollable(
+                                text(result)
+                                    .size(12)
+                                    .font(font::Font::MONOSPACE)
+                            )
+                            .height(Length::Fixed(120.0))
                         )
-                        .push(
-                            text(status_text)
-                                .size(12)
-                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
+                        .style(cosmic::theme::Container::Card)
+                        .padding(8)
+                    )
+                    .spacing(5);
+                content = content.push(result_widget);
+            } else if let Some(ref error) = self.error {
+                let error_widget = column()
+                    .push(text("Error").size(14).style(cosmic::iced::Color::from_rgb(0.8, 0.2, 0.2)))
+                    .push(
+                        container(
+                            scrollable(
+                                text(error)
+                                    .size(12)
+                                    .font(font::Font::MONOSPACE)
+                            )
+                            .height(Length::Fixed(80.0))
                         )
-                        .spacing(3)
-                        .align_y(cosmic::iced::Alignment::Center)
-                )
-                .push(
-                    // Expanded content (parameters and result)
-                    if self.is_expanded {
-                        column::with_capacity(3)
-                            .push(
-                                text("Parameters:")
-                                    .size(10)
-                                    .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5)))
-                            )
-                            .push(
-                                container(
-                                    scrollable(
-                                        text(&self.parameters)
-                                            .size(12)
-                                            .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.4, 0.4, 0.4)))
-                                    )
-                                    .height(Length::Fixed(60.0))
-                                )
-                                .padding(8)
-                                .class(cosmic::style::Container::Card)
-                            )
-                            .push(
-                                if let Some(ref result) = self.result {
-                                    column::with_capacity(2)
-                                        .push(
-                                            text("Result:")
-                                                .size(12)
-                                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.0, 0.7, 0.0)))
-                                        )
-                                        .push(
-                                            container(
-                                                scrollable(
-                                                    text(result)
-                                                        .size(12)
-                                                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.0, 0.5, 0.0)))
-                                                )
-                                                .height(Length::Fixed(80.0))
-                                            )
-                                            .padding(8)
-                                            .class(cosmic::style::Container::Card)
-                                        )
-                                } else if let Some(ref error) = self.error {
-                                    column::with_capacity(2)
-                                        .push(
-                                            text("Error:")
-                                                .size(12)
-                                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.8, 0.2, 0.2)))
-                                        )
-                                        .push(
-                                            container(
-                                                scrollable(
-                                                    text(error)
-                                                        .size(12)
-                                                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.7, 0.1, 0.1)))
-                                                )
-                                                .height(Length::Fixed(60.0))
-                                            )
-                                            .padding(8)
-                                            .class(cosmic::style::Container::Card)
-                                        )
-                                } else {
-                                    column::with_capacity(0)
-                                }
-                            )
-                            .spacing(6)
-                    } else {
-                        column::with_capacity(0)
-                    }
-                )
-                .spacing(6)
-        )
-        .padding(Padding::from([8, 12]))
-        .class(cosmic::style::Container::Card)
-        .width(Length::Fill)
-        .into()
+                        .style(cosmic::theme::Container::Card)
+                        .padding(8)
+                    )
+                    .spacing(5);
+                content = content.push(error_widget);
+            }
+        }
+
+        container(content)
+            .width(Length::Fill)
+            .padding(Padding::from([10, 15]))
+            .style(cosmic::theme::Container::Card)
+            .into()
     }
 }
 
