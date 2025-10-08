@@ -275,19 +275,23 @@ impl CosmicLlmApp {
                 model
                     .insert()
                     .text("Chat")
+                    .icon(crate::ui::icons::get_icon("chat-symbolic", 16))
                     .data(NavigationPage::Chat);
                 model
                     .insert()
                     .text("History")
+                    .icon(crate::ui::icons::get_icon("list-large-symbolic", 16))
                     .data(NavigationPage::History)
                     .divider_above(true);
                 model
                     .insert()
                     .text("MCP Config")
+                    .icon(crate::ui::icons::get_icon("configure-symbolic", 16))
                     .data(NavigationPage::MCPConfig);
                 model
                     .insert()
                     .text("Settings")
+                    .icon(crate::ui::icons::get_icon("settings-symbolic", 16))
                     .data(NavigationPage::Settings)
                     .divider_above(true);
                 // Activate first item - collect entity first to avoid borrow issues
