@@ -1195,7 +1195,7 @@ impl Application for CosmicLlmApp {
                 }
             }
             Message::MarkdownLinkClicked(url) => {
-                let _ = webbrowser::open(&url);
+                let _ = webbrowser::open(url.as_str());
             }
         }
         
@@ -1442,30 +1442,45 @@ impl CosmicLlmApp {
                     for (i, msg) in self.messages.iter().enumerate() {
                         let content = msg.content.clone();
                         let message_widget = cosmic::widget::container(
-                            cosmic::widget::row::with_capacity(2)
-                                .push(
-                                    if msg.is_user {
+                            {
+                                let content_widget: Element<Message> = if msg.is_user {
+                                    widget::container(
                                         cosmic::widget::text(&msg.content)
                                             .size(14)
-                                            .width(Length::Fill)
                                             .class(cosmic::style::Text::Color(cosmic::iced::Color::WHITE))
-                                            .into()
-                                    } else {
+                                    )
+                                    .width(Length::Fill)
+                                    .into()
+                                } else {
+                                    widget::container(
                                         widget::lazy(&msg.content, |_| {
                                             let items = markdown::parse(&msg.content).collect::<Vec<_>>();
-                                            widget::markdown(&items)
+                                            let style = widget::markdown::Style {
+                                                inline_code_padding: cosmic::iced::Padding::from([1, 2]),
+                                                inline_code_highlight: widget::markdown::Highlight {
+                                                    background: cosmic::iced::Background::Color(cosmic::iced::Color::from_rgb(0.1, 0.1, 0.1)),
+                                                    border: cosmic::iced::Border::default().rounded(2),
+                                                },
+                                                inline_code_color: cosmic::iced::Color::WHITE,
+                                                link_color: cosmic::iced::Color::from_rgb(0.3, 0.6, 1.0),
+                                            };
+                                            widget::markdown(&items, widget::markdown::Settings::default(), style)
                                                 .map(Message::MarkdownLinkClicked)
                                         })
-                                        .width(Length::Fill)
-                                        .into()
-                                    }
-                                )
+                                    )
+                                    .width(Length::Fill)
+                                    .into()
+                                };
+                                
+                                cosmic::widget::row::with_capacity(2)
+                                .push(content_widget)
                                 .push(
                                     cosmic::widget::button::text("📋")
                                         .on_press(Message::ShowMessageDialog(content))
                                         .padding(4)
                                         .class(cosmic::style::Button::Text)
                                 )
+                            }
                         )
                         .padding(Padding::from([12, 16]))
                         .class(if msg.is_user {
@@ -1640,10 +1655,12 @@ impl CosmicLlmApp {
                                 .push(
                                     // Stop button (only visible when streaming)
                                     if self.is_streaming {
-                                        widget::button::destructive(widget::icon::from_name("process-stop-symbolic"))
+                                        widget::button::icon(widget::icon::from_name("process-stop-symbolic"))
+                                            .class(widget::button::ButtonClass::Destructive)
                                             .on_press(Message::StopMessage)
                                     } else {
-                                        widget::button::destructive(widget::icon::from_name("process-stop-symbolic"))
+                                        widget::button::icon(widget::icon::from_name("process-stop-symbolic"))
+                                            .class(widget::button::ButtonClass::Destructive)
                                     }
                                 )
                                 .push(
