@@ -110,6 +110,9 @@ Luna AI is built with modern Rust and the COSMIC desktop framework:
   
   <img src="res/screenshots/settings.png" alt="Settings" width="800"/>
   <p><em>Configure your AI backends and preferences</em></p>
+
+  <img src="res/screenshots/mcp.png" alt="MCP Integration" width="800"/>
+  <p><em>Powerful MCP tool integration and configuration</em></p>
 </div>
 
 ## 🤝 Contributing

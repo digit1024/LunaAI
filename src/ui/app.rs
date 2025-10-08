@@ -1820,7 +1820,8 @@ impl CosmicLlmApp {
                         .push(cosmic::widget::Space::with_width(Length::Fill))
                         .push(
                             // New chat icon button
-                            widget::button::icon(crate::ui::icons::get_handle("tab-new-symbolic", 16))
+                            widget::button::icon(crate::ui::icons::get_handle("plus-circle-filled-symbolic", 16))
+                                .class(widget::button::ButtonClass::Suggested)
                                 .on_press(Message::NewConversation)
                         )
                         .spacing(12)
