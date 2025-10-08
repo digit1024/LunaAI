@@ -58,6 +58,13 @@ impl AgenticLoop {
                 Ok(response) => response,
                 Err(e) => {
                     log::error!("❌ LLM call failed: {}", e);
+                    // Send model error via AgentUpdate
+                    if let Some(tx) = agent_tx.as_ref() {
+                        let _ = tx.send(AgentUpdate::ModelError { 
+                            turn_id, 
+                            error: format!("Model communication failed: {}", e)
+                        });
+                    }
                     return Err(anyhow::anyhow!("LLM call failed: {}", e));
                 },
             };

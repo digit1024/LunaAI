@@ -190,6 +190,7 @@ pub struct CosmicLlmApp {
 pub struct ChatMessage {
     pub content: String,
     pub is_user: bool,
+    pub is_error: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -422,9 +423,10 @@ impl CosmicLlmApp {
                         // Final response is sent via AgentUpdate::EndConversation
                     }
                     Err(e) => {
-                        // Send error via AgentUpdate
-                        let _ = tx_agent.send(AgentUpdate::EndConversation { 
-                            final_text: format!("Error: {}", e) 
+                        // Send error via AgentUpdate - this handles cases where the loop fails completely
+                        let _ = tx_agent.send(AgentUpdate::ModelError { 
+                            turn_id: uuid::Uuid::new_v4(), // Generate a turn ID for the error
+                            error: format!("Agent processing failed: {}", e)
                         });
                     }
                 }
@@ -560,6 +562,7 @@ impl Application for CosmicLlmApp {
         app.messages.push(ChatMessage {
             content: "Welcome to Cosmic AI".to_string(),
             is_user: false,
+            is_error: false,
         });
         
         // Load MCP tools on startup (same as refresh button)
@@ -631,6 +634,7 @@ impl Application for CosmicLlmApp {
                     let user_msg = ChatMessage {
                         content: message_content,
                         is_user: true,
+                        is_error: false,
                     };
                     self.messages.push(user_msg.clone());
                     
@@ -868,6 +872,7 @@ impl Application for CosmicLlmApp {
                         ChatMessage {
                             content: msg.content.clone(),
                             is_user: msg.role == "user",
+                            is_error: false,
                         }
                     }).collect();
                 }
@@ -898,7 +903,7 @@ impl Application for CosmicLlmApp {
                         // Start a new turn bubble
                         self.turns.push(Turn { id: turn_id, iteration, text: plan_summary.unwrap_or_default(), complete: false, tools: Vec::new() });
                         // Always create a fresh assistant message bubble for this turn
-                        self.messages.push(ChatMessage { content: String::from(""), is_user: false });
+                        self.messages.push(ChatMessage { content: String::from(""), is_user: false, is_error: false });
                         self.current_ai_message_index = Some(self.messages.len() - 1);
                     }
                     AgentUpdate::AssistantDelta { turn_id: _, text_chunk, seq: _ } => {
@@ -924,7 +929,7 @@ impl Application for CosmicLlmApp {
                             }
                         }
                         if !wrote {
-                            self.messages.push(ChatMessage { content: full_text.clone(), is_user: false });
+                            self.messages.push(ChatMessage { content: full_text.clone(), is_user: false, is_error: false });
                             self.current_ai_message_index = Some(self.messages.len() - 1);
                         }
                         if !full_text.trim().is_empty() {
@@ -1021,6 +1026,21 @@ impl Application for CosmicLlmApp {
                         self.pending_llm_messages = None; // Clear prepared messages
                         // Clear any leftover active tool rows (e.g., from placeholders)
                         self.active_tool_calls.clear();
+                    }
+                    AgentUpdate::ModelError { turn_id: _, error } => {
+                        // Stop streaming and show error message
+                        self.is_streaming = false;
+                        self.current_streaming_id = None;
+                        self.current_ai_message_index = None;
+                        self.pending_llm_messages = None;
+                        self.active_tool_calls.clear();
+                        
+                        // Add error message as a separate chat bubble
+                        self.messages.push(ChatMessage { 
+                            content: format!("❌ **Model Communication Error**\n\n{}", error), 
+                            is_user: false,
+                            is_error: true
+                        });
                     }
                     AgentUpdate::Heartbeat { turn_id: _, ts_ms: _ } => {}
                 }
@@ -1463,6 +1483,14 @@ impl CosmicLlmApp {
                                     )
                                     .width(Length::Fill)
                                     .into()
+                                } else if msg.is_error {
+                                    widget::container(
+                                        cosmic::widget::text(&msg.content)
+                                            .size(14)
+                                            .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.8, 0.2, 0.2)))
+                                    )
+                                    .width(Length::Fill)
+                                    .into()
                                 } else {
                                     widget::container(
                                         widget::lazy(&msg.content, |_| {
@@ -1497,6 +1525,8 @@ impl CosmicLlmApp {
                         .padding(Padding::from([12, 16]))
                         .class(if msg.is_user {
                             cosmic::style::Container::Primary
+                        } else if msg.is_error {
+                            cosmic::style::Container::Card
                         } else {
                             cosmic::style::Container::Card
                         })
