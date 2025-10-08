@@ -62,6 +62,11 @@ pub enum Message {
     // MCP actions
     MCPToolsUpdated(Vec<crate::llm::ToolDefinition>),
     RefreshMCPTools,
+    // Tool toggle actions
+    ToggleAllTools(bool), // true = enable all, false = disable all
+    ToggleTool(String, bool), // tool_name, enabled
+    ShowToolsContext,
+    HideToolsContext,
     // Markdown link handling
     MarkdownLinkClicked(widget::markdown::Url),
 }
@@ -167,6 +172,10 @@ pub struct CosmicLlmApp {
     dialog_text_input_id: widget::Id,
     // MCP tools cache
     available_mcp_tools: Vec<crate::llm::ToolDefinition>,
+    // Tool enable/disable state (tool_name -> enabled)
+    tool_states: std::collections::HashMap<String, bool>,
+    // Show tools context panel
+    show_tools_context: bool,
     // Store last user message for retry functionality
     last_user_message: Option<String>,
     // Store attached files
@@ -292,6 +301,8 @@ impl CosmicLlmApp {
             dialog: None,
             dialog_text_input_id: widget::Id::unique(),
             available_mcp_tools: Vec::new(),
+            tool_states: std::collections::HashMap::new(),
+            show_tools_context: false,
             last_user_message: None,
             attached_files: Vec::new(),
             current_error: None,
@@ -551,7 +562,18 @@ impl Application for CosmicLlmApp {
             is_user: false,
         });
         
-        let tasks = vec![];
+        // Load MCP tools on startup (same as refresh button)
+        let load_tools_task = cosmic::Task::perform(
+            async move {
+                // Wait for MCP servers to initialize (give them more time)
+                tokio::time::sleep(tokio::time::Duration::from_millis(5000)).await;
+                println!("🔄 Startup: Attempting to refresh MCP tools...");
+                cosmic::Action::App(Message::RefreshMCPTools)
+            },
+            |msg| msg,
+        );
+        
+        let tasks = vec![load_tools_task];
 
         (app, app::Task::batch(tasks))
     }
@@ -828,11 +850,12 @@ impl Application for CosmicLlmApp {
             Message::NavigateTo(page) => {
                 self.current_page = page;
                 
-                // Refresh MCP tools when navigating to MCP config page
-                if page == NavigationPage::MCPConfig {
+                // Refresh MCP tools when navigating to MCP config page or Chat page
+                if page == NavigationPage::MCPConfig || page == NavigationPage::Chat {
                     // Immediately try to get cached tools
                     if let Ok(registry) = self.mcp_registry.try_read() {
                         self.available_mcp_tools = registry.get_available_tools();
+                        self.tool_states = registry.get_tool_states();
                     }
                 }
             }
@@ -1196,12 +1219,64 @@ impl Application for CosmicLlmApp {
             }
             Message::MCPToolsUpdated(tools) => {
                 self.available_mcp_tools = tools;
+                // Sync tool states from registry
+                if let Ok(registry) = self.mcp_registry.try_read() {
+                    self.tool_states = registry.get_tool_states();
+                }
             }
             Message::RefreshMCPTools => {
                 // Try to get tools synchronously from registry
                 if let Ok(registry) = self.mcp_registry.try_read() {
-                    self.available_mcp_tools = registry.get_available_tools();
+                    let tools = registry.get_available_tools();
+                    println!("🔄 RefreshMCPTools: Found {} tools", tools.len());
+                    self.available_mcp_tools = tools;
+                    // Also sync tool states
+                    self.tool_states = registry.get_tool_states();
+                } else {
+                    println!("🔄 RefreshMCPTools: Failed to get registry read lock");
                 }
+            }
+            Message::ToggleAllTools(enabled) => {
+                // Update local state
+                for tool in &self.available_mcp_tools {
+                    self.tool_states.insert(tool.name.clone(), enabled);
+                }
+                // Update registry asynchronously
+                let mcp_registry = self.mcp_registry.clone();
+                return cosmic::Task::perform(
+                    async move {
+                        let mut registry = mcp_registry.write().await;
+                        if enabled {
+                            registry.enable_all_tools();
+                        } else {
+                            registry.disable_all_tools();
+                        }
+                        cosmic::Action::App(Message::RefreshMCPTools)
+                    },
+                    |msg| msg,
+                );
+            }
+            Message::ToggleTool(tool_name, enabled) => {
+                // Update local state
+                self.tool_states.insert(tool_name.clone(), enabled);
+                // Update registry asynchronously
+                let mcp_registry = self.mcp_registry.clone();
+                return cosmic::Task::perform(
+                    async move {
+                        let mut registry = mcp_registry.write().await;
+                        registry.set_tool_enabled(&tool_name, enabled);
+                        cosmic::Action::App(Message::RefreshMCPTools)
+                    },
+                    |msg| msg,
+                );
+            }
+            Message::ShowToolsContext => {
+                self.show_tools_context = true;
+                self.core.window.show_context = true;
+            }
+            Message::HideToolsContext => {
+                self.show_tools_context = false;
+                self.core.window.show_context = false;
             }
             Message::MarkdownLinkClicked(url) => {
                 let _ = webbrowser::open(url.as_str());
@@ -1285,14 +1360,23 @@ impl Application for CosmicLlmApp {
         if !self.core.window.show_context {
             return None;
         }
-        Some(match self.context_page {
-            ContextPage::About => app::context_drawer::about(
-                &self.about,
-                |url| Message::OpenUrl(url.to_string()),
-                Message::CloseAbout,
+        
+        if self.show_tools_context {
+            Some(app::context_drawer::context_drawer(
+                self.tools_context_view(),
+                Message::HideToolsContext,
             )
-            .title(self.context_page.title()),  // Dynamic title from ContextPage (pattern from msToDO)
-        })
+            .title("Tool Configuration"))
+        } else {
+            Some(match self.context_page {
+                ContextPage::About => app::context_drawer::about(
+                    &self.about,
+                    |url| Message::OpenUrl(url.to_string()),
+                    Message::CloseAbout,
+                )
+                .title(self.context_page.title()),  // Dynamic title from ContextPage (pattern from msToDO)
+            })
+        }
     }
 }
 
@@ -1352,91 +1436,10 @@ impl CosmicLlmApp {
     fn chat_view(&self) -> Element<Message> {
         use cosmic::iced::{Length, Padding};
         
-        cosmic::widget::column::with_capacity(4)
+        cosmic::widget::column::with_capacity(3)
             .push(
-                // Top panel with title, model, created at, message count, and New Chat
-                {
-                    let (title, created_text, msg_count) = if let Some(id) = self.current_conversation_id {
-                        if let Ok(Some(conv)) = self.storage.get_conversation(&id) {
-                            let created = conv.created_at.format("%Y-%m-%d %H:%M").to_string();
-                            // Prefer the latest title from the on-disk index (updated by background tasks)
-                            let index = self.storage.list_conversations_from_index().unwrap_or_else(|e| {
-                                eprintln!("Failed to list conversations: {}", e);
-                                Vec::new()
-                            });
-                            let latest_title = index
-                                .into_iter()
-                                .find(|ci| ci.id == id)
-                                .map(|ci| ci.title)
-                                .unwrap_or_else(|| conv.title.clone());
-                            (latest_title, Some(created), conv.messages.len())
-                        } else {
-                            ("New Chat".to_string(), None, self.messages.len())
-                        }
-                    } else {
-                        ("New Chat".to_string(), None, self.messages.len())
-                    };
-                    let _model = self.config.get_default_profile().map(|p| p.model.clone()).unwrap_or_else(|| "".to_string());
-                    let created_label = created_text.unwrap_or_else(|| "".to_string());
-                    cosmic::widget::container(
-                        cosmic::widget::row::with_capacity(5)
-                            .push(
-                                cosmic::widget::text(title)
-                                    .size(18)
-                            )
-                            .push(cosmic::widget::Space::with_width(Length::Fill))
-                            .push(
-                                // Profile selection dropdown (affects model/provider)
-                                {
-                                let mut names: Vec<String> = self.config.profiles.keys().cloned().collect();
-                                names.sort(); // Sort alphabetically for consistent order
-                                let idx = names.iter().position(|k| k == &self.config.default);
-                                widget::dropdown(names, idx, Message::ChangeDefaultProfile)
-                                }
-                            )
-                            .push(
-                                cosmic::widget::text(
-                                    if created_label.is_empty() { "".to_string() } else { format!("Created: {}", created_label) }
-                                )
-                                    .size(12)
-                                    .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.4, 0.4, 0.4)))
-                            )
-                            .push(
-                                cosmic::widget::text(format!("Messages: {}", msg_count))
-                                    .size(12)
-                                    .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.4, 0.4, 0.4)))
-                            )
-                            .push(
-                                widget::button::suggested("New Chat")
-                                    .on_press(Message::NewConversation)
-                            )
-                            .spacing(12)
-                            .align_y(cosmic::iced::Alignment::Center)
-                    )
-                    .padding(12)
-                    .class(cosmic::style::Container::Card)
-                }
-            )
-            .push(
-                // Tool status indicator
-                if self.is_streaming {
-                    cosmic::widget::container(
-                        cosmic::widget::row::with_capacity(2)
-                            .push(
-                                cosmic::widget::text("🔧")
-                                    .size(16)
-                            )
-                            
-                            .spacing(8)
-                            .align_y(cosmic::iced::Alignment::Center)
-                    )
-                    .padding(8)
-                    .class(cosmic::style::Container::Card)
-                } else {
-                    cosmic::widget::container(
-                        cosmic::widget::Space::with_height(Length::Shrink)
-                    )
-                }
+                // Combined top panel with tools
+                self.combined_top_panel()
             )
             .push(
                 // Spacing between top panel and messages
@@ -1696,6 +1699,313 @@ impl CosmicLlmApp {
             .into()
     }
 
+    fn combined_top_panel(&self) -> Element<Message> {
+        use cosmic::iced::Length;
+        
+        // Count enabled/disabled tools
+        let total_tools = self.available_mcp_tools.len();
+        let enabled_count = self.available_mcp_tools.iter()
+            .filter(|tool| self.tool_states.get(&tool.name).copied().unwrap_or(true))
+            .count();
+        
+        // Conversation info
+        let (title, created_text, msg_count) = if let Some(id) = self.current_conversation_id {
+            if let Ok(Some(conv)) = self.storage.get_conversation(&id) {
+                let created = conv.created_at.format("%Y-%m-%d %H:%M").to_string();
+                // Prefer the latest title from the on-disk index (updated by background tasks)
+                let index = self.storage.list_conversations_from_index().unwrap_or_else(|e| {
+                    eprintln!("Failed to list conversations: {}", e);
+                    Vec::new()
+                });
+                let latest_title = index
+                    .into_iter()
+                    .find(|ci| ci.id == id)
+                    .map(|ci| ci.title)
+                    .unwrap_or_else(|| conv.title.clone());
+                (latest_title, Some(created), conv.messages.len())
+            } else {
+                ("New Chat".to_string(), None, self.messages.len())
+            }
+        } else {
+            ("New Chat".to_string(), None, self.messages.len())
+        };
+        
+        let created_label = created_text.unwrap_or_else(|| "".to_string());
+        
+        cosmic::widget::container(
+            cosmic::widget::column::with_capacity(2)
+                .push(
+                    // Top row: conversation info and profile
+                    cosmic::widget::row::with_capacity(5)
+                        .push(
+                            cosmic::widget::text(title)
+                                .size(18)
+                        )
+                        .push(cosmic::widget::Space::with_width(Length::Fill))
+                        .push(
+                            // Profile selection dropdown
+                            {
+                                let mut names: Vec<String> = self.config.profiles.keys().cloned().collect();
+                                names.sort();
+                                let idx = names.iter().position(|k| k == &self.config.default);
+                                widget::dropdown(names, idx, Message::ChangeDefaultProfile)
+                            }
+                        )
+                        .push(
+                            cosmic::widget::text(
+                                if created_label.is_empty() { "".to_string() } else { format!("Created: {}", created_label) }
+                            )
+                                .size(12)
+                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.4, 0.4, 0.4)))
+                        )
+                        .push(
+                            cosmic::widget::text(format!("Messages: {}", msg_count))
+                                .size(12)
+                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.4, 0.4, 0.4)))
+                        )
+                        .push(
+                            widget::button::suggested("New Chat")
+                                .on_press(Message::NewConversation)
+                        )
+                        .spacing(12)
+                        .align_y(cosmic::iced::Alignment::Center)
+                )
+                .push(
+                    // Bottom row: tool controls
+                    if total_tools == 0 {
+                        // Show a message when no tools are configured
+                        cosmic::widget::row::with_capacity(2)
+                            .push(
+                                cosmic::widget::text("🔧 No MCP tools configured")
+                                    .size(12)
+                                    .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5)))
+                            )
+                            .push(cosmic::widget::horizontal_space())
+                            .push(
+                                cosmic::widget::button::text("Configure")
+                                    .on_press(Message::ShowToolsContext)
+                                    .padding(4)
+                                    .class(cosmic::style::Button::Text)
+                            )
+                            .spacing(8)
+                            .align_y(cosmic::iced::Alignment::Center)
+                    } else {
+                        // Tool controls
+                        cosmic::widget::row::with_capacity(4)
+                            .push(
+                                cosmic::widget::text(format!("🔧 Tools: {} / {} enabled", enabled_count, total_tools))
+                                    .size(12)
+                            )
+                            .push(cosmic::widget::horizontal_space())
+                            .push(
+                                cosmic::widget::row::with_capacity(3)
+                                    .push(
+                                        cosmic::widget::button::text("Enable All")
+                                            .on_press(Message::ToggleAllTools(true))
+                                            .padding(4)
+                                            .class(cosmic::style::Button::Text)
+                                    )
+                                    .push(
+                                        cosmic::widget::button::text("Disable All")
+                                            .on_press(Message::ToggleAllTools(false))
+                                            .padding(4)
+                                            .class(cosmic::style::Button::Text)
+                                    )
+                                    .push(
+                                        cosmic::widget::button::text("Configure")
+                                            .on_press(Message::ShowToolsContext)
+                                            .padding(4)
+                                            .class(cosmic::style::Button::Text)
+                                    )
+                                    .spacing(8)
+                            )
+                            .spacing(8)
+                            .align_y(cosmic::iced::Alignment::Center)
+                    }
+                )
+                .spacing(8)
+        )
+        .padding(12)
+        .class(cosmic::style::Container::Card)
+        .into()
+    }
+
+    fn tool_controls_inline(&self) -> Element<Message> {
+        
+        // Count enabled/disabled tools
+        let total_tools = self.available_mcp_tools.len();
+        let enabled_count = self.available_mcp_tools.iter()
+            .filter(|tool| self.tool_states.get(&tool.name).copied().unwrap_or(true))
+            .count();
+        
+        if total_tools == 0 {
+            // Show a message when no tools are configured
+            return cosmic::widget::container(
+                cosmic::widget::row::with_capacity(2)
+                    .push(
+                        cosmic::widget::text("🔧 No MCP tools configured")
+                            .size(12)
+                            .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5)))
+                    )
+                    .push(cosmic::widget::horizontal_space())
+                    .push(
+                        cosmic::widget::button::text("Configure")
+                            .on_press(Message::ShowToolsContext)
+                            .padding(4)
+                            .class(cosmic::style::Button::Text)
+                    )
+                    .spacing(8)
+                    .align_y(cosmic::iced::Alignment::Center)
+            )
+            .padding(8)
+            .class(cosmic::style::Container::Card)
+            .into();
+        }
+        
+        // Inline tool controls in top panel
+        cosmic::widget::container(
+            cosmic::widget::row::with_capacity(4)
+                .push(
+                    cosmic::widget::text(format!("🔧 Tools: {} / {} enabled", enabled_count, total_tools))
+                        .size(12)
+                )
+                .push(cosmic::widget::horizontal_space())
+                .push(
+                    cosmic::widget::row::with_capacity(3)
+                        .push(
+                            cosmic::widget::button::text("Enable All")
+                                .on_press(Message::ToggleAllTools(true))
+                                .padding(4)
+                                .class(cosmic::style::Button::Text)
+                        )
+                        .push(
+                            cosmic::widget::button::text("Disable All")
+                                .on_press(Message::ToggleAllTools(false))
+                                .padding(4)
+                                .class(cosmic::style::Button::Text)
+                        )
+                        .push(
+                            cosmic::widget::button::text("Configure")
+                                .on_press(Message::ShowToolsContext)
+                                .padding(4)
+                                .class(cosmic::style::Button::Text)
+                        )
+                        .spacing(8)
+                )
+                .spacing(8)
+                .align_y(cosmic::iced::Alignment::Center)
+        )
+        .padding(8)
+        .class(cosmic::style::Container::Card)
+        .into()
+    }
+
+    fn tools_context_view(&self) -> Element<Message> {
+        use cosmic::iced::Length;
+        
+        let total_tools = self.available_mcp_tools.len();
+        let enabled_count = self.available_mcp_tools.iter()
+            .filter(|tool| self.tool_states.get(&tool.name).copied().unwrap_or(true))
+            .count();
+        
+        cosmic::widget::column::with_capacity(3)
+            .push(
+                // Header with summary and controls
+                cosmic::widget::container(
+                    cosmic::widget::column::with_capacity(2)
+                        .push(
+                            cosmic::widget::text(format!("🔧 Tools: {} / {} enabled", enabled_count, total_tools))
+                                .size(16)
+                        )
+                        .push(
+                            cosmic::widget::row::with_capacity(2)
+                                .push(
+                                    cosmic::widget::button::text("Enable All")
+                                        .on_press(Message::ToggleAllTools(true))
+                                        .padding(6)
+                                        .class(cosmic::style::Button::Text)
+                                )
+                                .push(
+                                    cosmic::widget::button::text("Disable All")
+                                        .on_press(Message::ToggleAllTools(false))
+                                        .padding(6)
+                                        .class(cosmic::style::Button::Text)
+                                )
+                                .spacing(8)
+                        )
+                        .spacing(8)
+                )
+                .padding(16)
+                .class(cosmic::style::Container::Card)
+            )
+            .push(
+                // Tool list
+                if self.available_mcp_tools.is_empty() {
+                    Element::from(
+                        cosmic::widget::container(
+                            cosmic::widget::column::with_capacity(2)
+                                .push(
+                                    cosmic::widget::text("No tools available")
+                                        .size(14)
+                                )
+                                .push(
+                                    cosmic::widget::text("Configure MCP servers to see tools here")
+                                        .size(12)
+                                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
+                                )
+                                .spacing(4)
+                        )
+                        .padding(16)
+                        .class(cosmic::style::Container::Card)
+                    )
+                } else {
+                    let mut tool_list = cosmic::widget::column::with_capacity(self.available_mcp_tools.len())
+                        .spacing(4);
+                    
+                    for tool in &self.available_mcp_tools {
+                        let is_enabled = self.tool_states.get(&tool.name).copied().unwrap_or(true);
+                        let tool_row = cosmic::widget::container(
+                            cosmic::widget::column::with_capacity(3)
+                                .push(
+                                    cosmic::widget::row::with_capacity(2)
+                                        .push(
+                                            cosmic::widget::toggler(is_enabled)
+                                                .on_toggle(|enabled| Message::ToggleTool(tool.name.clone(), enabled))
+                                        )
+                                        .push(
+                                            cosmic::widget::text(&tool.name)
+                                                .size(14)
+                                                .class(if is_enabled {
+                                                    cosmic::style::Text::Default
+                                                } else {
+                                                    cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5))
+                                                })
+                                        )
+                                        .spacing(8)
+                                        .align_y(cosmic::iced::Alignment::Center)
+                                )
+                                .push(
+                                    cosmic::widget::text(&tool.description)
+                                        .size(12)
+                                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
+                                )
+                                .spacing(4)
+                        )
+                        .padding(12)
+                        .class(cosmic::style::Container::Card);
+                        
+                        tool_list = tool_list.push(tool_row);
+                    }
+                    
+                    cosmic::widget::scrollable(tool_list)
+                        .height(Length::Fill)
+                        .into()
+                }
+            )
+            .spacing(8)
+            .into()
+    }
+
     fn history_view(&self) -> Element<Message> {
         let conversations = self.storage.list_conversations_from_index().unwrap_or_else(|e| {
             eprintln!("Failed to list conversations: {}", e);
@@ -1745,12 +2055,45 @@ impl CosmicLlmApp {
     }
 
     fn mcp_config_view(&self) -> Element<Message> {
-        let server_count = self.config.mcp.servers.len();
+        // Load the actual MCP config (same as startup)
+        let mcp_config = crate::config::MCPConfig::load_from_json()
+            .unwrap_or_else(|_| self.config.mcp.clone());
+        
+        let server_count = mcp_config.servers.len();
         let server_count_text = format!("Configured MCP Servers ({})", server_count);
         
         // Get available tools from MCP registry
         let tools = &self.available_mcp_tools;
         let tool_count_text = format!("Available Tools ({})", tools.len());
+        
+        // Build server list with owned data
+        let mut server_column = cosmic::widget::column::with_capacity(mcp_config.servers.len());
+        for (server_name, server_config) in mcp_config.servers {
+            let command_text = format!("Command: {} {}", 
+                server_config.command,
+                server_config.args.join(" ")
+            );
+            
+            let server_widget = cosmic::widget::container(
+                cosmic::widget::column::with_capacity(3)
+                    .push(
+                        cosmic::widget::text(server_name)
+                            .size(14)
+                    )
+                    .push(
+                        cosmic::widget::text("Type: stdio")
+                            .size(12)
+                    )
+                    .push(
+                        cosmic::widget::text(command_text)
+                            .size(10)
+                    )
+            )
+            .padding(8)
+            .class(cosmic::style::Container::Card);
+            
+            server_column = server_column.push(server_widget);
+        }
         
         cosmic::widget::column::with_capacity(4)
             .push(
@@ -1768,38 +2111,9 @@ impl CosmicLlmApp {
                 .padding(16)
             )
             .push(
-                {
-                    let mut column = cosmic::widget::column::with_capacity(self.config.mcp.servers.len());
-                    for (server_name, server_config) in &self.config.mcp.servers {
-                        let command_text = format!("Command: {} {}", 
-                            server_config.command,
-                            server_config.args.join(" ")
-                        );
-                        
-                        column = column.push(
-                            cosmic::widget::container(
-                                cosmic::widget::column::with_capacity(3)
-                                    .push(
-                                        cosmic::widget::text(server_name)
-                                            .size(14)
-                                    )
-                                    .push(
-                                        cosmic::widget::text("Type: stdio")
-                                            .size(12)
-                                    )
-                                    .push(
-                                        cosmic::widget::text(command_text)
-                                            .size(10)
-                                    )
-                            )
-                            .padding(8)
-                            .class(cosmic::style::Container::Card)
-                        );
-                    }
-                    scrollable(column)
-                }
-                .height(Length::FillPortion(2))
-                .width(Length::Fill)
+                scrollable(server_column)
+                    .height(Length::FillPortion(2))
+                    .width(Length::Fill)
             )
             .push(
                 cosmic::widget::container(

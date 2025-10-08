@@ -40,11 +40,11 @@ impl AgenticLoop {
                 });
             }
             
-            // Get available tools from MCP registry
+            // Get enabled tools from MCP registry
             let available_tools = {
                 let registry = self.mcp_registry.read().await;
-                let tools = registry.get_available_tools();
-                log::debug!("🔧 Available tools count: {}", tools.len());
+                let tools = registry.get_enabled_tools();
+                log::debug!("🔧 Enabled tools count: {}", tools.len());
                 tools
             };
             
