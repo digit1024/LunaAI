@@ -1288,7 +1288,7 @@ impl Application for CosmicLlmApp {
         Some(match self.context_page {
             ContextPage::About => app::context_drawer::about(
                 &self.about,
-                Message::OpenUrl,
+                |url| Message::OpenUrl(url.to_string()),
                 Message::CloseAbout,
             )
             .title(self.context_page.title()),  // Dynamic title from ContextPage (pattern from msToDO)
