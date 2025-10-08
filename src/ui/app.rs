@@ -70,6 +70,9 @@ pub enum Message {
     HideToolsContext,
     // Markdown link handling
     MarkdownLinkClicked(widget::markdown::Url),
+    // Search functionality
+    SearchChanged(String),
+    SearchResults(Vec<crate::storage::sqlite_storage_simple::Snippet>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,6 +189,9 @@ pub struct CosmicLlmApp {
     current_error: Option<String>,
     // Store prepared LLM messages with attachments for the current request
     pending_llm_messages: Option<Vec<crate::llm::Message>>,
+    // Search functionality
+    search_query: String,
+    search_results: Vec<crate::storage::sqlite_storage_simple::Snippet>,
 }
 
 #[derive(Debug, Clone)]
@@ -315,6 +321,8 @@ impl CosmicLlmApp {
             attached_files: Vec::new(),
             current_error: None,
             pending_llm_messages: None,
+            search_query: String::new(),
+            search_results: Vec::new(),
         }
     }
     
@@ -1313,6 +1321,28 @@ impl Application for CosmicLlmApp {
             Message::MarkdownLinkClicked(url) => {
                 let _ = webbrowser::open(url.as_str());
             }
+            Message::SearchChanged(query) => {
+                self.search_query = query.clone();
+                // Perform search if query is not empty
+                if !query.trim().is_empty() {
+                    // Perform search synchronously since Storage doesn't implement Clone
+                    match self.storage.search_history(&query, 50) {
+                        Ok(results) => {
+                            self.search_results = results;
+                        }
+                        Err(e) => {
+                            eprintln!("Search error: {}", e);
+                            self.search_results.clear();
+                        }
+                    }
+                } else {
+                    // Clear search results if query is empty
+                    self.search_results.clear();
+                }
+            }
+            Message::SearchResults(results) => {
+                self.search_results = results;
+            }
         }
         
         app::Task::none()
@@ -2037,45 +2067,236 @@ impl CosmicLlmApp {
             Vec::new()
         });
         
-        cosmic::widget::column::with_capacity(2)
+        cosmic::widget::column::with_capacity(3)
             .push(
+                // Enhanced header with icon and stats
                 cosmic::widget::container(
-                    cosmic::widget::text("Conversation History")
-                        .size(20)
+                    cosmic::widget::row::with_capacity(3)
+                        .push(
+                            cosmic::widget::row::with_capacity(2)
+                                .push(
+                                    widget::icon::from_name("list-large-symbolic")
+                                        .size(20)
+                                )
+                                .push(
+                                    cosmic::widget::text("Conversation History")
+                                        .size(20)
+                                )
+                                .spacing(8)
+                                .align_y(cosmic::iced::Alignment::Center)
+                        )
+                        .push(cosmic::widget::Space::with_width(Length::Fill))
+                        .push(
+                            cosmic::widget::text(format!("{} conversations", conversations.len()))
+                                .size(12)
+                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
+                        )
+                        .spacing(12)
+                        .align_y(cosmic::iced::Alignment::Center)
                 )
                 .padding(16)
+                .class(cosmic::style::Container::Card)
             )
             .push(
+                // Search bar
+                cosmic::widget::container(
+                    cosmic::widget::row::with_capacity(2)
+                        .push(
+                            widget::icon::from_name("search-symbolic")
+                                .size(16)
+                        )
+                        .push(
+                            cosmic::widget::text_input("Search conversations...", &self.search_query)
+                                .on_input(Message::SearchChanged)
+                                .width(Length::Fill)
+                        )
+                        .spacing(8)
+                        .align_y(cosmic::iced::Alignment::Center)
+                )
+                .padding(12)
+                .class(cosmic::style::Container::Card)
+            )
+            .push(
+                // Enhanced conversations list or search results
                 {
-                    let mut column = cosmic::widget::column::with_capacity(conversations.len().max(1));
-                    if conversations.is_empty() {
-                        column = column.push(
-                            cosmic::widget::text("No conversations yet. Start a new chat to create your first conversation!")
-                                .size(14)
-                        );
-                    } else {
-                        for conv in conversations {
-                            let title = conv.title.clone();
-                            let date_str = conv.updated_at.format("%Y-%m-%d %H:%M").to_string();
-                            let button_text = format!("{} - {}", title, date_str);
-                            let row = cosmic::widget::row::with_capacity(3)
-                                .push(
-                                    widget::button::text(button_text)
-                                        .on_press(Message::SelectConversation(conv.id))
+                    // Show search results if search is active
+                    if !self.search_query.trim().is_empty() {
+                        let mut column = cosmic::widget::column::with_capacity(self.search_results.len().max(1));
+                        
+                        if self.search_results.is_empty() {
+                            column = column.push(
+                                cosmic::widget::container(
+                                    cosmic::widget::column::with_capacity(3)
+                                        .push(
+                                            widget::icon::from_name("search-symbolic")
+                                                .size(48)
+                                        )
+                                        .push(
+                                            cosmic::widget::text("No results found")
+                                                .size(16)
+                                        )
+                                        .push(
+                                            cosmic::widget::text(format!("No messages found matching '{}'", self.search_query))
+                                                .size(12)
+                                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
+                                        )
+                                        .spacing(8)
+                                        .align_x(cosmic::iced::Alignment::Center)
                                 )
-                                .push(cosmic::widget::Space::with_width(Length::Fill))
-                                .push(
-                                    widget::button::standard("🗑️")
-                                        .on_press(Message::DeleteConversation(conv.id))
-                                ).padding(16);
-                            column = column.push(row);
+                                .padding(32)
+                                .class(cosmic::style::Container::Card)
+                            );
+                        } else {
+                            for result in &self.search_results {
+                                // Parse conversation ID to UUID
+                                if let Ok(conv_id) = Uuid::parse_str(&result.conversation_id) {
+                                    // Get conversation title
+                                    let title = if let Ok(Some(conv)) = self.storage.get_conversation(&conv_id) {
+                                        conv.title
+                                    } else {
+                                        "Unknown Conversation".to_string()
+                                    };
+                                    
+                                    // Format timestamp
+                                    let date_str = chrono::DateTime::from_timestamp(result.timestamp, 0)
+                                        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+                                        .unwrap_or_else(|| "Unknown date".to_string());
+                                    
+                                    // Truncate content for preview
+                                    let preview = if result.content.chars().count() > 200 {
+                                        result.content.chars().take(200).collect::<String>() + "..."
+                                    } else {
+                                        result.content.clone()
+                                    };
+                                    
+                                    let search_result_card = cosmic::widget::container(
+                                        cosmic::widget::column::with_capacity(4)
+                                            .push(
+                                                cosmic::widget::row::with_capacity(3)
+                                                    .push(
+                                                        cosmic::widget::text(title.clone())
+                                                            .size(16)
+                                                    )
+                                                    .push(cosmic::widget::Space::with_width(Length::Fill))
+                                                    .push(
+                                                        cosmic::widget::text(date_str)
+                                                            .size(12)
+                                                            .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
+                                                    )
+                                                    .align_y(cosmic::iced::Alignment::Center)
+                                            )
+                                            .push(
+                                                cosmic::widget::text(preview)
+                                                    .size(12)
+                                                    .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5)))
+                                            )
+                                            .push(
+                                                cosmic::widget::row::with_capacity(2)
+                                                    .push(cosmic::widget::Space::with_width(Length::Fill))
+                                                    .push(
+                                                        widget::button::icon(crate::ui::icons::get_handle("chat-bubble-text-symbolic", 16))
+                                                            .on_press(Message::SelectConversation(conv_id))
+                                                    )
+                                                    .spacing(8)
+                                                    .align_y(cosmic::iced::Alignment::Center)
+                                            )
+                                            .spacing(8)
+                                    )
+                                    .padding(16)
+                                    .class(cosmic::style::Container::Card);
+                                    
+                                    column = column.push(search_result_card);
+                                }
+                            }
                         }
+                        
+                        scrollable(column.spacing(8))
+                    } else {
+                        // Show normal conversation list
+                        let mut column = cosmic::widget::column::with_capacity(conversations.len().max(1));
+                        if conversations.is_empty() {
+                            column = column.push(
+                                cosmic::widget::container(
+                                    cosmic::widget::column::with_capacity(3)
+                                        .push(
+                                            widget::icon::from_name("chat-bubble-empty-symbolic")
+                                                .size(48)
+                                        )
+                                        .push(
+                                            cosmic::widget::text("No conversations yet")
+                                                .size(16)
+                                        )
+                                        .push(
+                                            cosmic::widget::text("Start a new chat to create your first conversation!")
+                                                .size(12)
+                                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
+                                        )
+                                        .spacing(8)
+                                        .align_x(cosmic::iced::Alignment::Center)
+                                )
+                                .padding(32)
+                                .class(cosmic::style::Container::Card)
+                            );
+                        } else {
+                            for conv in conversations {
+                                let title = conv.title.clone();
+                                let date_str = conv.updated_at.format("%Y-%m-%d %H:%M").to_string();
+                                let message_count = 0; // TODO: Get actual message count from conversation
+                                
+                                let conversation_card = cosmic::widget::container(
+                                    cosmic::widget::column::with_capacity(3)
+                                        .push(
+                                            cosmic::widget::row::with_capacity(3)
+                                                .push(
+                                                    cosmic::widget::text(title.clone())
+                                                        .size(16)
+                                                )
+                                                .push(cosmic::widget::Space::with_width(Length::Fill))
+                                                .push(
+                                                    cosmic::widget::text(date_str)
+                                                        .size(12)
+                                                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
+                                                )
+                                                .align_y(cosmic::iced::Alignment::Center)
+                                        )
+                                        .push(
+                                            cosmic::widget::row::with_capacity(2)
+                                                .push(
+                                                    cosmic::widget::text(format!("{} messages", message_count))
+                                                        .size(12)
+                                                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5)))
+                                                )
+                                                .push(cosmic::widget::Space::with_width(Length::Fill))
+                                                .push(
+                                                    cosmic::widget::row::with_capacity(2)
+                                                        .push(
+                                                            widget::button::icon(crate::ui::icons::get_handle("chat-bubble-text-symbolic", 16))
+                                                                .on_press(Message::SelectConversation(conv.id))
+                                                        )
+                                                        .push(
+                                                            widget::button::icon(crate::ui::icons::get_handle("user-trash-full-symbolic", 16))
+                                                                .class(widget::button::ButtonClass::Destructive)
+                                                                .on_press(Message::DeleteConversation(conv.id))
+                                                        )
+                                                        .spacing(8)
+                                                )
+                                                .align_y(cosmic::iced::Alignment::Center)
+                                        )
+                                        .spacing(8)
+                                )
+                                .padding(16)
+                                .class(cosmic::style::Container::Card);
+                                
+                                column = column.push(conversation_card);
+                            }
+                        }
+                        scrollable(column.spacing(8))
                     }
-                    scrollable(column)
                 }
                 .height(Length::Fill)
                 .width(Length::Fill)
             )
+            .spacing(12)
             .into()
     }
 
@@ -2085,152 +2306,195 @@ impl CosmicLlmApp {
             .unwrap_or_else(|_| self.config.mcp.clone());
         
         let server_count = mcp_config.servers.len();
-        let server_count_text = format!("Configured MCP Servers ({})", server_count);
-        
-        // Get available tools from MCP registry
-        let tools = &self.available_mcp_tools;
-        let tool_count_text = format!("Available Tools ({})", tools.len());
+        let enabled_count = self.available_mcp_tools.len();
         
         // Build server list with owned data
         let mut server_column = cosmic::widget::column::with_capacity(mcp_config.servers.len());
         for (server_name, server_config) in mcp_config.servers {
-            let command_text = format!("Command: {} {}", 
+            let command_text = format!("{} {}", 
                 server_config.command,
                 server_config.args.join(" ")
             );
             
-            let server_widget = cosmic::widget::container(
-                cosmic::widget::column::with_capacity(3)
-                    .push(
-                        cosmic::widget::text(server_name)
-                            .size(14)
-                    )
-                    .push(
-                        cosmic::widget::text("Type: stdio")
-                            .size(12)
-                    )
-                    .push(
-                        cosmic::widget::text(command_text)
-                            .size(10)
-                    )
-            )
-            .padding(8)
-            .class(cosmic::style::Container::Card);
+            let server_widget = cosmic::widget::column::with_capacity(4)
+                .push(
+                    cosmic::widget::row::with_capacity(2)
+                        .push(
+                            cosmic::widget::text(server_name.clone())
+                                .size(16)
+                        )
+                        .push(cosmic::widget::Space::with_width(Length::Fill))
+                        .push(
+                            cosmic::widget::text("Connected")
+                                .size(12)
+                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.2, 0.8, 0.2)))
+                        )
+                        .align_y(cosmic::iced::Alignment::Center)
+                )
+                .push(
+                    cosmic::widget::text(format!("Type: stdio"))
+                        .size(12)
+                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
+                )
+                .push(
+                    cosmic::widget::text(format!("Command: {}", command_text))
+                        .size(12)
+                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
+                )
+                .spacing(4);
             
             server_column = server_column.push(server_widget);
         }
         
         cosmic::widget::column::with_capacity(4)
             .push(
-                cosmic::widget::container(
-                    cosmic::widget::text("MCP Configuration")
-                        .size(20)
-                )
-                .padding(16)
-            )
-            .push(
-                cosmic::widget::container(
-                    cosmic::widget::text(server_count_text)
-                        .size(16)
-                )
-                .padding(16)
-            )
-            .push(
-                scrollable(server_column)
-                    .height(Length::FillPortion(2))
-                    .width(Length::Fill)
-            )
-            .push(
-                cosmic::widget::container(
-                    cosmic::widget::row::with_capacity(2)
-                        .push(
-                            cosmic::widget::text(tool_count_text)
-                                .size(16)
-                        )
-                        .push(cosmic::widget::horizontal_space())
-                        .push(
-                            cosmic::widget::button::icon(
-                                cosmic::widget::icon::from_name("view-refresh-symbolic")
+                // Simple header
+                cosmic::widget::row::with_capacity(3)
+                    .push(
+                        cosmic::widget::row::with_capacity(2)
+                            .push(
+                                widget::icon::from_name("configure-symbolic")
+                                    .size(20)
                             )
-                            .on_press(Message::RefreshMCPTools)
-                            .padding(4)
-                        )
-                        .spacing(8)
-                        .align_y(cosmic::iced::Alignment::Center)
-                )
-                .padding(16)
+                            .push(
+                                cosmic::widget::text("MCP Configuration")
+                                    .size(20)
+                            )
+                            .spacing(8)
+                            .align_y(cosmic::iced::Alignment::Center)
+                    )
+                    .push(cosmic::widget::Space::with_width(Length::Fill))
+                    .push(
+                        cosmic::widget::text(format!("{} servers, {} tools", server_count, enabled_count))
+                            .size(12)
+                            .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
+                    )
+                    .spacing(12)
+                    .align_y(cosmic::iced::Alignment::Center)
             )
             .push(
-                {
-                    let mut column = cosmic::widget::column::with_capacity(tools.len());
-                    if tools.is_empty() {
-                        column = column.push(
-                            cosmic::widget::container(
-                                cosmic::widget::column::with_capacity(2)
+                // Servers section
+                cosmic::widget::column::with_capacity(2)
+                    .push(
+                        cosmic::widget::text(format!("MCP Servers ({})", server_count))
+                            .size(16)
+                    )
+                    .push(
+                        if server_count == 0 {
+                            Element::from(
+                                cosmic::widget::column::with_capacity(3)
                                     .push(
-                                        cosmic::widget::text("No tools discovered yet")
-                                            .size(14)
+                                        widget::icon::from_name("network-server-symbolic")
+                                            .size(48)
                                     )
                                     .push(
-                                        cosmic::widget::text("Tools will appear here once MCP servers are connected")
+                                        cosmic::widget::text("No MCP servers configured")
+                                            .size(16)
+                                    )
+                                    .push(
+                                        cosmic::widget::text("Add MCP servers to enable tools and capabilities")
                                             .size(12)
                                             .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
                                     )
-                                    .spacing(4)
+                                    .spacing(8)
+                                    .align_x(cosmic::iced::Alignment::Center)
                             )
-                            .padding(16)
-                            .class(cosmic::style::Container::Card)
-                        );
-                    } else {
-                        for tool in tools.iter() {
-                            // Build input schema text
-                            let input_text = if let Some(properties) = tool.parameters.get("properties") {
-                                if let Some(props_obj) = properties.as_object() {
-                                    let params: Vec<String> = props_obj.keys()
-                                        .map(|k| k.to_string())
-                                        .collect();
-                                    if params.is_empty() {
-                                        "No parameters".to_string()
-                                    } else {
-                                        format!("Parameters: {}", params.join(", "))
-                                    }
-                                } else {
-                                    "Parameters: (schema)".to_string()
-                                }
-                            } else {
-                                "No parameters defined".to_string()
-                            };
-
-                            column = column.push(
-                                cosmic::widget::container(
-                                    cosmic::widget::column::with_capacity(3)
-                                        .push(
-                                            cosmic::widget::text(&tool.name)
-                                                .size(14)
-                                                .font(cosmic::font::Font::MONOSPACE)
-                                        )
-                                        .push(
-                                            cosmic::widget::text(&tool.description)
-                                                .size(12)
-                                        )
-                                        .push(
-                                            cosmic::widget::text(input_text)
-                                                .size(10)
-                                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5)))
-                                        )
-                                        .spacing(4)
-                                )
-                                .padding(12)
-                                .class(cosmic::style::Container::Card)
-                            );
+                        } else {
+                            Element::from(scrollable(server_column))
                         }
-                    }
-                    scrollable(column)
-                }
-                .height(Length::FillPortion(2))
-                .width(Length::Fill)
+                    )
+                    .spacing(12)
             )
+            .push(
+                // Tools section
+                cosmic::widget::column::with_capacity(2)
+                    .push(
+                        cosmic::widget::text(format!("Available Tools ({})", enabled_count))
+                            .size(16)
+                    )
+                    .push(
+                        self.tools_list_view()
+                    )
+                    .spacing(12)
+            )
+            .spacing(16)
             .into()
+    }
+
+    fn tools_list_view(&self) -> Element<Message> {
+        let tools = &self.available_mcp_tools;
+        
+        if tools.is_empty() {
+            return cosmic::widget::column::with_capacity(3)
+                .push(
+                    widget::icon::from_name("tool-symbolic")
+                        .size(48)
+                )
+                .push(
+                    cosmic::widget::text("No tools discovered yet")
+                        .size(16)
+                )
+                .push(
+                    cosmic::widget::text("Tools will appear here once MCP servers are connected")
+                        .size(12)
+                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
+                )
+                .spacing(8)
+                .align_x(cosmic::iced::Alignment::Center)
+                .into();
+        }
+
+        let mut column = cosmic::widget::column::with_capacity(tools.len());
+        for tool in tools.iter() {
+            // Build input schema text
+            let input_text = if let Some(properties) = tool.parameters.get("properties") {
+                if let Some(props_obj) = properties.as_object() {
+                    let params: Vec<String> = props_obj.keys()
+                        .map(|k| k.to_string())
+                        .collect();
+                    if params.is_empty() {
+                        "No parameters".to_string()
+                    } else {
+                        format!("Parameters: {}", params.join(", "))
+                    }
+                } else {
+                    "Parameters: (schema)".to_string()
+                }
+            } else {
+                "No parameters defined".to_string()
+            };
+
+            let tool_item = cosmic::widget::column::with_capacity(3)
+                .push(
+                    cosmic::widget::row::with_capacity(2)
+                        .push(
+                            cosmic::widget::text(&tool.name)
+                                .size(14)
+                                .font(cosmic::font::Font::MONOSPACE)
+                        )
+                        .push(cosmic::widget::Space::with_width(Length::Fill))
+                        .push(
+                            cosmic::widget::text("Available")
+                                .size(10)
+                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.2, 0.8, 0.2)))
+                        )
+                        .align_y(cosmic::iced::Alignment::Center)
+                )
+                .push(
+                    cosmic::widget::text(&tool.description)
+                        .size(12)
+                )
+                .push(
+                    cosmic::widget::text(input_text)
+                        .size(10)
+                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5)))
+                )
+                .spacing(4);
+            
+            column = column.push(tool_item);
+        }
+        
+        scrollable(column).into()
     }
 
     fn settings_view(&self) -> Element<Message> {
