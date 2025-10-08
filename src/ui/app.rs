@@ -1,7 +1,7 @@
 use cosmic::{
     app::{self, Core},
-    iced::{Length, Subscription},
-    widget::{self, text_input, scrollable, menu, text_editor, markdown},
+    iced::{Length, Subscription, keyboard},
+    widget::{self, scrollable, menu, text_editor, markdown},
     Application, Element,
     dialog::file_chooser::{self, FileFilter},
 };
@@ -26,6 +26,7 @@ use crate::agentic::protocol::AgentUpdate;
 #[derive(Debug, Clone)]
 pub enum Message {
     InputChanged(String),
+    InputActionPerformed(text_editor::Action),
     SendMessage,
     StopMessage,
     RetryMessage,
@@ -141,6 +142,7 @@ pub struct CosmicLlmApp {
     storage: Storage,
     prompt_manager: PromptManager,
     input: String,
+    input_content: text_editor::Content,
     messages: Vec<ChatMessage>,
     input_id: cosmic::widget::Id,
     current_page: NavigationPage,
@@ -250,6 +252,7 @@ impl CosmicLlmApp {
             storage,
             prompt_manager,
             input: String::new(),
+            input_content: text_editor::Content::new(),
             messages: Vec::new(),
             input_id: cosmic::widget::Id::unique(),
             current_page: NavigationPage::Chat,
@@ -599,6 +602,10 @@ impl Application for CosmicLlmApp {
             Message::InputChanged(input) => {
                 self.input = input;
             }
+            Message::InputActionPerformed(action) => {
+                self.input_content.perform(action);
+                self.input = self.input_content.text();
+            }
             Message::SendMessage => {
                 println!("🔍 DEBUG: SendMessage received. Input: '{}', Attachments: {}", 
                     self.input, self.attached_files.len());
@@ -652,6 +659,7 @@ impl Application for CosmicLlmApp {
                     // Send to LLM and get response
                     let input_text = self.input.clone();
                     self.input.clear();
+                    self.input_content = text_editor::Content::new();
                     
                     // Do not create a placeholder bubble; BeginTurn will create the assistant bubble
                     self.current_ai_message_index = None;
@@ -1677,49 +1685,48 @@ impl CosmicLlmApp {
                             }
                         )
                         .push(
-                            // Text input for message
-                            text_input("Type your message and press Enter to send...", &self.input)
-                                .id(self.input_id.clone())
-                                .on_input(Message::InputChanged)
-                                .on_submit(|_| Message::SendMessage)
-                                .width(Length::Fill)
-                                .padding(12)
-                        )
-                        .push(
-                            // Button row
-                            cosmic::widget::row::with_capacity(6)
+                            // Input row with buttons inline
+                            cosmic::widget::row::with_capacity(3)
                                 .push(
-                                    // Send button
-                                    widget::button::suggested("Send")
-                                        .on_press(Message::SendMessage)
-                                )
-                                .push(
-                                    // Attach file button
-                                    widget::button::icon(widget::icon::from_name("document-attach-symbolic"))
+                                    // Attach file button (left side)
+                                    widget::button::icon(crate::ui::icons::get_handle("mail-attachment-symbolic", 16))
                                         .on_press(Message::AttachFile)
                                 )
                                 .push(
-                                    // Stop button (only visible when streaming)
+                                    // Text editor for message (multi-line)
+                                    text_editor(&self.input_content)
+                                        .id(self.input_id.clone())
+                                        .on_action(Message::InputActionPerformed)
+                                        .height(Length::Shrink)
+                                        .padding(12)
+                                        .key_binding(|key_press| {
+                                            match key_press.key.as_ref() {
+                                                keyboard::Key::Named(keyboard::key::Named::Enter)
+                                                    if key_press.modifiers.shift() => {
+                                                    // Shift+Enter for new line
+                                                    text_editor::Binding::from_key_press(key_press)
+                                                }
+                                                keyboard::Key::Named(keyboard::key::Named::Enter) => {
+                                                    // Enter to send message
+                                                    Some(text_editor::Binding::Custom(Message::SendMessage))
+                                                }
+                                                _ => text_editor::Binding::from_key_press(key_press),
+                                            }
+                                        })
+                                )
+                                .push(
+                                    // Send/Stop button (right side)
                                     if self.is_streaming {
-                                        widget::button::icon(widget::icon::from_name("process-stop-symbolic"))
+                                        // Stop button when streaming
+                                        widget::button::icon(crate::ui::icons::get_handle("process-stop-symbolic", 16))
                                             .class(widget::button::ButtonClass::Destructive)
                                             .on_press(Message::StopMessage)
                                     } else {
-                                        widget::button::icon(widget::icon::from_name("process-stop-symbolic"))
-                                            .class(widget::button::ButtonClass::Destructive)
+                                        // Send button when not streaming
+                                        widget::button::icon(crate::ui::icons::get_handle("send-symbolic", 16))
+                                            .class(widget::button::ButtonClass::Suggested)
+                                            .on_press(Message::SendMessage)
                                     }
-                                )
-                                .push(
-                                    // Retry button (only visible when there's a last message)
-                                    if self.last_user_message.is_some() && !self.is_streaming {
-                                        widget::button::icon(widget::icon::from_name("view-refresh-symbolic"))
-                                            .on_press(Message::RetryMessage)
-                                    } else {
-                                        widget::button::icon(widget::icon::from_name("view-refresh-symbolic"))
-                                    }
-                                )
-                                .push(
-                                    cosmic::widget::Space::with_width(Length::Fill)
                                 )
                                 .spacing(8)
                                 .align_y(cosmic::iced::Alignment::Center)
@@ -1769,13 +1776,29 @@ impl CosmicLlmApp {
         cosmic::widget::container(
             cosmic::widget::column::with_capacity(2)
                 .push(
-                    // Top row: conversation info and profile
-                    cosmic::widget::row::with_capacity(5)
+                    // Top row: Title, Messages count, New chat icon
+                    cosmic::widget::row::with_capacity(3)
                         .push(
                             cosmic::widget::text(title)
                                 .size(18)
                         )
+                        .push(
+                            cosmic::widget::text(format!("{} messages", msg_count))
+                                .size(12)
+                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.4, 0.4, 0.4)))
+                        )
                         .push(cosmic::widget::Space::with_width(Length::Fill))
+                        .push(
+                            // New chat icon button
+                            widget::button::icon(crate::ui::icons::get_handle("tab-new-symbolic", 16))
+                                .on_press(Message::NewConversation)
+                        )
+                        .spacing(12)
+                        .align_y(cosmic::iced::Alignment::Center)
+                )
+                .push(
+                    // Bottom row: Model select, Tools summary with icons
+                    cosmic::widget::row::with_capacity(4)
                         .push(
                             // Profile selection dropdown
                             {
@@ -1785,77 +1808,46 @@ impl CosmicLlmApp {
                                 widget::dropdown(names, idx, Message::ChangeDefaultProfile)
                             }
                         )
+                        .push(cosmic::widget::Space::with_width(Length::Fill))
                         .push(
-                            cosmic::widget::text(
-                                if created_label.is_empty() { "".to_string() } else { format!("Created: {}", created_label) }
-                            )
-                                .size(12)
-                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.4, 0.4, 0.4)))
-                        )
-                        .push(
-                            cosmic::widget::text(format!("Messages: {}", msg_count))
-                                .size(12)
-                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.4, 0.4, 0.4)))
-                        )
-                        .push(
-                            widget::button::suggested("New Chat")
-                                .on_press(Message::NewConversation)
+                            // Tools summary with toggle and configure icons
+                            if total_tools == 0 {
+                                // Show configure button when no tools
+                                cosmic::widget::row::with_capacity(2)
+                                    .push(
+                                        cosmic::widget::text("No tools configured")
+                                            .size(12)
+                                            .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5)))
+                                    )
+                                    .push(
+                                        widget::button::icon(crate::ui::icons::get_handle("configure-symbolic", 16))
+                                            .on_press(Message::ShowToolsContext)
+                                    )
+                                    .spacing(8)
+                                    .align_y(cosmic::iced::Alignment::Center)
+                            } else {
+                                // Tool controls with icons
+                                cosmic::widget::row::with_capacity(4)
+                                    .push(
+                                        cosmic::widget::text(format!("{} / {} tools", enabled_count, total_tools))
+                                            .size(12)
+                                    )
+                                    .push(
+                                        // Toggle all tools button (toggler widget)
+                                        cosmic::widget::toggler(enabled_count == total_tools)
+                                            .on_toggle(|enabled| Message::ToggleAllTools(enabled))
+                                    )
+                                    .push(
+                                        // Configure tools button (icon)
+                                        widget::button::icon(crate::ui::icons::get_handle("configure-symbolic", 16))
+                                            .on_press(Message::ShowToolsContext)
+                                    )
+                                    .spacing(8)
+                                    .align_y(cosmic::iced::Alignment::Center)
+                            }
                         )
                         .spacing(12)
                         .align_y(cosmic::iced::Alignment::Center)
-                )
-                .push(
-                    // Bottom row: tool controls
-                    if total_tools == 0 {
-                        // Show a message when no tools are configured
-                        cosmic::widget::row::with_capacity(2)
-                            .push(
-                                cosmic::widget::text("🔧 No MCP tools configured")
-                                    .size(12)
-                                    .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5)))
-                            )
-                            .push(cosmic::widget::horizontal_space())
-                            .push(
-                                cosmic::widget::button::text("Configure")
-                                    .on_press(Message::ShowToolsContext)
-                                    .padding(4)
-                                    .class(cosmic::style::Button::Text)
-                            )
-                            .spacing(8)
-                            .align_y(cosmic::iced::Alignment::Center)
-                    } else {
-                        // Tool controls
-                        cosmic::widget::row::with_capacity(4)
-                            .push(
-                                cosmic::widget::text(format!("🔧 Tools: {} / {} enabled", enabled_count, total_tools))
-                                    .size(12)
-                            )
-                            .push(cosmic::widget::horizontal_space())
-                            .push(
-                                cosmic::widget::row::with_capacity(3)
-                                    .push(
-                                        cosmic::widget::button::text("Enable All")
-                                            .on_press(Message::ToggleAllTools(true))
-                                            .padding(4)
-                                            .class(cosmic::style::Button::Text)
-                                    )
-                                    .push(
-                                        cosmic::widget::button::text("Disable All")
-                                            .on_press(Message::ToggleAllTools(false))
-                                            .padding(4)
-                                            .class(cosmic::style::Button::Text)
-                                    )
-                                    .push(
-                                        cosmic::widget::button::text("Configure")
-                                            .on_press(Message::ShowToolsContext)
-                                            .padding(4)
-                                            .class(cosmic::style::Button::Text)
-                                    )
-                                    .spacing(8)
-                            )
-                            .spacing(8)
-                            .align_y(cosmic::iced::Alignment::Center)
-                    }
                 )
                 .spacing(8)
         )
@@ -2032,7 +2024,6 @@ impl CosmicLlmApp {
                     }
                     
                     cosmic::widget::scrollable(tool_list)
-                        .height(Length::Fill)
                         .into()
                 }
             )
