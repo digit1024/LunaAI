@@ -654,6 +654,15 @@ impl Application for CosmicLlmApp {
                     
                     // Convert messages to LLM format
                     let mut llm_messages = Vec::new();
+                    
+                    // Add system prompt if available
+                    if let Some(system_prompt) = self.prompt_manager.get_system_prompt() {
+                        llm_messages.push(crate::llm::Message::new(
+                            crate::llm::Role::System,
+                            system_prompt.to_string()
+                        ));
+                    }
+                    
                     for msg in &self.messages {
                         let role = if msg.is_user { 
                             crate::llm::Role::User 
