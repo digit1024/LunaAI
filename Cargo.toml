@@ -96,7 +96,7 @@ env_logger = "0.11.8"
 keyring = "3.6"
 
 # License handling
-license = { version = "3.7.0", include = ["/license-list-data/json"] }
+license = { version = "3.7.0" }
 
 # Internationalization
 i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }

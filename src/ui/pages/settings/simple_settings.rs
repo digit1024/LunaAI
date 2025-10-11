@@ -16,7 +16,6 @@ pub struct SimpleSettingsPage {
 #[derive(Debug, Clone)]
 pub enum SimpleSettingsMessage {
     BackToMain,
-    ProfileSelected(usize),
     SetDefaultProfile(String),
     NewProfileNameChanged(String),
     NewProfileModelChanged(String),

@@ -122,7 +122,7 @@ impl LlmClient for AnthropicClient {
                         match attachment.mime_type.as_str() {
                             mime if mime.starts_with("image/") => {
                                 // For images, we need to read and encode them
-                                if let Some(content) = &attachment.content {
+                                if let Some(_content) = &attachment.content {
                                     content_blocks.push(AnthropicContentBlock::Text { 
                                         text: format!("[Image: {} - {} bytes]", attachment.file_name, attachment.file_size)
                                     });
@@ -254,7 +254,7 @@ impl LlmClient for AnthropicClient {
                             match attachment.mime_type.as_str() {
                                 mime if mime.starts_with("image/") => {
                                     // For images, we need to read and encode them
-                                    if let Some(content) = &attachment.content {
+                                    if let Some(_content) = &attachment.content {
                                         content_blocks.push(AnthropicContentBlock::Text { 
                                             text: format!("[Image: {} - {} bytes]", attachment.file_name, attachment.file_size)
                                         });

@@ -58,18 +58,6 @@ impl Message {
         }
     }
     
-    pub fn new_prompt(role: Role, content: String) -> Self {
-        Self {
-            role,
-            content,
-            timestamp: Some(Utc::now()),
-            is_prompt: true, // Mark as prompt
-            tool_call_id: None,
-            tool_calls: None,
-            attachments: None,
-        }
-    }
-    
     pub fn new_tool_result(tool_call_id: String, content: String, is_error: bool) -> Self {
         let prefix = if is_error { "Error: " } else { "" };
         Self {
@@ -82,7 +70,7 @@ impl Message {
             attachments: None,
         }
     }
-    
+
     pub fn new_with_tool_calls(role: Role, content: String, tool_calls: Vec<ToolCall>) -> Self {
         Self {
             role,
