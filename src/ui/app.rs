@@ -5,7 +5,6 @@ use cosmic::{
     Application, Element,
     dialog::file_chooser::{self, FileFilter},
 };
-use futures::StreamExt;
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -227,7 +226,7 @@ pub struct AnchoredToolCall {
 impl CosmicLlmApp {
     pub fn new(core: Core, config: AppConfig, storage: Storage, prompt_manager: PromptManager, mcp_registry: Arc<RwLock<MCPServerRegistry>>, llm_client: Arc<dyn LlmClient>) -> Self {
         // Create title sender channel
-        let (title_sender, mut title_receiver) = tokio::sync::mpsc::unbounded_channel::<(Uuid, String)>();
+        let (title_sender, _title_receiver) = tokio::sync::mpsc::unbounded_channel::<(Uuid, String)>();
         
         // Note: Title updates will be handled synchronously in the main thread
         // since Storage is not cloneable for async tasks
@@ -1034,7 +1033,7 @@ impl Application for CosmicLlmApp {
                                     complete: turn.complete,
                                     tools: storage_tools,
                                 };
-                                self.storage.add_turn_to_conversation(&conv_id, storage_turn);
+                                let _ = self.storage.add_turn_to_conversation(&conv_id, storage_turn);
                             }
                         }
                         self.current_ai_message_index = None;
@@ -1167,22 +1166,6 @@ impl Application for CosmicLlmApp {
                 match settings_msg {
                     SimpleSettingsMessage::BackToMain => {
                         self.current_page = NavigationPage::Chat;
-                    }
-                    SimpleSettingsMessage::ProfileSelected(index) => {
-                        let profile_names: Vec<String> = self.config.profiles.keys().cloned().collect();
-                        if let Some(profile_name) = profile_names.get(index) {
-                            self.config.default = profile_name.clone();
-                            self.settings_changed = true;
-                            if let Some(profile) = self.config.get_default_profile().cloned() {
-                                self.llm_client = match profile.backend.as_str() {
-                                    "anthropic" => Arc::new(crate::llm::anthropic::AnthropicClient::new(profile)),
-                                    "deepseek" | "openai" => Arc::new(crate::llm::openai::OpenAIClient::new(profile)),
-                                    "ollama" => Arc::new(crate::llm::ollama::OllamaClient::new(profile)),
-                                    "gemini" => Arc::new(crate::llm::gemini::GeminiClient::new(profile)),
-                                    _ => Arc::new(crate::llm::openai::OpenAIClient::new(profile)),
-                                };
-                            }
-                        }
                     }
                     SimpleSettingsMessage::SetDefaultProfile(name) => {
                         if self.config.profiles.contains_key(&name) {
@@ -1801,7 +1784,7 @@ impl CosmicLlmApp {
             ("New Chat".to_string(), None, self.messages.len())
         };
         
-        let created_label = created_text.unwrap_or_else(|| "".to_string());
+        let _created_label = created_text.unwrap_or_else(|| "".to_string());
         
         cosmic::widget::container(
             cosmic::widget::column::with_capacity(2)
@@ -1887,78 +1870,8 @@ impl CosmicLlmApp {
         .into()
     }
 
-    fn tool_controls_inline(&self) -> Element<Message> {
-        
-        // Count enabled/disabled tools
-        let total_tools = self.available_mcp_tools.len();
-        let enabled_count = self.available_mcp_tools.iter()
-            .filter(|tool| self.tool_states.get(&tool.name).copied().unwrap_or(true))
-            .count();
-        
-        if total_tools == 0 {
-            // Show a message when no tools are configured
-            return cosmic::widget::container(
-                cosmic::widget::row::with_capacity(2)
-                    .push(
-                        cosmic::widget::text("🔧 No MCP tools configured")
-                            .size(12)
-                            .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5)))
-                    )
-                    .push(cosmic::widget::horizontal_space())
-                    .push(
-                        cosmic::widget::button::text("Configure")
-                            .on_press(Message::ShowToolsContext)
-                            .padding(4)
-                            .class(cosmic::style::Button::Text)
-                    )
-                    .spacing(8)
-                    .align_y(cosmic::iced::Alignment::Center)
-            )
-            .padding(8)
-            .class(cosmic::style::Container::Card)
-            .into();
-        }
-        
-        // Inline tool controls in top panel
-        cosmic::widget::container(
-            cosmic::widget::row::with_capacity(4)
-                .push(
-                    cosmic::widget::text(format!("🔧 Tools: {} / {} enabled", enabled_count, total_tools))
-                        .size(12)
-                )
-                .push(cosmic::widget::horizontal_space())
-                .push(
-                    cosmic::widget::row::with_capacity(3)
-                        .push(
-                            cosmic::widget::button::text("Enable All")
-                                .on_press(Message::ToggleAllTools(true))
-                                .padding(4)
-                                .class(cosmic::style::Button::Text)
-                        )
-                        .push(
-                            cosmic::widget::button::text("Disable All")
-                                .on_press(Message::ToggleAllTools(false))
-                                .padding(4)
-                                .class(cosmic::style::Button::Text)
-                        )
-                        .push(
-                            cosmic::widget::button::text("Configure")
-                                .on_press(Message::ShowToolsContext)
-                                .padding(4)
-                                .class(cosmic::style::Button::Text)
-                        )
-                        .spacing(8)
-                )
-                .spacing(8)
-                .align_y(cosmic::iced::Alignment::Center)
-        )
-        .padding(8)
-        .class(cosmic::style::Container::Card)
-        .into()
-    }
 
     fn tools_context_view(&self) -> Element<Message> {
-        use cosmic::iced::Length;
         
         let total_tools = self.available_mcp_tools.len();
         let enabled_count = self.available_mcp_tools.iter()
@@ -2498,179 +2411,5 @@ impl CosmicLlmApp {
         scrollable(column).into()
     }
 
-    fn settings_view(&self) -> Element<Message> {
-        let current_profile = self.config.default.clone();
-        
-        cosmic::widget::column::with_capacity(6)
-            .push(
-                cosmic::widget::container(
-                    cosmic::widget::text("Settings")
-                        .size(24)
-                )
-                .padding(16)
-            )
-            .push(
-                // LLM Profile Selection
-                cosmic::widget::container(
-                    cosmic::widget::column::with_capacity(4)
-                        .push(
-                            cosmic::widget::text("Default LLM Profile")
-                                .size(18)
-                        )
-                        .push(
-                            cosmic::widget::text("Select the default LLM profile to use for new conversations")
-                                .size(14)
-                        )
-                        .push(
-                            cosmic::widget::text(format!("Current: {}", current_profile))
-                                .size(16)
-                        )
-                        .push(
-                            cosmic::widget::text("Available profiles:")
-                                .size(14)
-                        )
-                )
-                .padding(16)
-                .class(cosmic::style::Container::Card)
-            )
-            .push(
-                // Profile List
-                cosmic::widget::container(
-                    {
-                        let mut column = cosmic::widget::column::with_capacity(self.config.profiles.len());
-                        for (name, profile) in &self.config.profiles {
-                            let is_current = name == &current_profile;
-                            let status_text = if is_current { "✓ Current" } else { "Click to select" };
-                            column = column.push(
-                                cosmic::widget::container(
-                                    cosmic::widget::column::with_capacity(2)
-                                        .push(
-                                            cosmic::widget::text(format!("• {}: {} ({})", name, profile.model, profile.endpoint))
-                                                .size(12)
-                                        )
-                                        .push(
-                                            cosmic::widget::text(status_text)
-                                                .size(10)
-                                        )
-                                )
-                                .padding(8)
-                                .class(cosmic::style::Container::Card)
-                            );
-                        }
-                        column
-                    }
-                )
-                .padding(16)
-                .class(cosmic::style::Container::Card)
-            )
-            .push(
-                // Profile Details
-                cosmic::widget::container(
-                    {
-                        if let Some(profile) = self.config.profiles.get(&current_profile) {
-                            cosmic::widget::column::with_capacity(3)
-                                .push(
-                                    cosmic::widget::text(format!("Profile: {}", current_profile))
-                                        .size(16)
-                                )
-                                .push(
-                                    cosmic::widget::text(format!("Model: {}", profile.model))
-                                        .size(14)
-                                )
-                                .push(
-                                    cosmic::widget::text(format!("Endpoint: {}", profile.endpoint))
-                                        .size(14)
-                                )
-                        } else {
-                            cosmic::widget::column::with_capacity(1)
-                                .push(
-                                    cosmic::widget::text("No profile selected")
-                                        .size(14)
-                                )
-                        }
-                    }
-                )
-                .padding(16)
-                .class(cosmic::style::Container::Card)
-            )
-            .push(
-                // MCP Servers Section
-                cosmic::widget::container(
-                    cosmic::widget::column::with_capacity(2)
-                        .push(
-                            cosmic::widget::text("MCP Servers")
-                                .size(18)
-                        )
-                        .push(
-                            cosmic::widget::text(format!("{} servers configured", self.config.mcp.servers.len()))
-                                .size(14)
-                        )
-                )
-                .padding(16)
-                .class(cosmic::style::Container::Card)
-            )
-            .push(
-                // MCP Server List
-                cosmic::widget::container(
-                    {
-                        let mut column = cosmic::widget::column::with_capacity(self.config.mcp.servers.len());
-                        for (server_name, server_config) in &self.config.mcp.servers {
-                            column = column.push(
-                                cosmic::widget::container(
-                                    cosmic::widget::column::with_capacity(2)
-                                        .push(
-                                            cosmic::widget::text(server_name)
-                                                .size(14)
-                                        )
-                                        .push(
-                                            cosmic::widget::text(format!("Type: stdio | Command: {}", 
-                                                server_config.command
-                                            ))
-                                                .size(12)
-                                        )
-                                )
-                                .padding(8)
-                                .class(cosmic::style::Container::Card)
-                            );
-                        }
-                        if self.config.mcp.servers.is_empty() {
-                            column = column.push(
-                                cosmic::widget::text("No MCP servers configured")
-                                    .size(14)
-                            );
-                        }
-                        scrollable(column)
-                    }
-                )
-                .padding(16)
-                .class(cosmic::style::Container::Card)
-            )
-            .push(
-                // Action Buttons
-                cosmic::widget::container(
-                    cosmic::widget::row::with_capacity(3)
-                        .push(
-                            widget::button::suggested("Save Settings")
-                                .on_press(Message::SaveSettings)
-                        )
-                        .push(
-                            widget::button::standard("Reset to Defaults")
-                                .on_press(Message::ResetSettings)
-                        )
-                        .push(
-                            if self.settings_changed {
-                                cosmic::widget::text("⚠️ Unsaved changes")
-                                    .size(12)
-                            } else {
-                                cosmic::widget::text("✓ All changes saved")
-                                    .size(12)
-                            }
-                        )
-                )
-                .padding(16)
-                .class(cosmic::style::Container::Card)
-            )
-            .into()
-    }
 }
 

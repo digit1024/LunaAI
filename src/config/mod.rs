@@ -54,20 +54,6 @@ impl Default for MCPConfig {
     }
 }
 
-// Legacy format for backward compatibility
-#[derive(Debug, Deserialize, Clone)]
-struct LegacyMCPServerConfig {
-    pub name: String,
-    pub r#type: String,
-    pub url: Option<String>,
-    pub command: Option<String>,
-    pub args: Option<Vec<String>>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-struct LegacyMCPConfig {
-    pub servers: Vec<LegacyMCPServerConfig>,
-}
 
 
 #[derive(Debug, Deserialize, Clone, Serialize)]

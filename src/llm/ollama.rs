@@ -71,7 +71,6 @@ struct OllamaStreamResponse {
 #[derive(Debug, Deserialize)]
 struct OllamaStreamChoice {
     delta: OllamaDelta,
-    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

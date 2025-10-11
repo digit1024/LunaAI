@@ -13,24 +13,6 @@ pub enum FileType {
 }
 
 impl FileType {
-    pub fn from_mime_type(mime_type: &str) -> Self {
-        match mime_type {
-            // Text files
-            mime if mime.starts_with("text/") => FileType::Text,
-            // Images
-            mime if mime.starts_with("image/") => FileType::Image,
-            // Documents
-            mime if mime == "application/pdf" => FileType::Document,
-            mime if mime == "application/msword" => FileType::Document,
-            mime if mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => FileType::Document,
-            mime if mime == "application/vnd.ms-excel" => FileType::Document,
-            mime if mime == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => FileType::Document,
-            mime if mime == "application/vnd.ms-powerpoint" => FileType::Document,
-            mime if mime == "application/vnd.openxmlformats-officedocument.presentationml.presentation" => FileType::Document,
-            _ => FileType::Unsupported,
-        }
-    }
-    
     pub fn from_extension(extension: &str) -> Self {
         match extension.to_lowercase().as_str() {
             // Images

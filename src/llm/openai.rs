@@ -67,7 +67,6 @@ struct OpenAIStreamResponse {
 #[derive(Debug, Deserialize)]
 struct OpenAIStreamChoice {
     delta: OpenAIDelta,
-    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

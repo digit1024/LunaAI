@@ -28,17 +28,6 @@ pub enum ToolCallStatus {
 }
 
 impl ToolCallWidget {
-    pub fn new(tool_name: String, parameters: String, status: ToolCallStatus) -> Self {
-        Self {
-            tool_name,
-            parameters,
-            status,
-            result: None,
-            error: None,
-            is_expanded: false,
-        }
-    }
-
     pub fn update(&mut self, message: Message) {
         match message {
             Message::ToggleExpanded => {
