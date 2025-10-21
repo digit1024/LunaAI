@@ -1107,9 +1107,32 @@ impl Application for CosmicLlmApp {
                         self.pending_llm_messages = None;
                         self.active_tool_calls.clear();
                         
+                        // Check if this is a rate limit error and provide specific guidance
+                        let error_content = if error.contains("Rate limit exceeded") || error.contains("rate limit") || error.contains("429") {
+                            format!(
+                                "⏱️ **Rate Limit Reached**\n\n\
+                                The API provider has temporarily limited your requests due to high usage.\n\n\
+                                **What happened:**\n\
+                                • Your request exceeded the Tokens Per Minute (TPM) limit\n\
+                                • The system automatically retried {} times with exponential backoff\n\
+                                • All retry attempts were exhausted\n\n\
+                                **Solutions:**\n\
+                                • Wait a few minutes before sending another message\n\
+                                • Consider upgrading your API tier for higher limits\n\
+                                • Reduce the frequency of your requests\n\
+                                • Check your API usage in the provider's dashboard\n\n\
+                                **Technical details:**\n\
+                                {}", 
+                                self.config.get_default_profile().map(|p| p.get_max_retries()).unwrap_or(3),
+                                error
+                            )
+                        } else {
+                            format!("❌ **Model Communication Error**\n\n{}", error)
+                        };
+                        
                         // Add error message as a separate chat bubble
                         self.messages.push(ChatMessage { 
-                            content: format!("❌ **Model Communication Error**\n\n{}", error), 
+                            content: error_content, 
                             is_user: false,
                             is_error: true
                         });
@@ -1238,6 +1261,9 @@ impl Application for CosmicLlmApp {
                                 max_tokens: Some(1000),
                                 context_window_size: Some(128000),
                                 summarize_threshold: Some(0.7),
+                                rate_limit_tpm: None,
+                                max_retries: None,
+                                retry_backoff_base: None,
                             };
                             self.config.profiles.insert(name.clone(), profile);
                             if self.config.default.is_empty() {

@@ -14,6 +14,12 @@ pub struct LlmProfile {
     pub max_tokens: Option<u32>,
     pub context_window_size: Option<u32>,
     pub summarize_threshold: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limit_tpm: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_backoff_base: Option<f32>,
 }
 
 fn default_backend() -> String {
@@ -31,6 +37,9 @@ impl Default for LlmProfile {
             max_tokens: Some(1000),
             context_window_size: Some(128000), // GPT-4 default
             summarize_threshold: Some(0.7),
+            rate_limit_tpm: None,
+            max_retries: None,
+            retry_backoff_base: None,
         }
     }
 }
@@ -52,6 +61,29 @@ impl LlmProfile {
     /// Get the summarization threshold for this profile
     pub fn get_summarize_threshold(&self) -> f32 {
         self.summarize_threshold.unwrap_or(0.7)
+    }
+
+    /// Get the rate limit TPM for this profile, with provider-specific defaults
+    pub fn get_rate_limit_tpm(&self) -> Option<u32> {
+        self.rate_limit_tpm.or_else(|| {
+            match self.backend.as_str() {
+                "openai" => Some(500_000),    // OpenAI Tier 1 default
+                "anthropic" => Some(100_000), // Conservative Anthropic default
+                "gemini" => Some(100_000),    // Gemini Tier 1 default
+                "ollama" => None,             // No limits for local Ollama
+                _ => Some(100_000),           // Conservative default
+            }
+        })
+    }
+
+    /// Get the maximum retries for this profile
+    pub fn get_max_retries(&self) -> u32 {
+        self.max_retries.unwrap_or(3)
+    }
+
+    /// Get the retry backoff base for exponential backoff
+    pub fn get_retry_backoff_base(&self) -> f32 {
+        self.retry_backoff_base.unwrap_or(2.0)
     }
 }
 

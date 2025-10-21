@@ -86,6 +86,15 @@ impl Message {
 
 
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitInfo {
+    pub retry_after_seconds: Option<u64>,
+    pub remaining_requests: Option<u64>,
+    pub reset_time: Option<u64>,
+    pub provider: String,
+    pub attempt_count: u32,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
     #[error("HTTP error: {0}")]
@@ -95,6 +104,8 @@ pub enum LlmError {
     #[error("Configuration error: {0}")]
     #[allow(dead_code)]
     Config(String),
+    #[error("Rate limit exceeded: {0:?}")]
+    RateLimit(RateLimitInfo),
 }
 
 // Tool-related types
@@ -153,3 +164,4 @@ pub mod gemini;
 pub mod file_utils;
 pub mod token_counter;
 pub mod context_manager;
+pub mod rate_limiter;

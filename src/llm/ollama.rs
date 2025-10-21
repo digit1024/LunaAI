@@ -1,4 +1,5 @@
 use super::*;
+use super::rate_limiter::RateLimitHandler;
 use crate::config::LlmProfile;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -90,6 +91,45 @@ impl OllamaClient {
             profile,
         }
     }
+
+    /// Execute an API request with retry logic for rate limiting
+    /// Note: Ollama is typically local and doesn't have rate limits, but we implement
+    /// the same interface for consistency and potential future remote usage
+    async fn execute_with_retry<F>(&self, request_fn: F) -> Result<reqwest::Response, LlmError>
+    where
+        F: Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<reqwest::Response, reqwest::Error>> + Send>>,
+    {
+        let rate_handler = RateLimitHandler::new(self.profile.clone());
+        let mut attempt_count = 0;
+
+        loop {
+            let response = request_fn().await?;
+            
+            if response.status().is_success() {
+                return Ok(response);
+            }
+
+            let status = response.status().as_u16();
+            
+            // Check if this is a rate limit error (unlikely for local Ollama)
+            if RateLimitHandler::is_rate_limit_error(status) {
+                // Extract rate limit info from headers
+                let rate_limit_info = rate_handler.extract_rate_limit_info(response.headers(), attempt_count);
+                
+                // Handle rate limit with retry logic
+                if let Err(e) = rate_handler.handle_rate_limit_error(rate_limit_info).await {
+                    return Err(e);
+                }
+                
+                attempt_count += 1;
+                continue;
+            }
+
+            // For non-rate-limit errors, get the error text and return immediately
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(LlmError::Api(format!("Ollama API error: {}", error_text)));
+        }
+    }
 }
 
 #[async_trait]
@@ -150,25 +190,18 @@ impl LlmClient for OllamaClient {
             tools: None,
         };
 
-        let mut request_builder = self
-            .client
-            .post(&self.profile.endpoint)
-            .header("Content-Type", "application/json");
-        
-        // Only add authorization header if API key is provided
-        if !self.profile.api_key.is_empty() {
-            request_builder = request_builder.header("Authorization", format!("Bearer {}", self.profile.api_key));
-        }
+        let response = self.execute_with_retry(|| {
+            let mut request_builder = self.client
+                .post(&self.profile.endpoint)
+                .header("Content-Type", "application/json");
+            
+            // Only add authorization header if API key is provided
+            if !self.profile.api_key.is_empty() {
+                request_builder = request_builder.header("Authorization", format!("Bearer {}", self.profile.api_key));
+            }
 
-        let response = request_builder
-            .json(&request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::Api(format!("Ollama API error: {}", error_text)));
-        }
+            Box::pin(request_builder.json(&request).send())
+        }).await?;
 
         let stream = response.bytes_stream();
         let stream = futures::StreamExt::map(stream, |chunk_result| {
@@ -301,25 +334,18 @@ impl LlmClient for OllamaClient {
             tools,
         };
 
-        let mut request_builder = self
-            .client
-            .post(&self.profile.endpoint)
-            .header("Content-Type", "application/json");
-        
-        // Only add authorization header if API key is provided
-        if !self.profile.api_key.is_empty() {
-            request_builder = request_builder.header("Authorization", format!("Bearer {}", self.profile.api_key));
-        }
+        let response = self.execute_with_retry(|| {
+            let mut request_builder = self.client
+                .post(&self.profile.endpoint)
+                .header("Content-Type", "application/json");
+            
+            // Only add authorization header if API key is provided
+            if !self.profile.api_key.is_empty() {
+                request_builder = request_builder.header("Authorization", format!("Bearer {}", self.profile.api_key));
+            }
 
-        let response = request_builder
-            .json(&request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::Api(format!("Ollama API error: {}", error_text)));
-        }
+            Box::pin(request_builder.json(&request).send())
+        }).await?;
 
         let response_data: OllamaResponse = response.json().await?;
 
