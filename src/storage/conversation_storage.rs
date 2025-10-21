@@ -50,6 +50,7 @@ pub struct StoredMessage {
 }
 
 impl Conversation {
+    #[allow(dead_code)]
     pub fn new(title: String) -> Self {
         let now = Utc::now();
         Self {
@@ -62,6 +63,7 @@ impl Conversation {
         }
     }
 
+    #[allow(dead_code)]
     pub fn add_message(&mut self, role: String, content: String) {
         let message = StoredMessage {
             id: Uuid::new_v4(),
@@ -73,11 +75,13 @@ impl Conversation {
         self.updated_at = Utc::now();
     }
 
+    #[allow(dead_code)]
     pub fn add_turn(&mut self, turn: Turn) {
         self.turns.push(turn);
         self.updated_at = Utc::now();
     }
 
+    #[allow(dead_code)]
     pub fn rebuild_llm_messages(&self) -> Vec<crate::llm::Message> {
         let mut llm_messages = Vec::new();
         
@@ -134,8 +138,11 @@ pub struct ConversationIndex {
 
 #[derive(Debug, Clone)]
 pub struct Storage {
+    #[allow(dead_code)]
     conversations: HashMap<Uuid, Conversation>,
+    #[allow(dead_code)]
     conversations_dir: PathBuf,
+    #[allow(dead_code)]
     index_file: PathBuf,
 }
 
@@ -150,6 +157,7 @@ impl Default for Storage {
 }
 
 impl Storage {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         let conversations_dir = Self::default_conversations_dir();
         let index_file = Self::default_index_file();
@@ -176,10 +184,12 @@ impl Storage {
             .join("conversations_index.json")
     }
 
+    #[allow(dead_code)]
     fn conversation_file_path(&self, conversation_id: &Uuid) -> PathBuf {
         self.conversations_dir.join(format!("{}.json", conversation_id))
     }
 
+    #[allow(dead_code)]
     fn load_conversations(&mut self) {
         // Create conversations directory if it doesn't exist
         if let Err(e) = fs::create_dir_all(&self.conversations_dir) {
@@ -203,6 +213,7 @@ impl Storage {
         }
     }
 
+    #[allow(dead_code)]
     fn load_conversation_index(&self) -> Vec<ConversationIndex> {
         if self.index_file.exists() {
             if let Ok(data) = fs::read_to_string(&self.index_file) {
@@ -214,6 +225,7 @@ impl Storage {
         Vec::new()
     }
 
+    #[allow(dead_code)]
     fn save_conversation_index(&self) {
         println!("💾 Saving conversation index...");
         let index: Vec<ConversationIndex> = self.conversations
@@ -244,6 +256,7 @@ impl Storage {
         }
     }
 
+    #[allow(dead_code)]
     fn save_conversation(&self, conversation: &Conversation) {
         let file_path = self.conversation_file_path(&conversation.id);
         if let Some(parent) = file_path.parent() {
@@ -254,6 +267,7 @@ impl Storage {
         }
     }
 
+    #[allow(dead_code)]
     pub fn create_conversation(&mut self, title: String) -> Uuid {
         let conversation = Conversation::new(title);
         let id = conversation.id;
@@ -263,26 +277,31 @@ impl Storage {
         id
     }
 
+    #[allow(dead_code)]
     pub fn get_conversation(&self, id: &Uuid) -> Option<&Conversation> {
         self.conversations.get(id)
     }
 
+    #[allow(dead_code)]
     pub fn get_conversation_mut(&mut self, id: &Uuid) -> Option<&mut Conversation> {
         self.conversations.get_mut(id)
     }
 
+    #[allow(dead_code)]
     pub fn list_conversations(&self) -> Vec<&Conversation> {
         let mut conversations: Vec<&Conversation> = self.conversations.values().collect();
         conversations.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         conversations
     }
 
+    #[allow(dead_code)]
     pub fn list_conversations_from_index(&self) -> Vec<ConversationIndex> {
         let mut index = self.load_conversation_index();
         index.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         index
     }
 
+    #[allow(dead_code)]
     pub fn update_conversation_title(&mut self, id: &Uuid, title: String) -> bool {
         if let Some(conversation) = self.conversations.get_mut(id) {
             conversation.title = title;
@@ -297,6 +316,7 @@ impl Storage {
         }
     }
 
+    #[allow(dead_code)]
     pub fn add_message_to_conversation(&mut self, conversation_id: &Uuid, role: String, content: String) {
         if let Some(conversation) = self.conversations.get_mut(conversation_id) {
             conversation.add_message(role, content);
@@ -307,6 +327,7 @@ impl Storage {
         }
     }
 
+    #[allow(dead_code)]
     pub fn add_turn_to_conversation(&mut self, conversation_id: &Uuid, turn: Turn) {
         if let Some(conversation) = self.conversations.get_mut(conversation_id) {
             conversation.add_turn(turn);
@@ -317,6 +338,7 @@ impl Storage {
         }
     }
 
+    #[allow(dead_code)]
     pub fn delete_conversation(&mut self, conversation_id: &Uuid) -> bool {
         // Remove from memory
         if self.conversations.remove(conversation_id).is_some() {

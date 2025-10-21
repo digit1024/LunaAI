@@ -69,6 +69,7 @@ impl Storage {
     }
 
     /// Get a mutable reference to a conversation
+    #[allow(dead_code)]
     pub fn get_conversation_mut(&mut self, _id: &Uuid) -> Option<&mut FileConversation> {
         // Note: This is not easily implementable with SQLite without loading all data
         // For now, return None - this method would need to be refactored in the calling code

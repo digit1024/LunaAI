@@ -93,6 +93,7 @@ pub enum LlmError {
     #[error("API error: {0}")]
     Api(String),
     #[error("Configuration error: {0}")]
+    #[allow(dead_code)]
     Config(String),
 }
 
@@ -127,6 +128,7 @@ pub struct ToolResult {
 #[async_trait]
 pub trait LlmClient: Send + Sync {
 
+    #[allow(dead_code)]
     async fn send_message_stream(
         &self,
         messages: Vec<Message>,
@@ -149,3 +151,5 @@ pub mod anthropic;
 pub mod ollama;
 pub mod gemini;
 pub mod file_utils;
+pub mod token_counter;
+pub mod context_manager;

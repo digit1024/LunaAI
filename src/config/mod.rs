@@ -12,6 +12,8 @@ pub struct LlmProfile {
     pub endpoint: String,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
+    pub context_window_size: Option<u32>,
+    pub summarize_threshold: Option<f32>,
 }
 
 fn default_backend() -> String {
@@ -27,7 +29,29 @@ impl Default for LlmProfile {
             endpoint: "https://api.openai.com/v1".to_string(),
             temperature: Some(0.7),
             max_tokens: Some(1000),
+            context_window_size: Some(128000), // GPT-4 default
+            summarize_threshold: Some(0.7),
         }
+    }
+}
+
+impl LlmProfile {
+    /// Get the context window size for this profile, with provider-specific defaults
+    pub fn get_context_window_size(&self) -> u32 {
+        self.context_window_size.unwrap_or_else(|| {
+            match self.backend.as_str() {
+                "openai" => 128000,      // GPT-4
+                "anthropic" => 200000,   // Claude 3.5
+                "gemini" => 1000000,     // Gemini 2.0 Pro
+                "ollama" => 32000,       // Typical Ollama model
+                _ => 128000,             // Default fallback
+            }
+        })
+    }
+    
+    /// Get the summarization threshold for this profile
+    pub fn get_summarize_threshold(&self) -> f32 {
+        self.summarize_threshold.unwrap_or(0.7)
     }
 }
 
@@ -117,9 +141,6 @@ impl AppConfig {
         self.profiles.get(&self.default)
     }
 
-    pub fn get_profile(&self, name: &str) -> Option<&LlmProfile> {
-        self.profiles.get(name)
-    }
 
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         use std::fs;
@@ -164,18 +185,6 @@ impl MCPConfig {
             .join("mcp_config.json")
     }
     
-    /// Save MCP configuration to mcp_config.json
-    pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let mcp_config_path = Self::mcp_config_path();
-        
-        if let Some(parent) = mcp_config_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        
-        let json_string = serde_json::to_string_pretty(self)?;
-        std::fs::write(mcp_config_path, json_string)?;
-        Ok(())
-    }
     
     /// Expand environment variables in format ${env:VAR_NAME}
     fn expand_env_vars(&mut self) {

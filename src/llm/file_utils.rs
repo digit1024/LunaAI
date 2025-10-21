@@ -9,6 +9,7 @@ pub enum FileType {
     Text,
     Image,
     Document,
+    #[allow(dead_code)]
     Unsupported,
 }
 

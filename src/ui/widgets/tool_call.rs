@@ -28,14 +28,6 @@ pub enum ToolCallStatus {
 }
 
 impl ToolCallWidget {
-    pub fn update(&mut self, message: Message) {
-        match message {
-            Message::ToggleExpanded => {
-                self.is_expanded = !self.is_expanded;
-            }
-        }
-    }
-
     pub fn view(&self) -> Element<Message> {
         let (status_icon, status_text, status_color) = match self.status {
             ToolCallStatus::Started => ("...", "Executing", cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5)),

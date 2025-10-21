@@ -294,6 +294,7 @@ impl SqliteStorage {
     }
 
     /// Get the database connection (for advanced operations)
+    #[allow(dead_code)]
     pub fn connection(&self) -> &Connection {
         &self.conn
     }

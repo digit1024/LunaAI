@@ -24,25 +24,24 @@ use crate::agentic::protocol::AgentUpdate;
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    InputChanged(String),
     InputActionPerformed(text_editor::Action),
     SendMessage,
     StopMessage,
+    #[allow(dead_code)]
     RetryMessage,
     AttachFile,
     FileSelected(String), // file path
     RemoveFile(String), // file path
     FileChooserCancelled,
     FileChooserError(Arc<file_chooser::Error>),
+    #[allow(dead_code)]
     NavigateTo(NavigationPage),
     SelectConversation(Uuid),
     DeleteConversation(Uuid),
     NewConversation,
     AgentUpdate(AgentUpdate),
-    ToolCallStarted(String, String), // tool_name, parameters
-    ToolCallCompleted(String, String), // tool_name, result
-    ToolCallError(String, String), // tool_name, error
     ToolCallWidgetMessage(usize, ToolCallMessage), // index, message
+    #[allow(dead_code)]
     ScrollToBottom,
     // Menu actions
     ShowAbout,
@@ -52,7 +51,9 @@ pub enum Message {
     OpenUrl(String),
     // Settings actions
     ChangeDefaultProfile(usize),
+    #[allow(dead_code)]
     SaveSettings,
+    #[allow(dead_code)]
     ResetSettings,
     // New Settings page messages
     SettingsMessage(SimpleSettingsMessage),
@@ -60,7 +61,6 @@ pub enum Message {
     DialogAction(DialogAction),
     ShowMessageDialog(String),
     // MCP actions
-    MCPToolsUpdated(Vec<crate::llm::ToolDefinition>),
     RefreshMCPTools,
     // Tool toggle actions
     ToggleAllTools(bool), // true = enable all, false = disable all
@@ -71,7 +71,9 @@ pub enum Message {
     MarkdownLinkClicked(widget::markdown::Url),
     // Search functionality
     SearchChanged(String),
-    SearchResults(Vec<crate::storage::sqlite_storage_simple::Snippet>),
+    // Token counting
+    #[allow(dead_code)]
+    UpdateTokenCount(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,7 +163,6 @@ pub struct CosmicLlmApp {
     scrollable_id: cosmic::widget::Id,
     key_binds: std::collections::HashMap<menu::KeyBind, MenuAction>,
     settings_changed: bool,
-    title_sender: Option<tokio::sync::mpsc::UnboundedSender<(Uuid, String)>>,
     settings_page: SimpleSettingsPage,
     context_page: ContextPage,
     about: widget::about::About,
@@ -169,8 +170,6 @@ pub struct CosmicLlmApp {
     nav_model: widget::segmented_button::SingleSelectModel,
     // New agent protocol view model
     turns: Vec<Turn>,
-    // When true, ignore legacy StreamingUpdate to avoid duplicate UI events
-    agent_mode_active: bool,
     // Dialog state
     dialog: Option<DialogPage>,
     dialog_text_input_id: widget::Id,
@@ -191,6 +190,9 @@ pub struct CosmicLlmApp {
     // Search functionality
     search_query: String,
     search_results: Vec<crate::storage::sqlite_storage_simple::Snippet>,
+    // Token counting and context management
+    current_token_count: u32,
+    context_window_size: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -225,13 +227,6 @@ pub struct AnchoredToolCall {
 
 impl CosmicLlmApp {
     pub fn new(core: Core, config: AppConfig, storage: Storage, prompt_manager: PromptManager, mcp_registry: Arc<RwLock<MCPServerRegistry>>, llm_client: Arc<dyn LlmClient>) -> Self {
-        // Create title sender channel
-        let (title_sender, _title_receiver) = tokio::sync::mpsc::unbounded_channel::<(Uuid, String)>();
-        
-        // Note: Title updates will be handled synchronously in the main thread
-        // since Storage is not cloneable for async tasks
-        
-        
         let about = widget::about::About::default()
             .name("Cosmic LLM")
             .icon(cosmic::widget::icon::Named::new(Self::APP_ID))
@@ -273,7 +268,6 @@ impl CosmicLlmApp {
             scrollable_id: cosmic::widget::Id::unique(),
             key_binds: Self::create_key_binds(),
             settings_changed: false,
-            title_sender: Some(title_sender),
             settings_page: SimpleSettingsPage::new(),
             context_page: ContextPage::About,
             about,
@@ -310,7 +304,6 @@ impl CosmicLlmApp {
                 model
             },
             turns: Vec::new(),
-            agent_mode_active: true,
             dialog: None,
             dialog_text_input_id: widget::Id::unique(),
             available_mcp_tools: Vec::new(),
@@ -322,9 +315,43 @@ impl CosmicLlmApp {
             pending_llm_messages: None,
             search_query: String::new(),
             search_results: Vec::new(),
+            current_token_count: 0,
+            context_window_size: 128000, // Default, will be updated from profile
         }
     }
     
+
+    /// Update token count based on current messages and system prompt
+    fn update_token_count(&mut self) {
+        // Convert messages to LLM format for token counting
+        let mut llm_messages = Vec::new();
+        
+        // Add system prompt if available
+        if let Some(system_prompt) = self.prompt_manager.get_system_prompt() {
+            llm_messages.push(crate::llm::Message::new(
+                crate::llm::Role::System,
+                system_prompt.to_string()
+            ));
+        }
+        
+        // Add conversation messages
+        for msg in &self.messages {
+            let role = if msg.is_user { 
+                crate::llm::Role::User 
+            } else { 
+                crate::llm::Role::Assistant 
+            };
+            llm_messages.push(crate::llm::Message::new(role, msg.content.clone()));
+        }
+        
+        // Count tokens
+        self.current_token_count = crate::llm::token_counter::estimate_tokens_for_messages(&llm_messages);
+        
+        // Update context window size from current profile
+        if let Some(profile) = self.config.get_default_profile() {
+            self.context_window_size = profile.get_context_window_size();
+        }
+    }
 
     fn create_key_binds() -> std::collections::HashMap<menu::KeyBind, MenuAction> {
         use cosmic::iced::keyboard::Key;
@@ -381,6 +408,19 @@ impl CosmicLlmApp {
         let messages = self.messages.clone();
         let mcp_registry = self.mcp_registry.clone();
         let pending_messages = self.pending_llm_messages.clone();
+        let config = self.config.clone();
+        
+        // Get context configuration from current profile before moving into closure
+        let context_window_size = if let Some(profile) = config.get_default_profile() {
+            profile.get_context_window_size()
+        } else {
+            128000 // Default fallback
+        };
+        let summarize_threshold = if let Some(profile) = config.get_default_profile() {
+            profile.get_summarize_threshold()
+        } else {
+            0.7 // Default fallback
+        };
         
         Subscription::run_with_id(id, stream::channel(100, move |mut output| async move {
             // Use prepared messages if available (which includes attachments), otherwise rebuild
@@ -430,7 +470,8 @@ impl CosmicLlmApp {
             let llm_messages_clone = llm_messages.clone();
             
             tokio::spawn(async move {
-                let mut agentic_loop = crate::agentic::loop_engine::AgenticLoop::new(mcp_registry_clone, llm_client_clone);
+                let mut agentic_loop = crate::agentic::loop_engine::AgenticLoop::new(mcp_registry_clone, llm_client_clone)
+                    .with_context_config(context_window_size, summarize_threshold);
                 
                 match agentic_loop.process_message(llm_messages_clone, Some(tx_agent.clone()), Some(id)).await {
                     Ok(_final_response) => {
@@ -606,9 +647,6 @@ impl Application for CosmicLlmApp {
 
     fn update(&mut self, message: Self::Message) -> app::Task<Self::Message> {
         match message {
-            Message::InputChanged(input) => {
-                self.input = input;
-            }
             Message::InputActionPerformed(action) => {
                 self.input_content.perform(action);
                 self.input = self.input_content.text();
@@ -740,7 +778,13 @@ impl Application for CosmicLlmApp {
                     }
                     
                     // Store the prepared messages for the subscription to use
-                    self.pending_llm_messages = Some(llm_messages);
+                    self.pending_llm_messages = Some(llm_messages.clone());
+                    
+                    // Update token count and context window size
+                    self.current_token_count = crate::llm::token_counter::estimate_tokens_for_messages(&llm_messages);
+                    if let Some(profile) = self.config.get_default_profile() {
+                        self.context_window_size = profile.get_context_window_size();
+                    }
                     
                     // Start streaming LLM response
                     let streaming_id = uuid::Uuid::new_v4();
@@ -894,6 +938,9 @@ impl Application for CosmicLlmApp {
                             is_error: false,
                         }
                     }).collect();
+                    
+                    // Update token count for loaded conversation
+                    self.update_token_count();
                 }
             }
             Message::DeleteConversation(id) => {
@@ -1037,6 +1084,9 @@ impl Application for CosmicLlmApp {
                             }
                         }
                         self.current_ai_message_index = None;
+                        
+                        // Update token count after turn completion
+                        self.update_token_count();
                     }
                     AgentUpdate::EndConversation { final_text: _ } => {
                         self.is_streaming = false;
@@ -1045,6 +1095,9 @@ impl Application for CosmicLlmApp {
                         self.pending_llm_messages = None; // Clear prepared messages
                         // Clear any leftover active tool rows (e.g., from placeholders)
                         self.active_tool_calls.clear();
+                        
+                        // Update token count after conversation completion
+                        self.update_token_count();
                     }
                     AgentUpdate::ModelError { turn_id: _, error } => {
                         // Stop streaming and show error message
@@ -1061,32 +1114,12 @@ impl Application for CosmicLlmApp {
                             is_error: true
                         });
                     }
+                    AgentUpdate::ContextSummarized { turn_id: _, old_count, new_count, tokens_saved } => {
+                        log::info!("📝 Context summarized: {} -> {} messages, {} tokens saved", old_count, new_count, tokens_saved);
+                        // Update token count after summarization
+                        self.update_token_count();
+                    }
                     AgentUpdate::Heartbeat { turn_id: _, ts_ms: _ } => {}
-                }
-            }
-            Message::ToolCallStarted(tool_name, parameters) => {
-                // Add tool call to active list
-                self.active_tool_calls.push(ToolCallInfo {
-                    id: None,
-                    tool_name: tool_name.clone(),
-                    parameters,
-                    status: ToolCallStatus::Started,
-                    result: None,
-                    error: None,
-                });
-            }
-            Message::ToolCallCompleted(tool_name, result) => {
-                // Update tool call status
-                if let Some(tool_call) = self.active_tool_calls.iter_mut().find(|tc| tc.tool_name == tool_name) {
-                    tool_call.status = ToolCallStatus::Completed;
-                    tool_call.result = Some(result);
-                }
-            }
-            Message::ToolCallError(tool_name, error) => {
-                // Update tool call status
-                if let Some(tool_call) = self.active_tool_calls.iter_mut().find(|tc| tc.tool_name == tool_name) {
-                    tool_call.status = ToolCallStatus::Error;
-                    tool_call.error = Some(error);
                 }
             }
             Message::ToolCallWidgetMessage(index, message) => {
@@ -1203,6 +1236,8 @@ impl Application for CosmicLlmApp {
                                 endpoint,
                                 temperature: Some(0.7),
                                 max_tokens: Some(1000),
+                                context_window_size: Some(128000),
+                                summarize_threshold: Some(0.7),
                             };
                             self.config.profiles.insert(name.clone(), profile);
                             if self.config.default.is_empty() {
@@ -1239,13 +1274,6 @@ impl Application for CosmicLlmApp {
             }
             Message::ShowMessageDialog(content) => {
                 self.dialog = Some(DialogPage::MessageText(text_editor::Content::with_text(&content)));
-            }
-            Message::MCPToolsUpdated(tools) => {
-                self.available_mcp_tools = tools;
-                // Sync tool states from registry
-                if let Ok(registry) = self.mcp_registry.try_read() {
-                    self.tool_states = registry.get_tool_states();
-                }
             }
             Message::RefreshMCPTools => {
                 // Try to get tools synchronously from registry
@@ -1323,8 +1351,8 @@ impl Application for CosmicLlmApp {
                     self.search_results.clear();
                 }
             }
-            Message::SearchResults(results) => {
-                self.search_results = results;
+            Message::UpdateTokenCount(count) => {
+                self.current_token_count = count;
             }
         }
         
@@ -1820,6 +1848,33 @@ impl CosmicLlmApp {
                                 names.sort();
                                 let idx = names.iter().position(|k| k == &self.config.default);
                                 widget::dropdown(names, idx, Message::ChangeDefaultProfile)
+                            }
+                        )
+                        .push(
+                            // Token counter display
+                            {
+                                let percentage = if self.context_window_size > 0 {
+                                    (self.current_token_count * 100 / self.context_window_size) as f32
+                                } else {
+                                    0.0
+                                };
+                                
+                                let color_class = if percentage < 50.0 {
+                                    cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.2, 0.8, 0.2)) // Green
+                                } else if percentage < 70.0 {
+                                    cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.8, 0.8, 0.2)) // Yellow
+                                } else if percentage < 90.0 {
+                                    cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.8, 0.5, 0.0)) // Orange
+                                } else {
+                                    cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.8, 0.2, 0.2)) // Red
+                                };
+                                
+                                cosmic::widget::text(format!("{} / {} tokens ({:.0}%)", 
+                                    self.current_token_count, 
+                                    self.context_window_size,
+                                    percentage))
+                                    .size(12)
+                                    .class(color_class)
                             }
                         )
                         .push(cosmic::widget::Space::with_width(Length::Fill))

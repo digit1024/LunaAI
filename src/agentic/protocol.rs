@@ -57,6 +57,12 @@ pub enum AgentUpdate {
         turn_id: Uuid,
         error: String,
     },
+    ContextSummarized {
+        turn_id: Uuid,
+        old_count: usize,
+        new_count: usize,
+        tokens_saved: u32,
+    },
     Heartbeat {
         turn_id: Uuid,
         ts_ms: i64,

@@ -1,4 +1,5 @@
 use crate::llm::{Message, Role, LlmClient};
+use crate::llm::{token_counter, context_manager::ContextManager};
 use super::protocol::{AgentUpdate, PlannedTool};
 use crate::mcp::MCPServerRegistry;
 use anyhow::Result;
@@ -11,6 +12,9 @@ pub struct AgenticLoop {
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
     pub llm_client: Arc<dyn LlmClient>,
     pub tool_logger: super::tool_logger::ToolLogger,
+    pub context_manager: ContextManager,
+    pub context_window_size: u32,
+    pub summarize_threshold: f32,
 }
 
 impl AgenticLoop {
@@ -19,7 +23,16 @@ impl AgenticLoop {
             mcp_registry,
             llm_client,
             tool_logger: super::tool_logger::ToolLogger::new("agentic_tool_calls.log".to_string()),
+            context_manager: ContextManager::default(),
+            context_window_size: 128000, // Default, will be updated from profile
+            summarize_threshold: 0.7,
         }
+    }
+    
+    pub fn with_context_config(mut self, window_size: u32, threshold: f32) -> Self {
+        self.context_window_size = window_size;
+        self.summarize_threshold = threshold;
+        self
     }
     
     pub async fn process_message(&mut self, mut messages: Vec<Message>, agent_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>, _message_id: Option<uuid::Uuid>) -> Result<String> {
@@ -38,6 +51,58 @@ impl AgenticLoop {
                     iteration,
                     plan_summary: None,
                 });
+            }
+            
+            // Check context size and summarize if needed
+            let current_tokens = token_counter::estimate_tokens_for_messages(&messages);
+            if self.context_manager.should_summarize(current_tokens, self.context_window_size, self.summarize_threshold) {
+                log::info!("📝 Context size {} tokens exceeds threshold, summarizing...", current_tokens);
+                
+                // Get messages to summarize
+                let messages_to_summarize = self.context_manager.build_summarization_messages(&messages);
+                if !messages_to_summarize.is_empty() {
+                    // Summarize old messages
+                    match self.context_manager.summarize_messages(self.llm_client.as_ref(), &messages_to_summarize).await {
+                        Ok(summary) => {
+                            // Get messages to keep
+                            let mut messages_to_keep = self.context_manager.get_messages_to_keep(&messages);
+                            
+                            // Create a summary message
+                            let summary_message = Message::new(Role::Assistant, format!("[Previous conversation summarized: {}]", summary));
+                            
+                            // Insert summary after system prompt (if present) or at the beginning
+                            let insert_pos = if messages_to_keep.first().map(|m| matches!(m.role, Role::System)).unwrap_or(false) {
+                                1
+                            } else {
+                                0
+                            };
+                            messages_to_keep.insert(insert_pos, summary_message);
+                            
+                            // Update messages
+                            let old_count = messages.len();
+                            let new_count = messages_to_keep.len();
+                            let tokens_saved = current_tokens.saturating_sub(token_counter::estimate_tokens_for_messages(&messages_to_keep));
+                            
+                            messages = messages_to_keep;
+                            
+                            // Send context summarized notification
+                            if let Some(tx) = agent_tx.as_ref() {
+                                let _ = tx.send(AgentUpdate::ContextSummarized {
+                                    turn_id,
+                                    old_count,
+                                    new_count,
+                                    tokens_saved,
+                                });
+                            }
+                            
+                            log::info!("✅ Context summarized: {} -> {} messages, {} tokens saved", old_count, new_count, tokens_saved);
+                        }
+                        Err(e) => {
+                            log::warn!("⚠️ Failed to summarize context: {}", e);
+                            // Continue with original messages if summarization fails
+                        }
+                    }
+                }
             }
             
             // Get enabled tools from MCP registry
