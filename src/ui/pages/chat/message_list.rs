@@ -1,6 +1,6 @@
 use cosmic::{
     iced::{Length, Padding},
-    widget::{self, markdown, scrollable, Space},
+    widget::{self, markdown, scrollable},
     Element,
 };
 use crate::ui::app::{Message, CosmicLlmApp, ToolCallStatus};

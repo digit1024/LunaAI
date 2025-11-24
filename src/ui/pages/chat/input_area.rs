@@ -22,7 +22,7 @@ pub fn input_area(app: &CosmicLlmApp) -> Element<Message> {
                                 cosmic::widget::text(format!("📎 {}", file_name)).size(12).into(),
                                 cosmic::widget::Space::with_width(Length::Fill).into(),
                                 cosmic::widget::button::standard("✕")
-                                    .on_press(Message::RemoveFile(file_path.clone()))
+                                    .on_press(Message::RemoveFile(file_path.to_string()))
                                     .padding([4, 8])
                                     .into(),
                             ])

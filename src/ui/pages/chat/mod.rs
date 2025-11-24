@@ -17,7 +17,7 @@ pub fn chat_view(app: &CosmicLlmApp) -> Element<Message> {
         )
         .push(
             // Messages area with better styling
-            message_list::message_list(app)
+            cosmic::widget::container(message_list::message_list(app))
                 .height(Length::Fill)
                 .width(Length::Fill)
         )

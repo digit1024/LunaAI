@@ -1,4 +1,4 @@
-use cosmic::{Element, widget::scrollable};
+use cosmic::Element;
 use crate::ui::app::{Message, CosmicLlmApp};
 
 pub fn tools_context_view(app: &CosmicLlmApp) -> Element<Message> {

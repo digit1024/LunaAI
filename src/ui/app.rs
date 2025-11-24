@@ -1,7 +1,7 @@
 use cosmic::{
     app::{self, Core},
-    iced::{Length, Subscription, keyboard},
-    widget::{self, scrollable, menu, text_editor, markdown},
+    iced::Subscription,
+    widget::{self, menu, text_editor},
     Application, Element,
     dialog::file_chooser::{self, FileFilter},
 };
@@ -21,7 +21,7 @@ use crate::{
     ui::pages::history,
     ui::pages::mcp_config,
     ui::pages::tools,
-    ui::widgets::{ToolCallWidget, ToolCallMessage},
+    ui::widgets::ToolCallMessage,
     ui::dialogs::{DialogAction, DialogPage},
 };
 use crate::agentic::protocol::AgentUpdate;
@@ -143,58 +143,58 @@ pub struct Turn {
 }
 
 pub struct CosmicLlmApp {
-    core: Core,
-    config: AppConfig,
-    storage: Storage,
-    prompt_manager: PromptManager,
-    input: String,
-    input_content: text_editor::Content,
-    messages: Vec<ChatMessage>,
-    input_id: cosmic::widget::Id,
-    current_page: NavigationPage,
-    current_conversation_id: Option<Uuid>,
-    mcp_registry: Arc<RwLock<MCPServerRegistry>>,
-    llm_client: Arc<dyn LlmClient>,
-    is_streaming: bool,
-    current_streaming_id: Option<Uuid>,
-    active_tool_calls: Vec<ToolCallInfo>,
+    pub core: Core,
+    pub config: AppConfig,
+    pub storage: Storage,
+    pub prompt_manager: PromptManager,
+    pub input: String,
+    pub input_content: text_editor::Content,
+    pub messages: Vec<ChatMessage>,
+    pub input_id: cosmic::widget::Id,
+    pub current_page: NavigationPage,
+    pub current_conversation_id: Option<Uuid>,
+    pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
+    pub llm_client: Arc<dyn LlmClient>,
+    pub is_streaming: bool,
+    pub current_streaming_id: Option<Uuid>,
+    pub active_tool_calls: Vec<ToolCallInfo>,
     // Anchors tool calls under the AI message that executed them
-    current_ai_message_index: Option<usize>,
-    archived_tool_calls: Vec<AnchoredToolCall>,
-    expanded_tool_calls: std::collections::HashSet<usize>,
-    scrollable_id: cosmic::widget::Id,
-    key_binds: std::collections::HashMap<menu::KeyBind, MenuAction>,
-    settings_changed: bool,
-    title_sender: Option<tokio::sync::mpsc::UnboundedSender<(Uuid, String)>>,
-    settings_page: SimpleSettingsPage,
-    context_page: ContextPage,
-    about: widget::about::About,
+    pub current_ai_message_index: Option<usize>,
+    pub archived_tool_calls: Vec<AnchoredToolCall>,
+    pub expanded_tool_calls: std::collections::HashSet<usize>,
+    pub scrollable_id: cosmic::widget::Id,
+    pub key_binds: std::collections::HashMap<menu::KeyBind, MenuAction>,
+    pub settings_changed: bool,
+    pub title_sender: Option<tokio::sync::mpsc::UnboundedSender<(Uuid, String)>>,
+    pub settings_page: SimpleSettingsPage,
+    pub context_page: ContextPage,
+    pub about: widget::about::About,
     // Navigation model to integrate with COSMIC shell nav bar (pattern from msToDO)
-    nav_model: widget::segmented_button::SingleSelectModel,
+    pub nav_model: widget::segmented_button::SingleSelectModel,
     // New agent protocol view model
-    turns: Vec<Turn>,
+    pub turns: Vec<Turn>,
     // When true, ignore legacy StreamingUpdate to avoid duplicate UI events
-    agent_mode_active: bool,
+    pub agent_mode_active: bool,
     // Dialog state
-    dialog: Option<DialogPage>,
-    dialog_text_input_id: widget::Id,
+    pub dialog: Option<DialogPage>,
+    pub dialog_text_input_id: widget::Id,
     // MCP tools cache
-    available_mcp_tools: Vec<crate::llm::ToolDefinition>,
+    pub available_mcp_tools: Vec<crate::llm::ToolDefinition>,
     // Tool enable/disable state (tool_name -> enabled)
-    tool_states: std::collections::HashMap<String, bool>,
+    pub tool_states: std::collections::HashMap<String, bool>,
     // Show tools context panel
-    show_tools_context: bool,
+    pub show_tools_context: bool,
     // Store last user message for retry functionality
-    last_user_message: Option<String>,
+    pub last_user_message: Option<String>,
     // Store attached files
-    attached_files: Vec<String>,
+    pub attached_files: Vec<String>,
     // Store current error message
-    current_error: Option<String>,
+    pub current_error: Option<String>,
     // Store prepared LLM messages with attachments for the current request
-    pending_llm_messages: Option<Vec<crate::llm::Message>>,
+    pub pending_llm_messages: Option<Vec<crate::llm::Message>>,
     // Search functionality
-    search_query: String,
-    search_results: Vec<crate::storage::sqlite_storage_simple::Snippet>,
+    pub search_query: String,
+    pub search_results: Vec<crate::storage::sqlite_storage_simple::Snippet>,
 }
 
 #[derive(Debug, Clone)]
@@ -1200,14 +1200,12 @@ impl Application for CosmicLlmApp {
                         let model = self.settings_page.new_profile_model.trim().to_string();
                         let endpoint = self.settings_page.new_profile_endpoint.trim().to_string();
                         if !name.is_empty() && !model.is_empty() {
-                            let profile = LlmProfile {
-                                backend: "openai".to_string(), // Default backend
-                                api_key: String::new(),
-                                model,
-                                endpoint,
-                                temperature: Some(0.7),
-                                max_tokens: Some(1000),
-                            };
+                            let mut profile = LlmProfile::default();
+                            profile.backend = "openai".to_string();
+                            profile.model = model;
+                            profile.endpoint = endpoint;
+                            profile.temperature = Some(0.7);
+                            profile.max_tokens = Some(1000);
                             self.config.profiles.insert(name.clone(), profile);
                             if self.config.default.is_empty() {
                                 self.config.default = name.clone();
