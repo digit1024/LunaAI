@@ -1,0 +1,173 @@
+use cosmic::{
+    iced::{Length, Padding},
+    widget::{self, markdown, scrollable, Space},
+    Element,
+};
+use crate::ui::app::{Message, CosmicLlmApp, ToolCallStatus};
+use crate::ui::widgets::ToolCallWidget;
+
+pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
+    let mut column = cosmic::widget::column::with_capacity(app.messages.len()).spacing(12);
+    
+    // Add regular chat messages
+    for (i, msg) in app.messages.iter().enumerate() {
+        let content = msg.content.clone();
+        let message_widget = cosmic::widget::container(
+            {
+                let content_widget: Element<Message> = if msg.is_user {
+                    widget::container(
+                        cosmic::widget::text(&msg.content)
+                            .size(14)
+                            .class(cosmic::style::Text::Color(cosmic::iced::Color::WHITE))
+                    )
+                    .width(Length::Fill)
+                    .into()
+                } else if msg.is_error {
+                    widget::container(
+                        cosmic::widget::text(&msg.content)
+                            .size(14)
+                            .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.8, 0.2, 0.2)))
+                    )
+                    .width(Length::Fill)
+                    .into()
+                } else {
+                    widget::container(
+                        widget::lazy(&msg.content, |_| {
+                            let items = markdown::parse(&msg.content).collect::<Vec<_>>();
+                            let style = widget::markdown::Style {
+                                inline_code_padding: cosmic::iced::Padding::from([1, 2]),
+                                inline_code_highlight: widget::markdown::Highlight {
+                                    background: cosmic::iced::Background::Color(cosmic::iced::Color::from_rgb(0.1, 0.1, 0.1)),
+                                    border: cosmic::iced::Border::default().rounded(2),
+                                },
+                                inline_code_color: cosmic::iced::Color::WHITE,
+                                link_color: cosmic::iced::Color::from_rgb(0.3, 0.6, 1.0),
+                            };
+                            widget::markdown(&items, widget::markdown::Settings::default(), style)
+                                .map(Message::MarkdownLinkClicked)
+                        })
+                    )
+                    .width(Length::Fill)
+                    .into()
+                };
+                
+                cosmic::widget::row::with_capacity(2)
+                    .push(content_widget)
+                    .push(
+                        cosmic::widget::button::text("📋")
+                            .on_press(Message::ShowMessageDialog(content))
+                            .padding(4)
+                            .class(cosmic::style::Button::Text)
+                    )
+            }
+        )
+        .padding(Padding::from([12, 16]))
+        .class(if msg.is_user {
+            cosmic::style::Container::Primary
+        } else if msg.is_error {
+            cosmic::style::Container::Card
+        } else {
+            cosmic::style::Container::Card
+        })
+        .width(Length::FillPortion(7)); // 70% width
+        
+        let message_row = if msg.is_user {
+            // User messages: right-aligned
+            cosmic::widget::row::with_capacity(2)
+                .push(cosmic::widget::Space::with_width(Length::FillPortion(3)))
+                .push(message_widget)
+        } else {
+            // AI messages: left-aligned
+            cosmic::widget::row::with_capacity(2)
+                .push(message_widget)
+                .push(cosmic::widget::Space::with_width(Length::FillPortion(3)))
+        };
+        // Push the message first
+        column = column.push(message_row);
+        // If there are archived tool calls anchored to this message, render them right after
+        for (idx, anchored) in app.archived_tool_calls.iter().enumerate() {
+            if anchored.anchor_index == i {
+                let is_expanded = app.expanded_tool_calls.contains(&idx);
+                let tool_call = &anchored.tool_call;
+                let tool_name = tool_call.tool_name.clone();
+                let parameters = tool_call.parameters.clone();
+                let status = match tool_call.status {
+                    ToolCallStatus::Started => crate::ui::widgets::ToolCallStatus::Started,
+                    ToolCallStatus::Completed => crate::ui::widgets::ToolCallStatus::Completed,
+                    ToolCallStatus::Error => crate::ui::widgets::ToolCallStatus::Error,
+                };
+                let result = tool_call.result.clone();
+                let error = tool_call.error.clone();
+                let widget = Box::leak(Box::new(ToolCallWidget {
+                    tool_name,
+                    parameters,
+                    status,
+                    result,
+                    error,
+                    is_expanded,
+                }));
+                let widget_element = widget.view().map(move |msg| Message::ToolCallWidgetMessage(idx, msg));
+                let tool_call_row = cosmic::widget::row::with_capacity(2)
+                    .push(widget_element)
+                    .push(cosmic::widget::Space::with_width(Length::Fill));
+                column = column.push(tool_call_row);
+            }
+        }
+        // If we're on the currently streaming AI message, also render active tool calls inline
+        if let Some(anchor) = app.current_ai_message_index {
+            if anchor == i {
+                let offset = app.archived_tool_calls.len();
+                for (j, tool_call) in app.active_tool_calls.iter().enumerate() {
+                    let idx = offset + j;
+                    let is_expanded = app.expanded_tool_calls.contains(&idx);
+                    let tool_name = tool_call.tool_name.clone();
+                    let parameters = tool_call.parameters.clone();
+                    let status = match tool_call.status {
+                        ToolCallStatus::Started => crate::ui::widgets::ToolCallStatus::Started,
+                        ToolCallStatus::Completed => crate::ui::widgets::ToolCallStatus::Completed,
+                        ToolCallStatus::Error => crate::ui::widgets::ToolCallStatus::Error,
+                    };
+                    let result = tool_call.result.clone();
+                    let error = tool_call.error.clone();
+                    let widget = Box::leak(Box::new(ToolCallWidget {
+                        tool_name,
+                        parameters,
+                        status,
+                        result,
+                        error,
+                        is_expanded,
+                    }));
+                    let widget_element = widget.view().map(move |msg| Message::ToolCallWidgetMessage(idx, msg));
+                    let tool_call_row = cosmic::widget::row::with_capacity(2)
+                        .push(widget_element)
+                        .push(cosmic::widget::Space::with_width(Length::Fill));
+                    column = column.push(tool_call_row);
+                }
+                // If there are no active tool calls yet, but the current turn is not complete, show a spinner row
+                if app.active_tool_calls.is_empty() {
+                    if let Some(current_turn) = app.turns.last() {
+                        if !current_turn.complete {
+                            let spinner = cosmic::widget::text("Working…").size(12);
+                            let row = cosmic::widget::row::with_capacity(2)
+                                .push(spinner)
+                                .push(cosmic::widget::Space::with_width(Length::Fill));
+                            column = column.push(row);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Add spacer at bottom to force scroll to bottom
+    column = column.push(
+        cosmic::widget::Space::with_height(Length::Fixed(1.0))
+            .width(Length::Fill)
+    );
+    
+    scrollable(column)
+        .scrollbar_width(8)
+        .scrollbar_padding(4)
+        .id(app.scrollable_id.clone())
+        .into()
+}
