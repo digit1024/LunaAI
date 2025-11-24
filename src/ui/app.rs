@@ -133,15 +133,6 @@ impl menu::Action for NavMenuAction {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Turn {
-    pub id: Uuid,
-    pub iteration: u32,
-    pub text: String,
-    pub complete: bool,
-    pub tools: Vec<ToolCallInfo>,
-}
-
 pub struct CosmicLlmApp {
     pub core: Core,
     pub config: AppConfig,
@@ -171,8 +162,6 @@ pub struct CosmicLlmApp {
     pub about: widget::about::About,
     // Navigation model to integrate with COSMIC shell nav bar (pattern from msToDO)
     pub nav_model: widget::segmented_button::SingleSelectModel,
-    // New agent protocol view model
-    pub turns: Vec<Turn>,
     // When true, ignore legacy StreamingUpdate to avoid duplicate UI events
     pub agent_mode_active: bool,
     // Dialog state
@@ -313,7 +302,6 @@ impl CosmicLlmApp {
                 }
                 model
             },
-            turns: Vec::new(),
             agent_mode_active: true,
             dialog: None,
             dialog_text_input_id: widget::Id::unique(),
@@ -922,17 +910,12 @@ impl Application for CosmicLlmApp {
             }
             Message::AgentUpdate(u) => {
                 match u {
-                    AgentUpdate::BeginTurn { conversation_id: _, turn_id, iteration, plan_summary } => {
-                        // Start a new turn bubble
-                        self.turns.push(Turn { id: turn_id, iteration, text: plan_summary.unwrap_or_default(), complete: false, tools: Vec::new() });
+                    AgentUpdate::BeginTurn { conversation_id: _, turn_id: _, iteration: _, plan_summary: _ } => {
                         // Always create a fresh assistant message bubble for this turn
                         self.messages.push(ChatMessage { content: String::from(""), is_user: false, is_error: false });
                         self.current_ai_message_index = Some(self.messages.len() - 1);
                     }
                     AgentUpdate::AssistantDelta { turn_id: _, text_chunk, seq: _ } => {
-                        if let Some(turn) = self.turns.last_mut() {
-                            turn.text.push_str(&text_chunk);
-                        }
                         if let Some(idx) = self.current_ai_message_index {
                             if let Some(msg) = self.messages.get_mut(idx) {
                                 msg.content.push_str(&text_chunk);
@@ -940,9 +923,6 @@ impl Application for CosmicLlmApp {
                         }
                     }
                     AgentUpdate::AssistantComplete { turn_id: _, full_text } => {
-                        if let Some(turn) = self.turns.last_mut() {
-                            turn.text = full_text.clone();
-                        }
                         // Mirror to legacy bubble
                         let mut wrote = false;
                         if let Some(last_msg) = self.messages.last_mut() {
@@ -1010,35 +990,6 @@ impl Application for CosmicLlmApp {
                             }
                         } else {
                             self.active_tool_calls.clear();
-                        }
-                        if let Some(turn) = self.turns.last_mut() { 
-                            turn.complete = true;
-                            // Persist turn to storage
-                            if let Some(conv_id) = self.current_conversation_id {
-                                let storage_tools: Vec<crate::storage::conversation_storage::ToolCallInfo> = turn.tools.iter().map(|tc| {
-                                    crate::storage::conversation_storage::ToolCallInfo {
-                                        id: tc.id.clone(),
-                                        tool_name: tc.tool_name.clone(),
-                                        parameters: tc.parameters.clone(),
-                                        status: match tc.status {
-                                            ToolCallStatus::Started => crate::storage::conversation_storage::ToolCallStatus::Started,
-                                            ToolCallStatus::Completed => crate::storage::conversation_storage::ToolCallStatus::Completed,
-                                            ToolCallStatus::Error => crate::storage::conversation_storage::ToolCallStatus::Error,
-                                        },
-                                        result: tc.result.clone(),
-                                        error: tc.error.clone(),
-                                    }
-                                }).collect();
-                                
-                                let storage_turn = crate::storage::conversation_storage::Turn {
-                                    id: turn.id,
-                                    iteration: turn.iteration,
-                                    text: turn.text.clone(),
-                                    complete: turn.complete,
-                                    tools: storage_tools,
-                                };
-                                let _ = self.storage.add_turn_to_conversation(&conv_id, storage_turn);
-                            }
                         }
                         self.current_ai_message_index = None;
                     }

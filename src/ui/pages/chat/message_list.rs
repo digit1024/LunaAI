@@ -143,17 +143,13 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                         .push(cosmic::widget::Space::with_width(Length::Fill));
                     column = column.push(tool_call_row);
                 }
-                // If there are no active tool calls yet, but the current turn is not complete, show a spinner row
-                if app.active_tool_calls.is_empty() {
-                    if let Some(current_turn) = app.turns.last() {
-                        if !current_turn.complete {
-                            let spinner = cosmic::widget::text("Working…").size(12);
-                            let row = cosmic::widget::row::with_capacity(2)
-                                .push(spinner)
-                                .push(cosmic::widget::Space::with_width(Length::Fill));
-                            column = column.push(row);
-                        }
-                    }
+                // If there are no active tool calls yet, but we're streaming, show a spinner row
+                if app.active_tool_calls.is_empty() && app.is_streaming {
+                    let spinner = cosmic::widget::text("Working…").size(12);
+                    let row = cosmic::widget::row::with_capacity(2)
+                        .push(spinner)
+                        .push(cosmic::widget::Space::with_width(Length::Fill));
+                    column = column.push(row);
                 }
             }
         }
