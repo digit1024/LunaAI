@@ -48,6 +48,7 @@ pub enum Message {
     ToolCallCompleted(String, String), // tool_name, result
     ToolCallError(String, String), // tool_name, error
     ToolCallWidgetMessage(usize, ToolCallMessage), // index, message
+    ToggleToolSummary(usize, String), // message idx, summary id
     ScrollToBottom,
     // Menu actions
     ShowAbout,
@@ -154,6 +155,7 @@ pub struct CosmicLlmApp {
     pub current_ai_message_index: Option<usize>,
     pub archived_tool_calls: Vec<AnchoredToolCall>,
     pub expanded_tool_calls: std::collections::HashSet<usize>,
+    pub expanded_tool_summaries: std::collections::HashSet<(usize, String)>,
     pub scrollable_id: cosmic::widget::Id,
     pub key_binds: std::collections::HashMap<menu::KeyBind, MenuAction>,
     pub settings_changed: bool,
@@ -273,6 +275,7 @@ impl CosmicLlmApp {
             current_ai_message_index: None,
             archived_tool_calls: Vec::new(),
             expanded_tool_calls: std::collections::HashSet::new(),
+            expanded_tool_summaries: std::collections::HashSet::new(),
             scrollable_id: cosmic::widget::Id::unique(),
             key_binds: Self::create_key_binds(),
             settings_changed: false,
@@ -466,6 +469,8 @@ impl CosmicLlmApp {
         self.current_ai_message_index = None;
         self.pending_tool_calls_for_history.clear();
         self.tool_runtime_context.clear();
+        self.expanded_tool_summaries.clear();
+            self.expanded_tool_summaries.clear();
 
         let mut archived_indices: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
@@ -993,6 +998,7 @@ impl Application for CosmicLlmApp {
                 self.current_ai_message_index = None;
                 self.pending_tool_calls_for_history.clear();
                 self.tool_runtime_context.clear();
+                self.expanded_tool_summaries.clear();
             }
             Message::AgentUpdate(u) => match u {
                 AgentUpdate::AssistantStreamingStarted => {
@@ -1351,6 +1357,14 @@ impl Application for CosmicLlmApp {
                             self.expanded_tool_calls.insert(index);
                         }
                     }
+                }
+            }
+            Message::ToggleToolSummary(message_idx, summary_id) => {
+                let key = (message_idx, summary_id);
+                if self.expanded_tool_summaries.contains(&key) {
+                    self.expanded_tool_summaries.remove(&key);
+                } else {
+                    self.expanded_tool_summaries.insert(key);
                 }
             }
             Message::ScrollToBottom => {

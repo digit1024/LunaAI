@@ -1,5 +1,5 @@
 use cosmic::{
-    iced::{Length, Padding},
+    iced::{Length, Padding, Font},
     widget::{self, markdown, scrollable},
     Element,
 };
@@ -12,55 +12,114 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
     // Add regular chat messages
     for (i, msg) in app.messages.iter().enumerate() {
         let content = msg.content.clone();
-        let message_widget = cosmic::widget::container(
-            {
-                let content_widget: Element<Message> = if msg.is_user {
-                    widget::container(
-                        cosmic::widget::text(&msg.content)
-                            .size(14)
-                            .class(cosmic::style::Text::Color(cosmic::iced::Color::WHITE))
-                    )
-                    .width(Length::Fill)
-                    .into()
-                } else if msg.is_error {
-                    widget::container(
-                        cosmic::widget::text(&msg.content)
-                            .size(14)
-                            .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.8, 0.2, 0.2)))
-                    )
-                    .width(Length::Fill)
-                    .into()
-                } else {
-                    widget::container(
-                        widget::lazy(&msg.content, |_| {
-                            let items = markdown::parse(&msg.content).collect::<Vec<_>>();
-                            let style = widget::markdown::Style {
-                                inline_code_padding: cosmic::iced::Padding::from([1, 2]),
-                                inline_code_highlight: widget::markdown::Highlight {
-                                    background: cosmic::iced::Background::Color(cosmic::iced::Color::from_rgb(0.1, 0.1, 0.1)),
-                                    border: cosmic::iced::Border::default().rounded(2),
-                                },
-                                inline_code_color: cosmic::iced::Color::WHITE,
-                                link_color: cosmic::iced::Color::from_rgb(0.3, 0.6, 1.0),
-                            };
-                            widget::markdown(&items, widget::markdown::Settings::default(), style)
-                                .map(Message::MarkdownLinkClicked)
-                        })
-                    )
-                    .width(Length::Fill)
-                    .into()
-                };
-                
-                cosmic::widget::row::with_capacity(2)
-                    .push(content_widget)
-                    .push(
-                        cosmic::widget::button::text("📋")
-                            .on_press(Message::ShowMessageDialog(content))
-                            .padding(4)
-                            .class(cosmic::style::Button::Text)
-                    )
+        let mut tool_summaries: Vec<(String, String, String)> = Vec::new();
+        if !msg.is_user {
+            for anchored in app.archived_tool_calls.iter().filter(|t| t.anchor_index == i) {
+                let summary_id = anchored
+                    .tool_call
+                    .id
+                    .clone()
+                    .unwrap_or_else(|| format!("archived-{}-{}", i, tool_summaries.len()));
+                tool_summaries.push((
+                    summary_id,
+                    anchored.tool_call.tool_name.clone(),
+                    anchored.tool_call.parameters.clone(),
+                ));
             }
-        )
+            if let Some(current_anchor) = app.current_ai_message_index {
+                if current_anchor == i {
+                    for active in &app.active_tool_calls {
+                        let summary_id = active
+                            .id
+                            .clone()
+                            .unwrap_or_else(|| format!("active-{}-{}", i, tool_summaries.len()));
+                        tool_summaries.push((
+                            summary_id,
+                            active.tool_name.clone(),
+                            active.parameters.clone(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        let message_widget = cosmic::widget::container({
+            let content_widget: Element<Message> = if msg.is_user {
+                widget::container(
+                    cosmic::widget::text(&msg.content)
+                        .size(14)
+                        .class(cosmic::style::Text::Color(cosmic::iced::Color::WHITE)),
+                )
+                .width(Length::Fill)
+                .into()
+            } else if msg.is_error {
+                widget::container(
+                    cosmic::widget::text(&msg.content)
+                        .size(14)
+                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(
+                            0.8, 0.2, 0.2,
+                        ))),
+                )
+                .width(Length::Fill)
+                .into()
+            } else {
+                widget::container(widget::lazy(&msg.content, |_| {
+                    let items = markdown::parse(&msg.content).collect::<Vec<_>>();
+                    let style = widget::markdown::Style {
+                        inline_code_padding: cosmic::iced::Padding::from([1, 2]),
+                        inline_code_highlight: widget::markdown::Highlight {
+                            background: cosmic::iced::Background::Color(cosmic::iced::Color::from_rgb(
+                                0.1, 0.1, 0.1,
+                            )),
+                            border: cosmic::iced::Border::default().rounded(2),
+                        },
+                        inline_code_color: cosmic::iced::Color::WHITE,
+                        link_color: cosmic::iced::Color::from_rgb(0.3, 0.6, 1.0),
+                    };
+                    widget::markdown(&items, widget::markdown::Settings::default(), style)
+                        .map(Message::MarkdownLinkClicked)
+                }))
+                .width(Length::Fill)
+                .into()
+            };
+
+            let mut column = cosmic::widget::column::with_capacity(1).push(content_widget);
+            for (summary_id, label, params) in tool_summaries {
+                let key = (i, summary_id.clone());
+                let expanded = app.expanded_tool_summaries.contains(&key);
+                let toggle = cosmic::widget::button::text(format!(
+                    "{} {}",
+                    if expanded { "▼" } else { "▶" },
+                    label
+                ))
+                .on_press(Message::ToggleToolSummary(i, summary_id.clone()))
+                .class(cosmic::style::Button::Text)
+                .width(Length::Fill);
+
+                column = column.push(toggle);
+
+                if expanded {
+                    column = column.push(
+                        cosmic::widget::text(params.clone())
+                            .size(12)
+                            .font(Font::MONOSPACE)
+                            .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(
+                                0.7, 0.7, 0.7,
+                            )))
+                            .width(Length::Fill),
+                    );
+                }
+            }
+
+            cosmic::widget::row::with_capacity(2)
+                .push(column)
+                .push(
+                    cosmic::widget::button::text("📋")
+                        .on_press(Message::ShowMessageDialog(content))
+                        .padding(4)
+                        .class(cosmic::style::Button::Text),
+                )
+        })
         .padding(Padding::from([12, 16]))
         .class(if msg.is_user {
             cosmic::style::Container::Primary
