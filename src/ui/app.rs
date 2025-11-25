@@ -527,6 +527,39 @@ impl CosmicLlmApp {
             std::collections::HashMap::new();
 
         for stored in conversation.messages {
+            // Tool role messages should NOT be added as regular chat messages -
+            // they only update the archived tool calls with results
+            if stored.role == "tool" {
+                if let Some(tool_call_id) = stored.tool_call_id.as_ref() {
+                    if let Some(idx) = archived_indices.get(tool_call_id) {
+                        if let Some(entry) = self.archived_tool_calls.get_mut(*idx) {
+                            entry.tool_call.status =
+                                if stored.tool_status.as_deref() == Some("error") {
+                                    ToolCallStatus::Error
+                                } else {
+                                    ToolCallStatus::Completed
+                                };
+
+                            // Prefer tool_result_json over content (content is legacy/redundant)
+                            let result_text = stored
+                                .tool_result_json
+                                .as_ref()
+                                .map(|value| {
+                                    serde_json::to_string_pretty(value)
+                                        .unwrap_or_else(|_| value.to_string())
+                                })
+                                .unwrap_or_else(|| stored.content.clone());
+                            if entry.tool_call.status == ToolCallStatus::Error {
+                                entry.tool_call.error = Some(result_text);
+                            } else {
+                                entry.tool_call.result = Some(result_text);
+                            }
+                        }
+                    }
+                }
+                continue; // Skip adding tool messages to self.messages
+            }
+
             let is_user = stored.role == "user";
             self.messages.push(ChatMessage {
                 content: stored.content.clone(),
@@ -552,32 +585,6 @@ impl CosmicLlmApp {
                         tool_call: info,
                     });
                     archived_indices.insert(call.id.clone(), self.archived_tool_calls.len() - 1);
-                }
-            }
-
-            if stored.role == "tool" {
-                if let Some(tool_call_id) = stored.tool_call_id.as_ref() {
-                    if let Some(idx) = archived_indices.get(tool_call_id) {
-                        if let Some(entry) = self.archived_tool_calls.get_mut(*idx) {
-                            entry.tool_call.status =
-                                if stored.tool_status.as_deref() == Some("error") {
-                                    ToolCallStatus::Error
-                                } else {
-                                    ToolCallStatus::Completed
-                                };
-
-                            let result_text = stored
-                                .tool_result_json
-                                .as_ref()
-                                .map(|value| value.to_string())
-                                .unwrap_or_else(|| stored.content.clone());
-                            if entry.tool_call.status == ToolCallStatus::Error {
-                                entry.tool_call.error = Some(result_text.clone());
-                            } else {
-                                entry.tool_call.result = Some(result_text.clone());
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -1338,10 +1345,11 @@ impl Application for CosmicLlmApp {
                                 tool_params_json: params_ref,
                                 tool_result_json: Some(&result_value),
                             };
+                            // Use empty content - tool_result_json holds the actual data
                             if let Err(e) = self.storage.add_message_with_metadata(
                                 &conv_id,
                                 "tool".to_string(),
-                                result_json.clone(),
+                                String::new(),
                                 None,
                                 metadata,
                             ) {
@@ -1411,10 +1419,11 @@ impl Application for CosmicLlmApp {
                                 tool_params_json: params_ref,
                                 tool_result_json: Some(&error_value),
                             };
+                            // Use empty content - tool_result_json holds the error
                             if let Err(e) = self.storage.add_message_with_metadata(
                                 &conv_id,
                                 "tool".to_string(),
-                                error.clone(),
+                                String::new(),
                                 None,
                                 metadata,
                             ) {

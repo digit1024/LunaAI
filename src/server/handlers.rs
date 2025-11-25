@@ -489,13 +489,14 @@ impl PersistenceContext {
             tool_params_json: params,
             tool_result_json: Some(&result_value),
         };
+        // Use empty content - tool_result_json holds the actual data
         self.storage
             .lock()
             .await
             .add_message_with_metadata(
                 &self.conversation_id,
                 "tool".to_string(),
-                payload.to_string(),
+                String::new(),
                 None,
                 metadata,
             )
