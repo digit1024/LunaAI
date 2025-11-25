@@ -1,9 +1,11 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
+use crate::llm::ToolCall;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Turn {
@@ -47,6 +49,12 @@ pub struct StoredMessage {
     pub role: String,
     pub content: String,
     pub timestamp: DateTime<Utc>,
+    pub tool_calls: Option<Vec<ToolCall>>,
+    pub tool_call_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub tool_status: Option<String>,
+    pub tool_params_json: Option<Value>,
+    pub tool_result_json: Option<Value>,
 }
 
 impl Conversation {
@@ -68,6 +76,12 @@ impl Conversation {
             role,
             content,
             timestamp: Utc::now(),
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_status: None,
+            tool_params_json: None,
+            tool_result_json: None,
         };
         self.messages.push(message);
         self.updated_at = Utc::now();

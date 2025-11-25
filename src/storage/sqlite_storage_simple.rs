@@ -1,8 +1,11 @@
 use chrono::Utc;
-use rusqlite::{Connection, Result as SqliteResult, params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Result as SqliteResult};
 use serde::{Deserialize, Serialize};
+use serde_json::{self, Value};
 use std::path::Path;
 use uuid::Uuid;
+
+use crate::llm::ToolCall;
 
 /// Represents a conversation in the database
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,6 +24,12 @@ pub struct Message {
     pub content: String,
     pub embedding: Option<Vec<f32>>,
     pub created_at: i64,
+    pub tool_calls: Option<Vec<ToolCall>>,
+    pub tool_call_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub tool_status: Option<String>,
+    pub tool_params_json: Option<Value>,
+    pub tool_result_json: Option<Value>,
 }
 
 /// Represents a search snippet from FTS5
@@ -72,6 +81,12 @@ impl SqliteStorage {
                 content TEXT NOT NULL,
                 embedding BLOB,
                 created_at INTEGER NOT NULL,
+                tool_calls TEXT,
+                tool_call_id TEXT,
+                tool_name TEXT,
+                tool_status TEXT,
+                tool_params_json TEXT,
+                tool_result_json TEXT,
                 FOREIGN KEY (conversation_id) REFERENCES conversations (id) ON DELETE CASCADE
             )",
             [],
@@ -149,6 +164,23 @@ impl SqliteStorage {
         content: &str,
         embedding: Option<&[f32]>,
     ) -> SqliteResult<()> {
+        self.insert_message_with_metadata(
+            conversation_id,
+            role,
+            content,
+            embedding,
+            &MessageMetadata::default(),
+        )
+    }
+
+    pub fn insert_message_with_metadata(
+        &self,
+        conversation_id: &str,
+        role: &str,
+        content: &str,
+        embedding: Option<&[f32]>,
+        metadata: &MessageMetadata<'_>,
+    ) -> SqliteResult<()> {
         let created_at = Utc::now().timestamp();
         
         // Convert embedding to bytes if provided
@@ -158,10 +190,49 @@ impl SqliteStorage {
             None
         };
 
+        let tool_calls_json = if let Some(calls) = metadata.tool_calls {
+            Some(
+                serde_json::to_string(calls)
+                    .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?,
+            )
+        } else {
+            None
+        };
+
+        let tool_params_json = if let Some(params) = metadata.tool_params_json {
+            Some(
+                serde_json::to_string(params)
+                    .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?,
+            )
+        } else {
+            None
+        };
+
+        let tool_result_json = if let Some(result) = metadata.tool_result_json {
+            Some(
+                serde_json::to_string(result)
+                    .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?,
+            )
+        } else {
+            None
+        };
+
         self.conn.execute(
-            "INSERT INTO messages (conversation_id, role, content, embedding, created_at) 
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![conversation_id, role, content, embedding_bytes, created_at],
+            "INSERT INTO messages (conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json) 
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                conversation_id,
+                role,
+                content,
+                embedding_bytes,
+                created_at,
+                tool_calls_json,
+                metadata.tool_call_id,
+                metadata.tool_name,
+                metadata.tool_status,
+                tool_params_json,
+                tool_result_json
+            ],
         )?;
 
         Ok(())
@@ -170,7 +241,7 @@ impl SqliteStorage {
     /// Load all messages for a conversation
     pub fn load_conversation(&self, conversation_id: &str) -> SqliteResult<Vec<Message>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, conversation_id, role, content, embedding, created_at 
+            "SELECT id, conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json 
              FROM messages 
              WHERE conversation_id = ?1 
              ORDER BY created_at ASC"
@@ -186,6 +257,21 @@ impl SqliteStorage {
                 None
             };
 
+            let tool_calls_json: Option<String> = row.get(6)?;
+            let tool_calls = tool_calls_json
+                .as_deref()
+                .map(|json| {
+                    serde_json::from_str(json).map_err(|err| {
+                        log::warn!("Failed to deserialize tool_calls JSON: {}", err);
+                        err
+                    })
+                })
+                .transpose()
+                .unwrap_or(None);
+
+            let tool_params_json = Self::read_json_value(row.get(10)?);
+            let tool_result_json = Self::read_json_value(row.get(11)?);
+
             Ok(Message {
                 id: row.get(0)?,
                 conversation_id: row.get(1)?,
@@ -193,6 +279,12 @@ impl SqliteStorage {
                 content: row.get(3)?,
                 embedding,
                 created_at: row.get(5)?,
+                tool_calls,
+                tool_call_id: row.get(7)?,
+                tool_name: row.get(8)?,
+                tool_status: row.get(9)?,
+                tool_params_json,
+                tool_result_json,
             })
         })?;
 
@@ -384,5 +476,39 @@ mod tests {
 
         let _ = fs::remove_file(&db_path);
         Ok(())
+    }
+}
+
+pub struct MessageMetadata<'a> {
+    pub tool_calls: Option<&'a [ToolCall]>,
+    pub tool_call_id: Option<&'a str>,
+    pub tool_name: Option<&'a str>,
+    pub tool_status: Option<&'a str>,
+    pub tool_params_json: Option<&'a Value>,
+    pub tool_result_json: Option<&'a Value>,
+}
+
+impl<'a> Default for MessageMetadata<'a> {
+    fn default() -> Self {
+        Self {
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_status: None,
+            tool_params_json: None,
+            tool_result_json: None,
+        }
+    }
+}
+
+impl SqliteStorage {
+    fn read_json_value(raw: Option<String>) -> Option<Value> {
+        raw.and_then(|json| match serde_json::from_str(&json) {
+            Ok(value) => Some(value),
+            Err(err) => {
+                log::warn!("Failed to deserialize JSON payload: {}", err);
+                None
+            }
+        })
     }
 }

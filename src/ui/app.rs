@@ -10,21 +10,22 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::{
+    agentic::protocol::AgentUpdate,
     config::{AppConfig, LlmProfile},
-    storage::Storage,
-    llm::LlmClient,
+    llm::{LlmClient, ToolCall},
     mcp::MCPServerRegistry,
     prompts::PromptManager,
+    storage::{sqlite_storage_simple::MessageMetadata, Storage},
     ui::context::ContextPage,
-    ui::pages::settings::{SimpleSettingsPage, SimpleSettingsMessage},
+    ui::dialogs::{DialogAction, DialogPage},
     ui::pages::chat,
     ui::pages::history,
     ui::pages::mcp_config,
+    ui::pages::settings::{SimpleSettingsMessage, SimpleSettingsPage},
     ui::pages::tools,
     ui::widgets::ToolCallMessage,
-    ui::dialogs::{DialogAction, DialogPage},
 };
-use crate::agentic::protocol::AgentUpdate;
+use serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -171,6 +172,9 @@ pub struct CosmicLlmApp {
     pub available_mcp_tools: Vec<crate::llm::ToolDefinition>,
     // Tool enable/disable state (tool_name -> enabled)
     pub tool_states: std::collections::HashMap<String, bool>,
+    // Pending tool calls for persistence
+    pub pending_tool_calls_for_history: Vec<ToolCall>,
+    pub tool_runtime_context: std::collections::HashMap<String, ToolRuntimeContext>,
     // Show tools context panel
     pub show_tools_context: bool,
     // Store last user message for retry functionality
@@ -214,6 +218,12 @@ pub enum ToolCallStatus {
 pub struct AnchoredToolCall {
     pub anchor_index: usize,
     pub tool_call: ToolCallInfo,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolRuntimeContext {
+    pub anchor_index: usize,
+    pub params: Option<Value>,
 }
 
 impl CosmicLlmApp {
@@ -307,6 +317,8 @@ impl CosmicLlmApp {
             dialog_text_input_id: widget::Id::unique(),
             available_mcp_tools: Vec::new(),
             tool_states: std::collections::HashMap::new(),
+            pending_tool_calls_for_history: Vec::new(),
+            tool_runtime_context: std::collections::HashMap::new(),
             show_tools_context: false,
             last_user_message: None,
             attached_files: Vec::new(),
@@ -431,7 +443,6 @@ impl CosmicLlmApp {
                     Err(e) => {
                         // Send error via AgentUpdate - this handles cases where the loop fails completely
                         let _ = tx_agent.send(AgentUpdate::ModelError { 
-                            turn_id: uuid::Uuid::new_v4(), // Generate a turn ID for the error
                             error: format!("Agent processing failed: {}", e)
                         });
                     }
@@ -443,6 +454,86 @@ impl CosmicLlmApp {
                 let _ = output.send(Message::AgentUpdate(update)).await;
             }
         }))
+    }
+
+    fn rebuild_conversation_view(
+        &mut self,
+        conversation: crate::storage::conversation_storage::Conversation,
+    ) {
+        self.messages.clear();
+        self.archived_tool_calls.clear();
+        self.active_tool_calls.clear();
+        self.current_ai_message_index = None;
+        self.pending_tool_calls_for_history.clear();
+        self.tool_runtime_context.clear();
+
+        let mut archived_indices: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+
+        for stored in conversation.messages {
+            let is_user = stored.role == "user";
+            self.messages.push(ChatMessage {
+                content: stored.content.clone(),
+                is_user,
+                is_error: false,
+            });
+            let anchor_index = self.messages.len().saturating_sub(1);
+
+            if let Some(tool_calls) = stored.tool_calls {
+                for call in tool_calls {
+                    let params_pretty = serde_json::to_string_pretty(&call.parameters)
+                        .unwrap_or_else(|_| call.parameters.to_string());
+                    let info = ToolCallInfo {
+                        id: Some(call.id.clone()),
+                        tool_name: call.name.clone(),
+                        parameters: params_pretty,
+                        status: ToolCallStatus::Started,
+                        result: None,
+                        error: None,
+                    };
+                    self.archived_tool_calls
+                        .push(AnchoredToolCall { anchor_index, tool_call: info });
+                    archived_indices.insert(call.id.clone(), self.archived_tool_calls.len() - 1);
+                }
+            }
+
+            if stored.role == "tool" {
+                if let Some(tool_call_id) = stored.tool_call_id.as_ref() {
+                    if let Some(idx) = archived_indices.get(tool_call_id) {
+                        if let Some(entry) = self.archived_tool_calls.get_mut(*idx) {
+                            entry.tool_call.status =
+                                if stored.tool_status.as_deref() == Some("error") {
+                                    ToolCallStatus::Error
+                                } else {
+                                    ToolCallStatus::Completed
+                                };
+
+                            let result_text = stored
+                                .tool_result_json
+                                .as_ref()
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|| stored.content.clone());
+                            if entry.tool_call.status == ToolCallStatus::Error {
+                                entry.tool_call.error = Some(result_text.clone());
+                            } else {
+                                entry.tool_call.result = Some(result_text.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn format_json_string(raw: &str) -> String {
+        match serde_json::from_str::<Value>(raw) {
+            Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| raw.to_string()),
+            Err(_) => raw.to_string(),
+        }
+    }
+
+    fn coerce_value(raw: &str) -> Value {
+        serde_json::from_str::<Value>(raw).unwrap_or(Value::String(raw.to_string()))
     }
 }
 
@@ -660,7 +751,7 @@ impl Application for CosmicLlmApp {
                     self.input.clear();
                     self.input_content = text_editor::Content::new();
                     
-                    // Do not create a placeholder bubble; BeginTurn will create the assistant bubble
+                    // Assistant bubble will be created when streaming starts
                     self.current_ai_message_index = None;
                     
                     // Create attachments for the current message FIRST
@@ -877,15 +968,8 @@ impl Application for CosmicLlmApp {
             Message::SelectConversation(id) => {
                 self.current_conversation_id = Some(id);
                 self.current_page = NavigationPage::Chat;
-                // Load conversation messages
                 if let Ok(Some(conv)) = self.storage.get_conversation(&id) {
-                    self.messages = conv.messages.iter().map(|msg| {
-                        ChatMessage {
-                            content: msg.content.clone(),
-                            is_user: msg.role == "user",
-                            is_error: false,
-                        }
-                    }).collect();
+                    self.rebuild_conversation_view(conv);
                 }
             }
             Message::DeleteConversation(id) => {
@@ -907,107 +991,322 @@ impl Application for CosmicLlmApp {
                 self.active_tool_calls.clear();
                 self.archived_tool_calls.clear();
                 self.current_ai_message_index = None;
+                self.pending_tool_calls_for_history.clear();
+                self.tool_runtime_context.clear();
             }
-            Message::AgentUpdate(u) => {
-                match u {
-                    AgentUpdate::BeginTurn { conversation_id: _, turn_id: _, iteration: _, plan_summary: _ } => {
-                        // Always create a fresh assistant message bubble for this turn
-                        self.messages.push(ChatMessage { content: String::from(""), is_user: false, is_error: false });
+            Message::AgentUpdate(u) => match u {
+                AgentUpdate::AssistantStreamingStarted => {
+                    self.pending_tool_calls_for_history.clear();
+                    self.tool_runtime_context.clear();
+                    self.active_tool_calls.clear();
+                    self.messages.push(ChatMessage {
+                        content: String::new(),
+                        is_user: false,
+                        is_error: false,
+                    });
+                    self.current_ai_message_index = Some(self.messages.len() - 1);
+                }
+                AgentUpdate::AssistantDelta { text_chunk, .. } => {
+                    if let Some(idx) = self.current_ai_message_index {
+                        if let Some(msg) = self.messages.get_mut(idx) {
+                            msg.content.push_str(&text_chunk);
+                        }
+                    }
+                }
+                AgentUpdate::AssistantComplete { full_text } => {
+                    if let Some(idx) = self.current_ai_message_index {
+                        if let Some(msg) = self.messages.get_mut(idx) {
+                            msg.content = full_text.clone();
+                        }
+                    } else {
+                        self.messages.push(ChatMessage {
+                            content: full_text.clone(),
+                            is_user: false,
+                            is_error: false,
+                        });
                         self.current_ai_message_index = Some(self.messages.len() - 1);
                     }
-                    AgentUpdate::AssistantDelta { turn_id: _, text_chunk, seq: _ } => {
-                        if let Some(idx) = self.current_ai_message_index {
-                            if let Some(msg) = self.messages.get_mut(idx) {
-                                msg.content.push_str(&text_chunk);
-                            }
+                    if let Some(conv_id) = self.current_conversation_id {
+                        let tool_calls_slice = if self.pending_tool_calls_for_history.is_empty() {
+                            None
+                        } else {
+                            Some(self.pending_tool_calls_for_history.as_slice())
+                        };
+                        let metadata = MessageMetadata {
+                            tool_calls: tool_calls_slice,
+                            tool_call_id: None,
+                            tool_name: None,
+                            tool_status: None,
+                            tool_params_json: None,
+                            tool_result_json: None,
+                        };
+                        if let Err(e) = self.storage.add_message_with_metadata(
+                            &conv_id,
+                            "assistant".to_string(),
+                            full_text,
+                            None,
+                            metadata,
+                        ) {
+                            eprintln!("Failed to add assistant message: {}", e);
                         }
                     }
-                    AgentUpdate::AssistantComplete { turn_id: _, full_text } => {
-                        // Mirror to legacy bubble
-                        let mut wrote = false;
-                        if let Some(last_msg) = self.messages.last_mut() {
-                            if !last_msg.is_user {
-                                last_msg.content = full_text.clone();
-                                wrote = true;
+                    self.pending_tool_calls_for_history.clear();
+                }
+                AgentUpdate::ToolPlanned { plan_items } => {
+                    let anchor = self.current_ai_message_index.unwrap_or_else(|| self.messages.len().saturating_sub(1));
+                    for plan in plan_items {
+                        let params_value: Value = serde_json::from_str(&plan.params_json)
+                            .unwrap_or(Value::String(plan.params_json.clone()));
+                        let params_pretty = serde_json::to_string_pretty(&params_value)
+                            .unwrap_or(plan.params_json.clone());
+                        let tool_call = ToolCall {
+                            id: plan.id.clone(),
+                            name: plan.name.clone(),
+                            parameters: params_value.clone(),
+                        };
+                        self.pending_tool_calls_for_history.push(tool_call.clone());
+                        self.tool_runtime_context.insert(
+                            plan.id.clone(),
+                            ToolRuntimeContext {
+                                anchor_index: anchor,
+                                params: Some(params_value.clone()),
+                            },
+                        );
+                        self.active_tool_calls.push(ToolCallInfo {
+                            id: Some(plan.id),
+                            tool_name: plan.name,
+                            parameters: params_pretty,
+                            status: ToolCallStatus::Started,
+                            result: None,
+                            error: None,
+                        });
+                    }
+                }
+                AgentUpdate::ToolStarted {
+                    tool_call_id,
+                    name,
+                    params_json,
+                } => {
+                    let params_value: Value = serde_json::from_str(&params_json)
+                        .unwrap_or(Value::String(params_json.clone()));
+                    let params_pretty = serde_json::to_string_pretty(&params_value)
+                        .unwrap_or(params_json.clone());
+                    let anchor = self
+                        .current_ai_message_index
+                        .unwrap_or_else(|| self.messages.len().saturating_sub(1));
+
+                    self.tool_runtime_context
+                        .entry(tool_call_id.clone())
+                        .and_modify(|ctx| {
+                            if ctx.params.is_none() {
+                                ctx.params = Some(params_value.clone());
                             }
+                        })
+                        .or_insert(ToolRuntimeContext {
+                            anchor_index: anchor,
+                            params: Some(params_value.clone()),
+                        });
+
+                    if let Some(existing) = self
+                        .active_tool_calls
+                        .iter_mut()
+                        .find(|tc| tc.id.as_ref().map(|s| s == &tool_call_id).unwrap_or(false))
+                    {
+                        existing.tool_name = name.clone();
+                        existing.parameters = params_pretty;
+                        existing.status = ToolCallStatus::Started;
+                        existing.result = None;
+                        existing.error = None;
+                    } else {
+                        self.active_tool_calls.push(ToolCallInfo {
+                            id: Some(tool_call_id),
+                            tool_name: name,
+                            parameters: params_pretty,
+                            status: ToolCallStatus::Started,
+                            result: None,
+                            error: None,
+                        });
+                    }
+                }
+                AgentUpdate::ToolResult {
+                    tool_call_id,
+                    name,
+                    result_json,
+                } => {
+                    let context = self.tool_runtime_context.get(&tool_call_id).cloned();
+                    let result_display = Self::format_json_string(&result_json);
+                    let anchor = context
+                        .as_ref()
+                        .map(|ctx| ctx.anchor_index)
+                        .or(self.current_ai_message_index)
+                        .unwrap_or_else(|| self.messages.len().saturating_sub(1));
+
+                    let mut archived_entry = None;
+                    if let Some(pos) = self
+                        .active_tool_calls
+                        .iter()
+                        .position(|tc| tc.id.as_ref().map(|s| s == &tool_call_id).unwrap_or(false))
+                    {
+                        let mut info = self.active_tool_calls.remove(pos);
+                        info.status = ToolCallStatus::Completed;
+                        info.result = Some(result_display.clone());
+                        archived_entry = Some(info);
+                    }
+                    if archived_entry.is_none() {
+                        let params_pretty = context
+                            .as_ref()
+                            .and_then(|ctx| ctx.params.as_ref())
+                            .map(|value| serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()))
+                            .unwrap_or_else(|| "{}".to_string());
+                        archived_entry = Some(ToolCallInfo {
+                            id: Some(tool_call_id.clone()),
+                            tool_name: name.clone(),
+                            parameters: params_pretty,
+                            status: ToolCallStatus::Completed,
+                            result: Some(result_display.clone()),
+                            error: None,
+                        });
+                    }
+
+                    if let Some(entry) = archived_entry {
+                        self.archived_tool_calls
+                            .push(AnchoredToolCall { anchor_index: anchor, tool_call: entry });
+                    }
+
+                    if let Some(conv_id) = self.current_conversation_id {
+                        let params_owned = context
+                            .as_ref()
+                            .and_then(|ctx| ctx.params.clone());
+                        let params_ref = params_owned.as_ref();
+                        let result_value = Self::coerce_value(&result_json);
+                        let metadata = MessageMetadata {
+                            tool_calls: None,
+                            tool_call_id: Some(tool_call_id.as_str()),
+                            tool_name: Some(name.as_str()),
+                            tool_status: Some("success"),
+                            tool_params_json: params_ref,
+                            tool_result_json: Some(&result_value),
+                        };
+                        if let Err(e) = self.storage.add_message_with_metadata(
+                            &conv_id,
+                            "tool".to_string(),
+                            result_json.clone(),
+                            None,
+                            metadata,
+                        ) {
+                            eprintln!("Failed to add tool result: {}", e);
                         }
-                        if !wrote {
-                            self.messages.push(ChatMessage { content: full_text.clone(), is_user: false, is_error: false });
-                            self.current_ai_message_index = Some(self.messages.len() - 1);
+                    }
+
+                    self.tool_runtime_context.remove(&tool_call_id);
+                }
+                AgentUpdate::ToolError {
+                    tool_call_id,
+                    name,
+                    error,
+                    retryable: _,
+                } => {
+                    let context = self.tool_runtime_context.get(&tool_call_id).cloned();
+                    let anchor = context
+                        .as_ref()
+                        .map(|ctx| ctx.anchor_index)
+                        .or(self.current_ai_message_index)
+                        .unwrap_or_else(|| self.messages.len().saturating_sub(1));
+
+                    let mut archived_entry = None;
+                    if let Some(pos) = self
+                        .active_tool_calls
+                        .iter()
+                        .position(|tc| tc.id.as_ref().map(|s| s == &tool_call_id).unwrap_or(false))
+                    {
+                        let mut info = self.active_tool_calls.remove(pos);
+                        info.status = ToolCallStatus::Error;
+                        info.error = Some(error.clone());
+                        archived_entry = Some(info);
+                    }
+                    if archived_entry.is_none() {
+                        let params_pretty = context
+                            .as_ref()
+                            .and_then(|ctx| ctx.params.as_ref())
+                            .map(|value| serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()))
+                            .unwrap_or_else(|| "{}".to_string());
+                        archived_entry = Some(ToolCallInfo {
+                            id: Some(tool_call_id.clone()),
+                            tool_name: name.clone(),
+                            parameters: params_pretty,
+                            status: ToolCallStatus::Error,
+                            result: None,
+                            error: Some(error.clone()),
+                        });
+                    }
+
+                    if let Some(entry) = archived_entry {
+                        self.archived_tool_calls
+                            .push(AnchoredToolCall { anchor_index: anchor, tool_call: entry });
+                    }
+
+                    if let Some(conv_id) = self.current_conversation_id {
+                        let params_owned = context
+                            .as_ref()
+                            .and_then(|ctx| ctx.params.clone());
+                        let params_ref = params_owned.as_ref();
+                        let error_value = Value::String(error.clone());
+                        let metadata = MessageMetadata {
+                            tool_calls: None,
+                            tool_call_id: Some(tool_call_id.as_str()),
+                            tool_name: Some(name.as_str()),
+                            tool_status: Some("error"),
+                            tool_params_json: params_ref,
+                            tool_result_json: Some(&error_value),
+                        };
+                        if let Err(e) = self.storage.add_message_with_metadata(
+                            &conv_id,
+                            "tool".to_string(),
+                            error.clone(),
+                            None,
+                            metadata,
+                        ) {
+                            eprintln!("Failed to add tool error: {}", e);
                         }
-                        if !full_text.trim().is_empty() {
-                            if let Some(conv_id) = self.current_conversation_id {
-                                if let Err(e) = self.storage.add_message_to_conversation(&conv_id, "assistant".to_string(), full_text) {
-                                    eprintln!("Failed to add message to conversation: {}", e);
+                    }
+
+                    self.tool_runtime_context.remove(&tool_call_id);
+                }
+                AgentUpdate::ConversationComplete { final_text: _ } => {
+                    if let Some(idx) = self.current_ai_message_index {
+                        let should_remove = self
+                            .messages
+                            .get(idx)
+                            .map(|m| !m.is_user && m.content.trim().is_empty())
+                            .unwrap_or(false);
+                        if should_remove {
+                            self.messages.remove(idx);
+                            for anchored in &mut self.archived_tool_calls {
+                                if anchored.anchor_index > idx {
+                                    anchored.anchor_index -= 1;
+                                } else if anchored.anchor_index == idx {
+                                    anchored.anchor_index = idx.saturating_sub(1);
                                 }
                             }
                         }
                     }
-                    AgentUpdate::ToolPlanned { turn_id: _, plan_items: _ } => {
-                        // Do not create placeholder rows; spinner covers planned state
-                    }
-                    AgentUpdate::ToolStarted { turn_id: _, tool_call_id, name, params_json } => {
-                        // De-duplicate by id if already present (from previous start events)
-                        if let Some(existing) = self.active_tool_calls.iter_mut().find(|tc| tc.id.as_ref().map(|s| s == &tool_call_id).unwrap_or(false)) {
-                            existing.tool_name = name;
-                            existing.parameters = params_json;
-                            existing.status = ToolCallStatus::Started;
-                            existing.result = None;
-                            existing.error = None;
-                        } else {
-                            self.active_tool_calls.push(ToolCallInfo { id: Some(tool_call_id), tool_name: name, parameters: params_json, status: ToolCallStatus::Started, result: None, error: None });
-                        }
-                    }
-                    AgentUpdate::ToolResult { turn_id: _, tool_call_id, name, result_json } => {
-                        if let Some(tc) = self.active_tool_calls.iter_mut().find(|tc| tc.id.as_ref().map(|s| s == &tool_call_id).unwrap_or(false) || tc.tool_name == name) {
-                            tc.status = ToolCallStatus::Completed;
-                            tc.result = Some(result_json);
-                        }
-                    }
-                    AgentUpdate::ToolError { turn_id: _, tool_call_id, name, error, retryable: _ } => {
-                        if let Some(tc) = self.active_tool_calls.iter_mut().find(|tc| tc.id.as_ref().map(|s| s == &tool_call_id).unwrap_or(false) || tc.tool_name == name) {
-                            tc.status = ToolCallStatus::Error;
-                            tc.error = Some(error);
-                        }
-                    }
-                    AgentUpdate::EndTurn { turn_id: _ } => {
-                        // Archive active tools under current AI bubble
-                        if let Some(anchor) = self.current_ai_message_index {
-                            for tc in self.active_tool_calls.drain(..) {
-                                self.archived_tool_calls.push(AnchoredToolCall { anchor_index: anchor, tool_call: tc });
-                            }
-                            // If the assistant bubble has no text, remove it and shift anchors
-                            let should_remove = self.messages.get(anchor).map(|m| !m.is_user && m.content.trim().is_empty()).unwrap_or(false);
-                            if should_remove {
-                                self.messages.remove(anchor);
-                                for anchored in &mut self.archived_tool_calls {
-                                    if anchored.anchor_index > anchor {
-                                        anchored.anchor_index -= 1;
-                                    } else if anchored.anchor_index == anchor {
-                                        anchored.anchor_index = anchor.saturating_sub(1);
-                                    }
-                                }
-                            }
-                        } else {
-                            self.active_tool_calls.clear();
-                        }
-                        self.current_ai_message_index = None;
-                    }
-                    AgentUpdate::EndConversation { final_text: _ } => {
-                        self.is_streaming = false;
-                        self.current_streaming_id = None;
-                        self.current_ai_message_index = None;
-                        self.pending_llm_messages = None; // Clear prepared messages
-                        // Clear any leftover active tool rows (e.g., from placeholders)
-                        self.active_tool_calls.clear();
-                    }
-                    AgentUpdate::ModelError { turn_id: _, error } => {
+                    self.is_streaming = false;
+                    self.current_streaming_id = None;
+                    self.current_ai_message_index = None;
+                    self.pending_llm_messages = None;
+                    self.active_tool_calls.clear();
+                    self.pending_tool_calls_for_history.clear();
+                    self.tool_runtime_context.clear();
+                }
+                AgentUpdate::ModelError { error } => {
                         // Stop streaming and show error message
                         self.is_streaming = false;
                         self.current_streaming_id = None;
                         self.current_ai_message_index = None;
                         self.pending_llm_messages = None;
                         self.active_tool_calls.clear();
+                    self.pending_tool_calls_for_history.clear();
+                    self.tool_runtime_context.clear();
                         
                         // Add error message as a separate chat bubble
                         self.messages.push(ChatMessage { 
@@ -1016,9 +1315,7 @@ impl Application for CosmicLlmApp {
                             is_error: true
                         });
                     }
-                    AgentUpdate::Heartbeat { turn_id: _, ts_ms: _ } => {}
-                }
-            }
+            },
             Message::ToolCallStarted(tool_name, parameters) => {
                 // Add tool call to active list
                 self.active_tool_calls.push(ToolCallInfo {

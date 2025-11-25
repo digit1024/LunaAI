@@ -1,7 +1,8 @@
-use crate::llm::{Message, Role, LlmClient};
+use crate::llm::{ChatStreamEvent, Message, Role, LlmClient, ToolCall, ToolResult};
 use super::protocol::{AgentUpdate, PlannedTool};
 use crate::mcp::MCPServerRegistry;
 use anyhow::Result;
+use futures::StreamExt;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
@@ -22,163 +23,197 @@ impl AgenticLoop {
         }
     }
     
-    pub async fn process_message(&mut self, mut messages: Vec<Message>, agent_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>, _message_id: Option<uuid::Uuid>) -> Result<String> {
-        
-        let mut iteration = 0;
-        
+    pub async fn process_message(
+        &mut self,
+        mut messages: Vec<Message>,
+        agent_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+        _message_id: Option<uuid::Uuid>,
+    ) -> Result<String> {
         loop {
-            iteration += 1;
-            self.tool_logger.log_iteration_start(iteration)?;
-            let _ = self.tool_logger.log_begin_turn(iteration);
-            let turn_id = uuid::Uuid::new_v4();
-            if let Some(tx) = agent_tx.as_ref() {
-                let _ = tx.send(AgentUpdate::BeginTurn {
-                    conversation_id: None,
-                    turn_id,
-                    iteration,
-                    plan_summary: None,
-                });
-            }
-            
-            // Get enabled tools from MCP registry
             let available_tools = {
                 let registry = self.mcp_registry.read().await;
                 let tools = registry.get_enabled_tools();
                 log::debug!("🔧 Enabled tools count: {}", tools.len());
                 tools
             };
-            
-            // Call LLM with current messages and available tools
-            let response = match self.llm_client.send_message_with_tools(
-                messages.clone(), 
-                available_tools, 
-                None, 
-                None
-            ).await {
-                Ok(response) => response,
+
+            let mut stream = match self
+                .llm_client
+                .send_message_stream_with_tools(messages.clone(), available_tools, None, None)
+                .await
+            {
+                Ok(stream) => stream,
                 Err(e) => {
-                    log::error!("❌ LLM call failed: {}", e);
-                    // Send model error via AgentUpdate
+                    log::error!("❌ LLM streaming call failed: {}", e);
                     if let Some(tx) = agent_tx.as_ref() {
-                        let _ = tx.send(AgentUpdate::ModelError { 
-                            turn_id, 
-                            error: format!("Model communication failed: {}", e)
+                        let _ = tx.send(AgentUpdate::ModelError {
+                            error: format!("Model communication failed: {}", e),
                         });
                     }
                     return Err(anyhow::anyhow!("LLM call failed: {}", e));
-                },
+                }
             };
-            
-            
-            
-            // Send assistant content and planned tools via AgentUpdate
-            if !response.tool_calls.is_empty() {
-                if let Some(tx) = agent_tx.as_ref() {
-                    if !response.content.trim().is_empty() {
-                        let _ = tx.send(AgentUpdate::AssistantComplete {
-                            turn_id,
-                            full_text: response.content.clone(),
-                        });
-                    }
-                    let planned: Vec<PlannedTool> = response
-                        .tool_calls
-                        .iter()
-                        .map(|tc| PlannedTool { name: tc.name.clone(), params_json: serde_json::to_string(&tc.parameters).unwrap_or_default() })
-                        .collect();
-                    let _ = tx.send(AgentUpdate::ToolPlanned { turn_id, plan_items: planned });
-                }
+
+            if let Some(tx) = agent_tx.as_ref() {
+                let _ = tx.send(AgentUpdate::AssistantStreamingStarted);
             }
-            
-            // If no tool calls, this is our final response!
-            if response.tool_calls.is_empty() {
-                self.tool_logger.log_final_response(&response.content, iteration)?;
-                
-                if let Some(tx) = agent_tx.as_ref() {
-                    let _ = tx.send(AgentUpdate::AssistantComplete { turn_id, full_text: response.content.clone() });
-                    let _ = tx.send(AgentUpdate::EndTurn { turn_id });
-                    let _ = tx.send(AgentUpdate::EndConversation { final_text: response.content.clone() });
-                }
-                
-                let _ = self.tool_logger.log_end_turn(iteration);
-                return Ok(response.content);
-            }
-            
-            // Execute tool calls and get results (with timeout & simple retries)
-            let mut tool_results = Vec::new();
-            let mut started_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-            for (_tool_idx, tool_call) in response.tool_calls.iter().enumerate() {
-                
-                // Log tool call
-                self.tool_logger.log_tool_call(tool_call, iteration)?;
-                
-                // Send tool call start notification via AgentUpdate
-                if let Some(tx) = agent_tx.as_ref() {
-                    if started_ids.insert(tool_call.id.clone()) {
-                        let _ = tx.send(AgentUpdate::ToolStarted { turn_id, tool_call_id: tool_call.id.clone(), name: tool_call.name.clone(), params_json: serde_json::to_string(&tool_call.parameters).unwrap_or_default() });
-                    }
-                }
-                
-                // Execute tool with timeout and up to 2 retries
-                let mut attempt: u8 = 0;
-                let max_retries: u8 = 2;
-                let per_call_timeout = Duration::from_secs(20);
-                let result = loop {
-                    attempt += 1;
-                    let call_future = async {
-                        let mut registry = self.mcp_registry.write().await;
-                        registry.call_tool(tool_call.clone()).await
-                    };
-                    match timeout(per_call_timeout, call_future).await {
-                        Ok(Ok(result)) => break result,
-                        Ok(Err(e)) => {
-                            // Report error and decide retryability
-                            if let Some(tx) = agent_tx.as_ref() {
-                                let _ = tx.send(AgentUpdate::ToolError { turn_id, tool_call_id: tool_call.id.clone(), name: tool_call.name.clone(), error: e.to_string(), retryable: attempt <= max_retries });
-                            }
-                            if attempt > max_retries { break crate::llm::ToolResult { content: format!("Error: {}", e), is_error: true }; }
+
+            let mut assistant_response = String::new();
+            let mut planned_tools: Vec<ToolCall> = Vec::new();
+            let mut seq: u64 = 0;
+
+            while let Some(event) = stream.next().await {
+                match event {
+                    Ok(ChatStreamEvent::ContentDelta(chunk)) => {
+                        if chunk.is_empty() {
                             continue;
                         }
-                        Err(_) => {
-                            // Timeout
-                            let err_msg = format!("Timeout after {:?}", per_call_timeout);
-                            if let Some(tx) = agent_tx.as_ref() {
-                                let _ = tx.send(AgentUpdate::ToolError { turn_id, tool_call_id: tool_call.id.clone(), name: tool_call.name.clone(), error: err_msg, retryable: attempt <= max_retries });
-                            }
-                            if attempt > max_retries { break crate::llm::ToolResult { content: "Timeout".to_string(), is_error: true }; }
-                            continue;
+                        assistant_response.push_str(&chunk);
+                        seq += 1;
+                        if let Some(tx) = agent_tx.as_ref() {
+                            let _ = tx.send(AgentUpdate::AssistantDelta {
+                                text_chunk: chunk,
+                                seq,
+                            });
                         }
                     }
-                };
-                
-                // Log tool result
-                self.tool_logger.log_tool_result(tool_call, &result.content, result.is_error, iteration)?;
-                
-                // Send tool result notification via AgentUpdate
-                if let Some(tx) = agent_tx.as_ref() {
-                    let _ = tx.send(AgentUpdate::ToolResult { turn_id, tool_call_id: tool_call.id.clone(), name: tool_call.name.clone(), result_json: result.content.clone() });
+                    Ok(ChatStreamEvent::ToolCallDelta(tool_call)) => {
+                        if let Some(tx) = agent_tx.as_ref() {
+                            let planned = PlannedTool {
+                                id: tool_call.id.clone(),
+                                name: tool_call.name.clone(),
+                                params_json: serde_json::to_string(&tool_call.parameters)
+                                    .unwrap_or_default(),
+                            };
+                            let _ = tx.send(AgentUpdate::ToolPlanned {
+                                plan_items: vec![planned],
+                            });
+                        }
+                        planned_tools.push(tool_call);
+                    }
+                    Err(e) => {
+                        log::error!("❌ Streaming event error: {}", e);
+                        if let Some(tx) = agent_tx.as_ref() {
+                            let _ = tx.send(AgentUpdate::ModelError {
+                                error: format!("Streaming error: {}", e),
+                            });
+                        }
+                        return Err(anyhow::anyhow!("Streaming error: {}", e));
+                    }
                 }
-                
-                // Convert result to message for LLM
-                let result_message = Message::new_tool_result(
+            }
+
+            if let Some(tx) = agent_tx.as_ref() {
+                let _ = tx.send(AgentUpdate::AssistantComplete {
+                    full_text: assistant_response.clone(),
+                });
+            }
+
+            if planned_tools.is_empty() {
+                self.tool_logger.log_final_response(&assistant_response)?;
+                if let Some(tx) = agent_tx.as_ref() {
+                    let _ = tx.send(AgentUpdate::ConversationComplete {
+                        final_text: assistant_response.clone(),
+                    });
+                }
+                return Ok(assistant_response);
+            }
+
+            messages.push(Message::new_with_tool_calls(
+                Role::Assistant,
+                assistant_response.clone(),
+                planned_tools.clone(),
+            ));
+
+            for tool_call in planned_tools {
+                self.tool_logger.log_tool_call(&tool_call)?;
+
+                if let Some(tx) = agent_tx.as_ref() {
+                    let _ = tx.send(AgentUpdate::ToolStarted {
+                        tool_call_id: tool_call.id.clone(),
+                        name: tool_call.name.clone(),
+                        params_json: serde_json::to_string(&tool_call.parameters)
+                            .unwrap_or_default(),
+                    });
+                }
+
+                let result =
+                    self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref())
+                        .await;
+
+                self.tool_logger
+                    .log_tool_result(&tool_call, &result.content, result.is_error)?;
+
+                if let Some(tx) = agent_tx.as_ref() {
+                    let _ = tx.send(AgentUpdate::ToolResult {
+                        tool_call_id: tool_call.id.clone(),
+                        name: tool_call.name.clone(),
+                        result_json: result.content.clone(),
+                    });
+                }
+
+                messages.push(Message::new_tool_result(
                     tool_call.id.clone(),
                     result.content,
-                    result.is_error
-                );
-                
-                tool_results.push(result_message);
+                    result.is_error,
+                ));
             }
-            
-            // Add assistant message with tool calls to message history
-            messages.push(Message::new_with_tool_calls(Role::Assistant, response.content, response.tool_calls.clone()));
-            
-            // Add tool results to message history
-            messages.extend(tool_results);
-            
-            // End turn and log completion
-            if let Some(tx) = agent_tx.as_ref() {
-                let _ = tx.send(AgentUpdate::EndTurn { turn_id });
+        }
+    }
+
+    async fn execute_tool_with_retry(
+        &self,
+        tool_call: ToolCall,
+        agent_tx: Option<&tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+    ) -> ToolResult {
+        let mut attempt: u8 = 0;
+        let max_retries: u8 = 2;
+        let per_call_timeout = Duration::from_secs(20);
+
+        loop {
+            attempt += 1;
+            let call_future = async {
+                let mut registry = self.mcp_registry.write().await;
+                registry.call_tool(tool_call.clone()).await
+            };
+            match timeout(per_call_timeout, call_future).await {
+                Ok(Ok(result)) => {
+                    return result;
+                }
+                Ok(Err(e)) => {
+                    if let Some(tx) = agent_tx {
+                        let _ = tx.send(AgentUpdate::ToolError {
+                            tool_call_id: tool_call.id.clone(),
+                            name: tool_call.name.clone(),
+                            error: e.to_string(),
+                            retryable: attempt <= max_retries,
+                        });
+                    }
+                    if attempt > max_retries {
+                        return ToolResult {
+                            content: format!("Error: {}", e),
+                            is_error: true,
+                        };
+                    }
+                }
+                Err(_) => {
+                    let err_msg = format!("Timeout after {:?}", per_call_timeout);
+                    if let Some(tx) = agent_tx {
+                        let _ = tx.send(AgentUpdate::ToolError {
+                            tool_call_id: tool_call.id.clone(),
+                            name: tool_call.name.clone(),
+                            error: err_msg.clone(),
+                            retryable: attempt <= max_retries,
+                        });
+                    }
+                    if attempt > max_retries {
+                        return ToolResult {
+                            content: "Timeout".to_string(),
+                            is_error: true,
+                        };
+                    }
+                }
             }
-            let _ = self.tool_logger.log_end_turn(iteration);
         }
     }
 }

@@ -124,6 +124,12 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
+#[derive(Debug, Clone)]
+pub enum ChatStreamEvent {
+    ContentDelta(String),
+    ToolCallDelta(ToolCall),
+}
+
 #[async_trait]
 pub trait LlmClient: Send + Sync {
 
@@ -134,7 +140,7 @@ pub trait LlmClient: Send + Sync {
         max_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>, LlmError>;
     
-    // New method for tool-enabled chat
+    // Legacy non-streaming tool path
     async fn send_message_with_tools(
         &self,
         messages: Vec<Message>,
@@ -142,6 +148,19 @@ pub trait LlmClient: Send + Sync {
         temperature: Option<f32>,
         max_tokens: Option<u32>,
     ) -> Result<ChatResponse, LlmError>;
+
+    async fn send_message_stream_with_tools(
+        &self,
+        messages: Vec<Message>,
+        available_tools: Vec<ToolDefinition>,
+        temperature: Option<f32>,
+        max_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, LlmError>> + Send>>, LlmError> {
+        let _ = (messages, available_tools, temperature, max_tokens);
+        Err(LlmError::Config(
+            "Tool streaming not implemented for this backend".into(),
+        ))
+    }
 }
 
 pub mod openai;

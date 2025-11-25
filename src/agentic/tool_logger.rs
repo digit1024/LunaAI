@@ -11,65 +11,37 @@ impl ToolLogger {
         Self { log_file }
     }
     
-    pub fn log_iteration_start(&self, iteration: u32) -> Result<()> {
+    pub fn log_tool_call(&self, tool_call: &crate::llm::ToolCall) -> Result<()> {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.log_file)?;
         
-        writeln!(file, "\n=== ITERATION {} ===", iteration)?;
-        Ok(())
-    }
-    
-    pub fn log_tool_call(&self, tool_call: &crate::llm::ToolCall, iteration: u32) -> Result<()> {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log_file)?;
-        
-        writeln!(file, "🔧 Tool Call #{}: {}", iteration, tool_call.name)?;
+        writeln!(file, "🔧 Tool Call: {}", tool_call.name)?;
         writeln!(file, "   ID: {}", tool_call.id)?;
         writeln!(file, "   Parameters: {}", tool_call.parameters)?;
         Ok(())
     }
     
-    pub fn log_tool_result(&self, tool_call: &crate::llm::ToolCall, result: &str, is_error: bool, iteration: u32) -> Result<()> {
+    pub fn log_tool_result(&self, tool_call: &crate::llm::ToolCall, result: &str, is_error: bool) -> Result<()> {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.log_file)?;
         
         let status = if is_error { "❌ ERROR" } else { "✅ SUCCESS" };
-        writeln!(file, "{} Tool Result #{}: {}", status, iteration, tool_call.name)?;
+        writeln!(file, "{} Tool Result: {}", status, tool_call.name)?;
         writeln!(file, "   Result: {}", result)?;
         Ok(())
     }
     
-    pub fn log_final_response(&self, response: &str, iteration: u32) -> Result<()> {
+    pub fn log_final_response(&self, response: &str) -> Result<()> {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.log_file)?;
         
-        writeln!(file, "🎯 Final Response (after {} iterations): {}", iteration, response)?;
-        Ok(())
-    }
-
-    pub fn log_begin_turn(&self, iteration: u32) -> Result<()> {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log_file)?;
-        writeln!(file, "--- Begin Turn {} ---", iteration)?;
-        Ok(())
-    }
-
-    pub fn log_end_turn(&self, iteration: u32) -> Result<()> {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log_file)?;
-        writeln!(file, "--- End Turn {} ---", iteration)?;
+        writeln!(file, "🎯 Final Response: {}", response)?;
         Ok(())
     }
 }

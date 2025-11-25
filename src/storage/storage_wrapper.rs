@@ -3,7 +3,7 @@ use rusqlite::Result as SqliteResult;
 use std::path::Path;
 use uuid::Uuid;
 
-use super::sqlite_storage_simple::SqliteStorage;
+use super::sqlite_storage_simple::{SqliteStorage, MessageMetadata};
 use super::conversation_storage::{Conversation as FileConversation, StoredMessage, Turn};
 
 /// Wrapper that provides compatibility with the existing file-based storage API
@@ -50,6 +50,12 @@ impl Storage {
                     role: msg.role,
                     content: msg.content,
                     timestamp: DateTime::from_timestamp(msg.created_at, 0).unwrap_or_else(Utc::now),
+                    tool_calls: msg.tool_calls,
+                    tool_call_id: msg.tool_call_id,
+                    tool_name: msg.tool_name,
+                    tool_status: msg.tool_status,
+                    tool_params_json: msg.tool_params_json.clone(),
+                    tool_result_json: msg.tool_result_json.clone(),
                 }
             }).collect();
 
@@ -91,6 +97,12 @@ impl Storage {
                     role: msg.role,
                     content: msg.content,
                     timestamp: DateTime::from_timestamp(msg.created_at, 0).unwrap_or_else(Utc::now),
+                    tool_calls: msg.tool_calls,
+                    tool_call_id: msg.tool_call_id,
+                    tool_name: msg.tool_name,
+                    tool_status: msg.tool_status,
+                    tool_params_json: msg.tool_params_json.clone(),
+                    tool_result_json: msg.tool_result_json.clone(),
                 }
             }).collect();
 
@@ -117,8 +129,26 @@ impl Storage {
 
     /// Add a message to a conversation
     pub fn add_message_to_conversation(&self, conversation_id: &Uuid, role: String, content: String) -> SqliteResult<()> {
+        self.add_message_with_metadata(
+            conversation_id,
+            role,
+            content,
+            None,
+            MessageMetadata::default(),
+        )
+    }
+
+    pub fn add_message_with_metadata(
+        &self,
+        conversation_id: &Uuid,
+        role: String,
+        content: String,
+        embedding: Option<&[f32]>,
+        metadata: MessageMetadata<'_>,
+    ) -> SqliteResult<()> {
         let id_str = conversation_id.to_string();
-        self.sqlite.insert_message(&id_str, &role, &content, None)
+        self.sqlite
+            .insert_message_with_metadata(&id_str, &role, &content, embedding, &metadata)
     }
 
     /// Add a turn to a conversation (not yet implemented in SQLite)
