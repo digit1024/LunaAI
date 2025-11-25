@@ -1,4 +1,4 @@
-use crate::llm::{ChatStreamEvent, Message, Role, LlmClient, ToolCall, ToolResult};
+use crate::llm::{ChatStreamEvent, Message, Role, LlmClient, ToolCall, ToolResult, LlmError};
 use super::protocol::{AgentUpdate, PlannedTool};
 use crate::mcp::MCPServerRegistry;
 use anyhow::Result;
@@ -43,6 +43,13 @@ impl AgenticLoop {
                 .await
             {
                 Ok(stream) => stream,
+                Err(LlmError::Config(e)) => {
+                    log::warn!(
+                        "Tool streaming unsupported for backend, falling back to non-streaming mode: {}",
+                        e
+                    );
+                    return self.process_non_streaming(messages, agent_tx).await;
+                }
                 Err(e) => {
                     log::error!("❌ LLM streaming call failed: {}", e);
                     if let Some(tx) = agent_tx.as_ref() {
@@ -213,6 +220,114 @@ impl AgenticLoop {
                         };
                     }
                 }
+            }
+        }
+    }
+
+    async fn process_non_streaming(
+        &mut self,
+        mut messages: Vec<Message>,
+        agent_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+    ) -> Result<String> {
+        loop {
+            let available_tools = {
+                let registry = self.mcp_registry.read().await;
+                registry.get_enabled_tools()
+            };
+
+            let response = match self
+                .llm_client
+                .send_message_with_tools(messages.clone(), available_tools, None, None)
+                .await
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    log::error!("❌ Non-streaming LLM call failed: {}", e);
+                    if let Some(tx) = agent_tx.as_ref() {
+                        let _ = tx.send(AgentUpdate::ModelError {
+                            error: format!("Model communication failed: {}", e),
+                        });
+                    }
+                    return Err(anyhow::anyhow!("LLM call failed: {}", e));
+                }
+            };
+
+            if let Some(tx) = agent_tx.as_ref() {
+                let _ = tx.send(AgentUpdate::AssistantStreamingStarted);
+                if !response.content.is_empty() {
+                    let _ = tx.send(AgentUpdate::AssistantDelta {
+                        text_chunk: response.content.clone(),
+                        seq: 1,
+                    });
+                }
+                let _ = tx.send(AgentUpdate::AssistantComplete {
+                    full_text: response.content.clone(),
+                });
+            }
+
+            if response.tool_calls.is_empty() {
+                self.tool_logger.log_final_response(&response.content)?;
+                if let Some(tx) = agent_tx.as_ref() {
+                    let _ = tx.send(AgentUpdate::ConversationComplete {
+                        final_text: response.content.clone(),
+                    });
+                }
+                return Ok(response.content);
+            }
+
+            if let Some(tx) = agent_tx.as_ref() {
+                let plan_items: Vec<PlannedTool> = response
+                    .tool_calls
+                    .iter()
+                    .map(|tc| PlannedTool {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        params_json: serde_json::to_string(&tc.parameters).unwrap_or_default(),
+                    })
+                    .collect();
+                if !plan_items.is_empty() {
+                    let _ = tx.send(AgentUpdate::ToolPlanned { plan_items });
+                }
+            }
+
+            messages.push(Message::new_with_tool_calls(
+                Role::Assistant,
+                response.content.clone(),
+                response.tool_calls.clone(),
+            ));
+
+            for tool_call in response.tool_calls {
+                self.tool_logger.log_tool_call(&tool_call)?;
+
+                if let Some(tx) = agent_tx.as_ref() {
+                    let _ = tx.send(AgentUpdate::ToolStarted {
+                        tool_call_id: tool_call.id.clone(),
+                        name: tool_call.name.clone(),
+                        params_json: serde_json::to_string(&tool_call.parameters)
+                            .unwrap_or_default(),
+                    });
+                }
+
+                let result =
+                    self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref())
+                        .await;
+
+                self.tool_logger
+                    .log_tool_result(&tool_call, &result.content, result.is_error)?;
+
+                if let Some(tx) = agent_tx.as_ref() {
+                    let _ = tx.send(AgentUpdate::ToolResult {
+                        tool_call_id: tool_call.id.clone(),
+                        name: tool_call.name.clone(),
+                        result_json: result.content.clone(),
+                    });
+                }
+
+                messages.push(Message::new_tool_result(
+                    tool_call.id.clone(),
+                    result.content,
+                    result.is_error,
+                ));
             }
         }
     }

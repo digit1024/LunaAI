@@ -3,6 +3,8 @@ use crate::config::LlmProfile;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 #[derive(Debug, Serialize)]
 struct GeminiRequest {
@@ -406,6 +408,30 @@ impl LlmClient for GeminiClient {
             content,
             tool_calls,
         })
+    }
+
+    async fn send_message_stream_with_tools(
+        &self,
+        messages: Vec<Message>,
+        available_tools: Vec<ToolDefinition>,
+        temperature: Option<f32>,
+        max_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, LlmError>> + Send>>, LlmError> {
+        let response = self
+            .send_message_with_tools(messages, available_tools, temperature, max_tokens)
+            .await?;
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            if !response.content.is_empty() {
+                let _ = tx.send(Ok(ChatStreamEvent::ContentDelta(response.content)));
+            }
+            for tool_call in response.tool_calls {
+                let _ = tx.send(Ok(ChatStreamEvent::ToolCallDelta(tool_call)));
+            }
+        });
+
+        Ok(Box::pin(UnboundedReceiverStream::new(rx)))
     }
 }
 
