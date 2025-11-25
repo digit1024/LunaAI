@@ -7,6 +7,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../application/app_controller.dart';
 import '../../application/app_state.dart';
 import '../../core/config/server_config.dart';
+import '../../core/config/tts_preferences.dart';
+import '../../services/tts_service.dart';
+import '../../utils/text_processing.dart';
 import '../widgets/bottom_nav.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/typing_bubble.dart';
@@ -28,7 +31,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _typingActive = false;
   late final ProviderSubscription<bool> _streamingSubscription;
   late final ProviderSubscription<List<ChatMessage>> _toolCompletionSubscription;
+  late final ProviderSubscription<List<ChatMessage>> _ttsSubscription;
   Set<String> _completedToolIds = {}; // Track completed tools to avoid replaying
+  String? _lastTtsMessageId; // Track last message that was read via TTS
 
   @override
   void initState() {
@@ -78,12 +83,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         }
       },
     );
+
+    // Listen for new assistant messages to trigger TTS
+    _ttsSubscription = ref.listenManual<List<ChatMessage>>(
+      appControllerProvider.select((state) => state.chatMessages),
+      (previous, next) {
+        _handleTtsForNewMessage(previous, next);
+      },
+    );
   }
 
   @override
   void dispose() {
     _streamingSubscription.close();
     _toolCompletionSubscription.close();
+    _ttsSubscription.close();
     _typingPlayer.dispose();
     _donePlayer.dispose();
     _sentPlayer.dispose();
@@ -107,8 +121,76 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
     if (playCompletion) {
       _donePlayer.stop();
-      _donePlayer.play(AssetSource('audio/done.mp3'));
+      _donePlayer.play(AssetSource('audio/done.mp3')).then((_) {
+        // After done.mp3 finishes, trigger TTS if enabled
+        // Wait a small delay to ensure message is finalized
+        Future.delayed(const Duration(milliseconds: 300), () {
+          _triggerTtsForLastMessage();
+        });
+      });
     }
+  }
+
+  void _handleTtsForNewMessage(
+    List<ChatMessage>? previous,
+    List<ChatMessage> next,
+  ) {
+    // This listener is mainly for tracking message IDs
+    // Actual TTS is triggered from _stopTypingFeedback after done.mp3
+    final state = ref.read(appControllerProvider);
+    if (state.streaming) return;
+
+    // Find the last assistant message
+    final lastAssistant = next.lastWhere(
+      (m) => m.role == 'assistant' && !m.isStreaming,
+      orElse: () => ChatMessage(
+        id: '',
+        role: 'assistant',
+        content: '',
+        timestamp: DateTime.now(),
+      ),
+    );
+
+    // Update tracking for the last message ID
+    if (lastAssistant.id.isNotEmpty) {
+      // Don't trigger TTS here - it's handled by _stopTypingFeedback
+      // This is just for tracking
+    }
+  }
+
+  Future<void> _triggerTtsForLastMessage() async {
+    final ttsPrefs = ref.read(ttsPreferencesProvider);
+    if (!ttsPrefs.enabled) return;
+
+    final state = ref.read(appControllerProvider);
+    if (state.chatMessages.isEmpty) return;
+
+    // Get the last assistant message
+    final lastAssistant = state.chatMessages.lastWhere(
+      (m) => m.role == 'assistant' && !m.isStreaming,
+      orElse: () => ChatMessage(
+        id: '',
+        role: 'assistant',
+        content: '',
+        timestamp: DateTime.now(),
+      ),
+    );
+
+    if (lastAssistant.content.isEmpty) return;
+    
+    // Skip if we already read this message
+    if (lastAssistant.id == _lastTtsMessageId) return;
+    _lastTtsMessageId = lastAssistant.id;
+
+    // Strip emojis and markdown
+    final cleanText = stripEmojisAndMarkdown(lastAssistant.content);
+
+    if (cleanText.trim().isEmpty) return;
+
+    // Get TTS service and set language
+    final ttsService = ref.read(ttsServiceProvider);
+    await ttsService.setLanguage(ttsPrefs.language);
+    await ttsService.speak(cleanText);
   }
 
   @override
@@ -187,7 +269,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         LunaBottomBar(
           onConversations: controller.openConversations,
           onStartNew: controller.startNewConversation,
-          onSettings: controller.openSetup,
+          onSettings: controller.openSettings,
         ),
       ],
     );

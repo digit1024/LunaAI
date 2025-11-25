@@ -63,7 +63,7 @@ class ConversationsScreen extends ConsumerWidget {
         LunaBottomBar(
           onConversations: controller.openConversations,
           onStartNew: controller.startNewConversation,
-          onSettings: controller.openSetup,
+          onSettings: controller.openSettings,
         ),
       ],
     );

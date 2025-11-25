@@ -162,6 +162,10 @@ class AppController extends StateNotifier<AppState> {
     state = state.copyWith(pane: ActivePane.setup);
   }
 
+  void openSettings() {
+    state = state.copyWith(pane: ActivePane.setup);
+  }
+
   void selectConversation(String id) {
     wsClient.send(ClientCommand.loadConversation(id));
     state = state.copyWith(pane: ActivePane.chat);
