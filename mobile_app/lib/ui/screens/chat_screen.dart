@@ -1,3 +1,4 @@
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -6,6 +7,7 @@ import '../../application/app_state.dart';
 import '../../core/config/server_config.dart';
 import '../widgets/bottom_nav.dart';
 import '../widgets/chat_bubble.dart';
+import '../widgets/typing_bubble.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -17,12 +19,61 @@ class ChatScreen extends ConsumerStatefulWidget {
 class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
+  late final AudioPlayer _typingPlayer;
+  late final AudioPlayer _donePlayer;
+  bool _typingActive = false;
+  late final ProviderSubscription<bool> _streamingSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _typingPlayer = AudioPlayer(playerId: 'typing_indicator')
+      ..setReleaseMode(ReleaseMode.stop);
+    _donePlayer = AudioPlayer(playerId: 'typing_complete')
+      ..setReleaseMode(ReleaseMode.stop);
+
+    final streamingProvider =
+        appControllerProvider.select((state) => state.streaming);
+    if (ref.read(streamingProvider)) _startTypingFeedback();
+
+    _streamingSubscription = ref.listenManual<bool>(
+      streamingProvider,
+      (previous, next) {
+        if (next) {
+          if (previous != true) _startTypingFeedback();
+        } else if (previous == true) {
+          _stopTypingFeedback(playCompletion: true);
+        }
+      },
+    );
+  }
 
   @override
   void dispose() {
+    _streamingSubscription.close();
+    _typingPlayer.dispose();
+    _donePlayer.dispose();
     _controller.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _startTypingFeedback() {
+    if (_typingActive) return;
+    _typingActive = true;
+    _typingPlayer.stop();
+    _typingPlayer.play(AssetSource('audio/typing.mp3'));
+  }
+
+  void _stopTypingFeedback({bool playCompletion = false}) {
+    if (_typingActive) {
+      _typingActive = false;
+      _typingPlayer.stop();
+    }
+    if (playCompletion) {
+      _donePlayer.stop();
+      _donePlayer.play(AssetSource('audio/done.mp3'));
+    }
   }
 
   @override
@@ -52,25 +103,38 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           onSettings: () => _openSettings(context, config),
         ),
         Expanded(
-          child: state.chatMessages.isEmpty
-              ? const _EmptyChat()
-              : ListView.builder(
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: ListView.builder(
                   controller: _scrollController,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  itemCount: state.chatMessages.length,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 12),
+                  itemCount: state.chatMessages.length +
+                      (state.streaming ? 1 : 0),
                   itemBuilder: (context, index) {
-                    final message = state.chatMessages[index];
-                    final isUser = message.role == 'user';
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 6),
-                      child: ChatBubble(
-                        message: message,
-                        isUser: isUser,
-                      ),
+                    if (index < state.chatMessages.length) {
+                      final message = state.chatMessages[index];
+                      final isUser = message.role == 'user';
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        child: ChatBubble(
+                          message: message,
+                          isUser: isUser,
+                        ),
+                      );
+                    }
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 6),
+                      child: TypingBubble(),
                     );
                   },
                 ),
+              ),
+              if (state.chatMessages.isEmpty && !state.streaming)
+                const IgnorePointer(child: _EmptyChat()),
+            ],
+          ),
         ),
         _Composer(
           controller: _controller,
