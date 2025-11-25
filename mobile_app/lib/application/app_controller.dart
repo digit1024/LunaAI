@@ -279,15 +279,17 @@ class AppController extends StateNotifier<AppState> {
             id: m.id,
             role: m.role,
             content: m.content,
-            timestamp:
-                DateTime.fromMillisecondsSinceEpoch(m.timestamp * 1000),
+            timestamp: DateTime.fromMillisecondsSinceEpoch(m.timestamp * 1000),
             toolChip: m.toolCallId != null
                 ? ToolCallChip(
                     id: m.toolCallId!,
                     name: m.toolName ?? 'tool',
                     status: m.toolStatus ?? 'pending',
-                    description:
-                        (m.toolResult ?? m.toolParams)?.toString() ?? '',
+                    params: m.toolParams,
+                    result: m.toolResult,
+                    error: m.toolStatus == 'error'
+                        ? (m.toolResult ?? m.toolParams)?.toString()
+                        : null,
                   )
                 : null,
           ),
@@ -357,7 +359,7 @@ class AppController extends StateNotifier<AppState> {
           id: plan.id,
           name: plan.name,
           status: 'planned',
-          description: plan.paramsJson?.toString() ?? '',
+          params: plan.paramsJson,
         ),
       ));
     }
@@ -371,14 +373,16 @@ class AppController extends StateNotifier<AppState> {
     dynamic payload,
   ) {
     final messages = [...state.chatMessages];
-    final idx =
-        messages.lastIndexWhere((m) => m.toolChip?.id == toolCallId);
+    final idx = messages.lastIndexWhere((m) => m.toolChip?.id == toolCallId);
     if (idx >= 0) {
       final message = messages[idx];
       messages[idx] = message.copyWith(
-        toolChip: message.toolChip?.copyWith(
+        toolChip: _updatedToolChip(
+          original: message.toolChip,
           status: status,
-          description: payload?.toString() ?? '',
+          payload: payload,
+          toolId: toolCallId,
+          toolName: name,
         ),
         content: '🧰 $name',
       );
@@ -388,15 +392,75 @@ class AppController extends StateNotifier<AppState> {
         role: 'tool',
         content: '🧰 $name',
         timestamp: DateTime.now(),
-        toolChip: ToolCallChip(
+        toolChip: _buildToolChip(
           id: toolCallId,
           name: name,
           status: status,
-          description: payload?.toString() ?? '',
+          payload: payload,
         ),
       ));
     }
     state = state.copyWith(chatMessages: messages);
+  }
+
+  ToolCallChip _updatedToolChip({
+    required ToolCallChip? original,
+    required String status,
+    required String toolId,
+    required String toolName,
+    dynamic payload,
+  }) {
+    final chip =
+        original ?? ToolCallChip(id: toolId, name: toolName, status: status);
+    switch (status) {
+      case 'planned':
+      case 'running':
+        return chip.copyWith(status: status, params: payload);
+      case 'done':
+        return chip.copyWith(status: status, result: payload);
+      case 'error':
+        return chip.copyWith(status: status, error: payload?.toString());
+      default:
+        return chip.copyWith(status: status);
+    }
+  }
+
+  ToolCallChip _buildToolChip({
+    required String id,
+    required String name,
+    required String status,
+    dynamic payload,
+  }) {
+    switch (status) {
+      case 'planned':
+      case 'running':
+        return ToolCallChip(
+          id: id,
+          name: name,
+          status: status,
+          params: payload,
+        );
+      case 'done':
+        return ToolCallChip(
+          id: id,
+          name: name,
+          status: status,
+          result: payload,
+        );
+      case 'error':
+        return ToolCallChip(
+          id: id,
+          name: name,
+          status: status,
+          error: payload?.toString(),
+        );
+      default:
+        return ToolCallChip(
+          id: id,
+          name: name,
+          status: status,
+        );
+    }
   }
 
   String _latestAssistantText() {

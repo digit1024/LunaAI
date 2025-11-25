@@ -3,6 +3,7 @@ import 'package:equatable/equatable.dart';
 import '../data/ws/ws_dto.dart';
 
 enum ConnectionStatus { connecting, online, error }
+
 enum ActivePane { setup, connecting, conversations, chat, settings }
 
 class ChatMessage extends Equatable {
@@ -41,33 +42,47 @@ class ChatMessage extends Equatable {
   }
 
   @override
-  List<Object?> get props => [id, role, content, isStreaming, timestamp, toolChip];
+  List<Object?> get props =>
+      [id, role, content, isStreaming, timestamp, toolChip];
 }
 
 class ToolCallChip extends Equatable {
+  static const Object _unset = Object();
+
   final String id;
   final String name;
   final String status;
-  final String description;
+  final dynamic params;
+  final dynamic result;
+  final String? error;
 
   const ToolCallChip({
     required this.id,
     required this.name,
     required this.status,
-    required this.description,
+    this.params,
+    this.result,
+    this.error,
   });
 
-  ToolCallChip copyWith({String? status, String? description}) {
+  ToolCallChip copyWith({
+    String? status,
+    Object? params = _unset,
+    Object? result = _unset,
+    Object? error = _unset,
+  }) {
     return ToolCallChip(
       id: id,
       name: name,
       status: status ?? this.status,
-      description: description ?? this.description,
+      params: identical(params, _unset) ? this.params : params,
+      result: identical(result, _unset) ? this.result : result,
+      error: identical(error, _unset) ? this.error : error as String?,
     );
   }
 
   @override
-  List<Object?> get props => [id, name, status, description];
+  List<Object?> get props => [id, name, status, params, result, error];
 }
 
 class AppState extends Equatable {
@@ -83,7 +98,8 @@ class AppState extends Equatable {
   final String? error;
   final List<String> availableProfiles;
   final String defaultProfile;
-  final int connectionAttempt; // Current attempt (1, 2, 3) or 0 if not connecting
+  final int
+      connectionAttempt; // Current attempt (1, 2, 3) or 0 if not connecting
 
   const AppState({
     required this.connection,

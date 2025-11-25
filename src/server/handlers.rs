@@ -17,7 +17,6 @@ use crate::{
     },
 };
 use anyhow::{anyhow, Context, Result};
-use futures::FutureExt;
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{
@@ -132,7 +131,7 @@ impl ServerHandler {
 
     async fn handle_start_conversation(&self, title: Option<String>) -> Result<()> {
         let title_text = title.unwrap_or_else(|| "Generating title...".to_string());
-        let mut storage = self.ctx.storage.lock().await;
+        let storage = self.ctx.storage.lock().await;
         let conversation_id = storage
             .create_conversation(title_text)
             .context("failed to create conversation")?;
@@ -164,7 +163,7 @@ impl ServerHandler {
         query: Option<String>,
         limit: Option<u32>,
     ) -> Result<()> {
-        let mut storage = self.ctx.storage.lock().await;
+        let storage = self.ctx.storage.lock().await;
         if let Some(q) = query.filter(|s| !s.trim().is_empty()) {
             let results = storage
                 .search_history(&q, limit.unwrap_or(20) as usize)
@@ -228,7 +227,7 @@ impl ServerHandler {
             return Err(anyhow!("Cannot send an empty message"));
         }
 
-        let mut storage = self.ctx.storage.lock().await;
+        let storage = self.ctx.storage.lock().await;
         let conversation_uuid = if let Some(existing) = conversation_id {
             Uuid::parse_str(&existing).context("invalid conversation id")?
         } else {
@@ -253,9 +252,7 @@ impl ServerHandler {
         });
 
         let profile = self.session.active_profile(&self.ctx.config)?.clone();
-        let llm_messages = self
-            .build_llm_messages(conversation_uuid, profile.clone())
-            .await?;
+        let llm_messages = self.build_llm_messages(conversation_uuid).await?;
         let prompt_manager = self.ctx.prompt_manager.clone();
         let agent_messages = inject_prompts(llm_messages, &prompt_manager, &profile)?;
 
@@ -316,11 +313,7 @@ impl ServerHandler {
         Ok(())
     }
 
-    async fn build_llm_messages(
-        &self,
-        conversation_id: Uuid,
-        profile: crate::config::LlmProfile,
-    ) -> Result<Vec<LlmMessage>> {
+    async fn build_llm_messages(&self, conversation_id: Uuid) -> Result<Vec<LlmMessage>> {
         let storage = self.ctx.storage.lock().await;
         let conversation = storage
             .get_conversation(&conversation_id)
@@ -331,8 +324,12 @@ impl ServerHandler {
 }
 
 fn truncate_preview(text: &str) -> String {
-    if text.len() > 60 {
-        format!("{}...", &text[..57])
+    const MAX_PREVIEW_CHARS: usize = 60;
+    const TRUNCATED_CHARS: usize = MAX_PREVIEW_CHARS - 3; // keep room for "..."
+
+    if text.chars().count() > MAX_PREVIEW_CHARS {
+        let truncated: String = text.chars().take(TRUNCATED_CHARS).collect();
+        format!("{truncated}...")
     } else {
         text.to_string()
     }

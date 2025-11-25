@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
@@ -17,9 +19,8 @@ class ChatBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final maxWidth = MediaQuery.of(context).size.width * 0.7;
     final colorScheme = Theme.of(context).colorScheme;
-    final bubbleColor = isUser
-        ? colorScheme.primaryContainer
-        : colorScheme.surfaceVariant;
+    final bubbleColor =
+        isUser ? colorScheme.primaryContainer : colorScheme.surfaceVariant;
     final alignment =
         isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start;
 
@@ -37,7 +38,8 @@ class ChatBubble extends StatelessWidget {
             child: Column(
               crossAxisAlignment: alignment,
               children: [
-                if (message.toolChip != null) _ToolChip(chip: message.toolChip!),
+                if (message.toolChip != null)
+                  _ToolChip(chip: message.toolChip!),
                 if (isUser || message.isStreaming)
                   Text(
                     message.content,
@@ -80,6 +82,16 @@ class _ToolChip extends StatelessWidget {
 
   final ToolCallChip chip;
 
+  String? _stringify(dynamic data) {
+    if (data == null) return null;
+    if (data is String) return data;
+    try {
+      return const JsonEncoder.withIndent('  ').convert(data);
+    } catch (_) {
+      return data.toString();
+    }
+  }
+
   Color _statusColor(BuildContext context) {
     switch (chip.status) {
       case 'done':
@@ -95,6 +107,8 @@ class _ToolChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final paramsText = _stringify(chip.params);
+    final resultText = _stringify(chip.result);
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(8),
@@ -115,8 +129,7 @@ class _ToolChip extends StatelessWidget {
                   color: _statusColor(context).withOpacity(0.2),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 child: Text(
                   chip.status.toUpperCase(),
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
@@ -127,11 +140,30 @@ class _ToolChip extends StatelessWidget {
               ),
             ],
           ),
-          if (chip.description.isNotEmpty) ...[
-            const SizedBox(height: 4),
+          if (chip.error?.isNotEmpty == true) ...[
+            const SizedBox(height: 6),
             Text(
-              chip.description,
-              style: Theme.of(context).textTheme.bodySmall,
+              chip.error!,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: Theme.of(context).colorScheme.error),
+            ),
+          ],
+          if (paramsText != null && paramsText.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            _CollapsiblePayload(
+              icon: Icons.tune,
+              label: 'Parameters',
+              payload: paramsText,
+            ),
+          ],
+          if (resultText != null && resultText.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            _CollapsiblePayload(
+              icon: Icons.summarize,
+              label: 'Result',
+              payload: resultText,
             ),
           ],
         ],
@@ -140,4 +172,62 @@ class _ToolChip extends StatelessWidget {
   }
 }
 
+class _CollapsiblePayload extends StatelessWidget {
+  const _CollapsiblePayload({
+    required this.icon,
+    required this.label,
+    required this.payload,
+  });
 
+  final IconData icon;
+  final String label;
+  final String payload;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final tileTheme = Theme.of(context).copyWith(
+      dividerColor: Colors.transparent,
+      splashColor: Colors.transparent,
+      hoverColor: Colors.transparent,
+    );
+
+    return Theme(
+      data: tileTheme,
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: colorScheme.outlineVariant),
+        ),
+        child: ExpansionTile(
+          dense: true,
+          tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+          childrenPadding:
+              const EdgeInsets.only(left: 16, right: 12, bottom: 12),
+          visualDensity: VisualDensity.compact,
+          leading: Icon(icon, size: 18, color: colorScheme.primary),
+          title: Text(
+            label,
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+          children: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: colorScheme.surfaceVariant.withOpacity(0.4),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: SelectableText(
+                payload,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      fontFamily: 'monospace',
+                    ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

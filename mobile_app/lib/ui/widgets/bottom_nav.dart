@@ -26,27 +26,27 @@ class LunaBottomBar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Expanded(
-            child: TextButton.icon(
-              onPressed: onConversations,
-              icon: const Icon(Icons.chat_bubble_outline),
-              label: const Text('Conversations'),
-            ),
-          ),
-          Expanded(
-            child: TextButton.icon(
-              onPressed: onStartNew,
-              icon: const Icon(Icons.add),
-              label: const Text('+ Start New'),
-            ),
-          ),
-          Expanded(
-            child: TextButton.icon(
-              onPressed: onSettings,
-              icon: const Icon(Icons.settings),
-              label: const Text('⚙ Settings'),
-            ),
-          ),
+Expanded(
+  child: IconButton(
+    onPressed: onConversations,
+    icon: const Icon(Icons.chat_bubble_outline),
+    tooltip: 'Conversations',
+  ),
+),
+Expanded(
+  child: IconButton(
+    onPressed: onStartNew,
+    icon: const Icon(Icons.add),
+    tooltip: 'Start New',
+  ),
+),
+Expanded(
+  child: IconButton(
+    onPressed: onSettings,
+    icon: const Icon(Icons.settings),
+    tooltip: 'Settings',
+  ),
+),
         ],
       ),
     );
