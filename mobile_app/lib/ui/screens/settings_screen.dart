@@ -50,15 +50,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final ttsPrefsNotifier = ref.read(ttsPreferencesProvider.notifier);
     final appController = ref.read(appControllerProvider.notifier);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Settings'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => appController.openConversations(),
+    return PopScope(
+      canPop: false,
+      onPopInvoked: (didPop) {
+        if (!didPop) {
+          appController.openConversations();
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Settings'),
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () => appController.openConversations(),
+          ),
         ),
-      ),
-      body: SingleChildScrollView(
+        body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -143,6 +150,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ],
         ),
       ),
+    ),
     );
   }
 

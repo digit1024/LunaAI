@@ -210,7 +210,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       }
     });
 
-    return Column(
+    return PopScope(
+      canPop: false,
+      onPopInvoked: (didPop) {
+        if (!didPop) {
+          controller.openConversations();
+        }
+      },
+      child: Column(
       children: [
         _TopBar(
           title: heading,
@@ -272,6 +279,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           onSettings: controller.openSettings,
         ),
       ],
+    ),
     );
   }
 }
