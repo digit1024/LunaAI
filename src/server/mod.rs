@@ -166,6 +166,24 @@ fn spawn_title_generation_thread(
                         }
                     };
                     
+                    // Check if last message is older than 1 minute
+                    if let Some(last_message) = messages.last() {
+                        let last_message_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(last_message.created_at as u64);
+                        let now = std::time::SystemTime::now();
+                        
+                        if let Ok(duration_since_last_message) = now.duration_since(last_message_time) {
+                            let one_minute = std::time::Duration::from_secs(60);
+                            if duration_since_last_message < one_minute {
+                                tracing::debug!(
+                                    "Skipping title generation for conversation {}: last message is only {} seconds old",
+                                    conversation_id,
+                                    duration_since_last_message.as_secs()
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                    
                     // Now call async function without holding the lock
                     use crate::storage::title_generation::generate_title_from_messages;
                     generate_title_from_messages(
