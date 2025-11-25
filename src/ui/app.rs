@@ -14,7 +14,7 @@ use crate::{
     config::{AppConfig, LlmProfile},
     llm::{LlmClient, ToolCall},
     mcp::MCPServerRegistry,
-    prompts::PromptManager,
+    prompts::{PromptManager, ProfilePromptError},
     storage::{sqlite_storage_simple::MessageMetadata, Storage},
     ui::context::ContextPage,
     ui::dialogs::{DialogAction, DialogPage},
@@ -78,6 +78,9 @@ pub enum Message {
     // Search functionality
     SearchChanged(String),
     SearchResults(Vec<crate::storage::sqlite_storage_simple::Snippet>),
+    // Inline error handling
+    InlineError(String),
+    DismissError,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -388,6 +391,15 @@ impl CosmicLlmApp {
         let messages = self.messages.clone();
         let mcp_registry = self.mcp_registry.clone();
         let pending_messages = self.pending_llm_messages.clone();
+        let profile_prompt_path = self
+            .config
+            .get_default_profile()
+            .and_then(|profile| {
+                profile
+                    .profile_prompt_file
+                    .as_ref()
+                    .map(|path| crate::config::AppConfig::resolve_config_path(path))
+            });
         
         Subscription::run_with_id(id, stream::channel(100, move |mut output| async move {
             // Use prepared messages if available (which includes attachments), otherwise rebuild
@@ -405,6 +417,28 @@ impl CosmicLlmApp {
                         crate::llm::Role::System,
                         system_prompt.to_string()
                     ));
+                }
+                
+                // Add profile prompt if configured
+                if let Some(profile_prompt_path) = profile_prompt_path.clone() {
+                    let resolved = profile_prompt_path.to_string_lossy().to_string();
+                    match prompt_manager.load_profile_prompt(&resolved) {
+                        Ok(prompt) => {
+                            llm_messages.push(crate::llm::Message::new(
+                                crate::llm::Role::System,
+                                prompt,
+                            ));
+                        }
+                        Err(err) => {
+                            let message = match &err {
+                                ProfilePromptError::NotFound(_) => {
+                                    format!("Profile prompt not found: {}", err.path())
+                                }
+                                _ => err.to_string(),
+                            };
+                            let _ = output.send(Message::InlineError(message)).await;
+                        }
+                    }
                 }
                 
                 // Add conversation history, filtering out placeholder assistant messages
@@ -569,6 +603,10 @@ impl Application for CosmicLlmApp {
         } else {
             println!("❗ No default profile found; using fallback defaults");
         }
+        let initial_profile_mcp_servers = config
+            .get_default_profile()
+            .map(|profile| profile.enabled_mcp.clone())
+            .unwrap_or_default();
         let storage = Storage::new_default().unwrap_or_else(|e| {
             eprintln!("Failed to initialize SQLite storage: {}", e);
             // Fallback to a temporary database
@@ -605,6 +643,8 @@ impl Application for CosmicLlmApp {
             let mut registry = mcp_registry_clone.write().await;
             if let Err(e) = registry.initialize_from_config(&mcp_config).await {
                 eprintln!("Failed to initialize MCP registry: {}", e);
+            } else if !initial_profile_mcp_servers.is_empty() {
+                registry.apply_profile_tool_defaults(&initial_profile_mcp_servers);
             }
         });
         
@@ -678,7 +718,10 @@ impl Application for CosmicLlmApp {
             |msg| msg,
         );
         
-        let tasks = vec![load_tools_task];
+        let mut tasks = vec![load_tools_task];
+        if let Some(task) = app.profile_tool_defaults_task() {
+            tasks.push(task);
+        }
 
         (app, app::Task::batch(tasks))
     }
@@ -786,6 +829,7 @@ impl Application for CosmicLlmApp {
                     println!("🔍 DEBUG: Final attachments count: {}", attachments.len());
                     
                     // Convert messages to LLM format
+                    let profile_prompt = self.load_active_profile_prompt();
                     let mut llm_messages = Vec::new();
                     
                     // Add system prompt if available
@@ -793,6 +837,13 @@ impl Application for CosmicLlmApp {
                         llm_messages.push(crate::llm::Message::new(
                             crate::llm::Role::System,
                             system_prompt.to_string()
+                        ));
+                    }
+
+                    if let Some(profile_prompt) = profile_prompt {
+                        llm_messages.push(crate::llm::Message::new(
+                            crate::llm::Role::System,
+                            profile_prompt
                         ));
                     }
                     
@@ -1414,6 +1465,9 @@ impl Application for CosmicLlmApp {
                             _ => Arc::new(crate::llm::openai::OpenAIClient::new(profile)),
                         };
                     }
+                    if let Some(task) = self.profile_tool_defaults_task() {
+                        return task;
+                    }
                 }
             }
             Message::SaveSettings => {
@@ -1445,6 +1499,9 @@ impl Application for CosmicLlmApp {
                                     "gemini" => Arc::new(crate::llm::gemini::GeminiClient::new(profile)),
                                     _ => Arc::new(crate::llm::openai::OpenAIClient::new(profile)),
                                 };
+                            }
+                            if let Some(task) = self.profile_tool_defaults_task() {
+                                return task;
                             }
                         }
                     }
@@ -1590,6 +1647,12 @@ impl Application for CosmicLlmApp {
             Message::SearchResults(results) => {
                 self.search_results = results;
             }
+            Message::InlineError(error) => {
+                self.current_error = Some(error);
+            }
+            Message::DismissError => {
+                self.current_error = None;
+            }
         }
         
         app::Task::none()
@@ -1690,6 +1753,81 @@ impl Application for CosmicLlmApp {
 }
 
 impl CosmicLlmApp {
+    pub(crate) fn error_banner(&self) -> Option<Element<Message>> {
+        self.current_error.as_ref().map(|error| {
+            let content = widget::row::with_children(vec![
+                crate::ui::icons::get_icon("dialog-warning-symbolic", 16)
+                    .into(),
+                widget::text(error.clone())
+                    .size(14)
+                    .into(),
+                widget::Space::with_width(cosmic::iced::Length::Fill).into(),
+                widget::button::standard("Dismiss")
+                    .on_press(Message::DismissError)
+                    .padding([4, 12])
+                    .into(),
+            ])
+            .spacing(12)
+            .align_y(cosmic::iced::Alignment::Center);
+
+            widget::container(content)
+                .padding(12)
+                .width(cosmic::iced::Length::Fill)
+                .class(cosmic::style::Container::Card)
+                .into()
+        })
+    }
+
+    fn load_active_profile_prompt(&mut self) -> Option<String> {
+        let profile = self.config.get_default_profile()?;
+        let path = profile.profile_prompt_file.as_deref()?;
+
+        let resolved_path = crate::config::AppConfig::resolve_config_path(path);
+        let resolved = resolved_path.to_string_lossy().to_string();
+
+        match self.prompt_manager.load_profile_prompt(&resolved) {
+            Ok(content) => {
+                if self
+                    .current_error
+                    .as_deref()
+                    .map(|msg| msg.starts_with("Profile prompt"))
+                    .unwrap_or(false)
+                {
+                    self.current_error = None;
+                }
+                Some(content)
+            }
+            Err(err) => {
+                let message = match &err {
+                    ProfilePromptError::NotFound(_) => {
+                        format!("Profile prompt not found: {}", resolved)
+                    }
+                    _ => err.to_string(),
+                };
+                self.current_error = Some(message);
+                None
+            }
+        }
+    }
+
+    fn profile_tool_defaults_task(&self) -> Option<app::Task<Message>> {
+        let profile = self.config.get_default_profile()?;
+        if profile.enabled_mcp.is_empty() {
+            return None;
+        }
+
+        let allowed_servers = profile.enabled_mcp.clone();
+        let registry = self.mcp_registry.clone();
+
+        Some(cosmic::Task::perform(
+            async move {
+                let mut registry = registry.write().await;
+                registry.apply_profile_tool_defaults(&allowed_servers);
+                cosmic::Action::App(Message::RefreshMCPTools)
+            },
+            |msg| msg,
+        ))
+    }
 
     fn create_menu_bar(&self) -> Element<Message> {
         use cosmic::widget::menu::{items, root, Item, ItemHeight, ItemWidth, MenuBar, Tree};

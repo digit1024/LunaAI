@@ -1,6 +1,7 @@
 use anyhow::Result;
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PromptConfig {
@@ -54,4 +55,52 @@ impl PromptManager {
         self.system_prompt.as_deref()
     }
 
+    pub fn load_profile_prompt(&self, path: &str) -> Result<String, ProfilePromptError> {
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                debug!("✅ Loaded profile prompt from: {}", path);
+                Ok(content.trim().to_string())
+            }
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    warn!("⚠️ Profile prompt not found: {}", path);
+                    Err(ProfilePromptError::NotFound(path.to_string()))
+                } else {
+                    warn!("⚠️ Failed to load profile prompt from {}: {}", path, e);
+                    Err(ProfilePromptError::IoError {
+                        path: path.to_string(),
+                        error: e.to_string(),
+                    })
+                }
+            }
+        }
+    }
 }
+
+#[derive(Debug)]
+pub enum ProfilePromptError {
+    NotFound(String),
+    IoError { path: String, error: String },
+}
+
+impl ProfilePromptError {
+    pub fn path(&self) -> &str {
+        match self {
+            ProfilePromptError::NotFound(path) => path,
+            ProfilePromptError::IoError { path, .. } => path,
+        }
+    }
+}
+
+impl fmt::Display for ProfilePromptError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProfilePromptError::NotFound(path) => write!(f, "profile prompt not found: {}", path),
+            ProfilePromptError::IoError { path, error } => {
+                write!(f, "failed to load profile prompt from {}: {}", path, error)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProfilePromptError {}

@@ -1,7 +1,10 @@
 use config::{Config, ConfigError, File};
-use serde::{Deserialize, Serialize};
+use serde::{
+    de::{self, Deserializer, SeqAccess, Visitor},
+    Deserialize, Serialize,
+};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct LlmProfile {
@@ -12,6 +15,10 @@ pub struct LlmProfile {
     pub endpoint: String,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub profile_prompt_file: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_enabled_mcp")]
+    pub enabled_mcp: Vec<String>,
 }
 
 fn default_backend() -> String {
@@ -27,6 +34,8 @@ impl Default for LlmProfile {
             endpoint: "https://api.openai.com/v1".to_string(),
             temperature: Some(0.7),
             max_tokens: Some(1000),
+            profile_prompt_file: None,
+            enabled_mcp: Vec::new(),
         }
     }
 }
@@ -136,6 +145,69 @@ impl AppConfig {
         fs::write(config_path, toml_string)?;
         Ok(())
     }
+
+    pub fn resolve_config_path(path: &str) -> PathBuf {
+        let candidate = Path::new(path);
+        if candidate.is_absolute() {
+            candidate.to_path_buf()
+        } else {
+            Self::config_dir().join(candidate)
+        }
+    }
+}
+
+fn deserialize_enabled_mcp<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct StringOrVecVisitor;
+
+    impl<'de> Visitor<'de> for StringOrVecVisitor {
+        type Value = Vec<String>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a comma-separated string or a list of MCP server names")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(parse_mcp_csv(value))
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(parse_mcp_csv(&value))
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let mut values = Vec::new();
+            while let Some(value) = seq.next_element::<String>()? {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    values.push(trimmed.to_string());
+                }
+            }
+            Ok(values)
+        }
+    }
+
+    deserializer.deserialize_any(StringOrVecVisitor)
+}
+
+fn parse_mcp_csv(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|entry| entry.trim())
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| entry.to_string())
+        .collect()
 }
 
 impl MCPConfig {

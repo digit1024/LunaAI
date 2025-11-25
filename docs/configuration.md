@@ -53,6 +53,8 @@ model = "gpt-4o"
 endpoint = "https://api.openai.com/v1"
 temperature = 0.7
 max_tokens = 4000
+profile_prompt_file = "~/.local/share/cosmic_llm/profiles/diet.md"
+enabled_mcp = "filesystem,weather"
 
 [profiles.anthropic]
 backend = "anthropic"
@@ -84,6 +86,10 @@ max_tokens = 4000
 - **anthropic**: Anthropic Claude models
 - **ollama**: Local models via Ollama
 - **gemini**: Google Gemini models
+
+### Per-profile Behavior
+- `profile_prompt_file` (optional) lets you load an extra system prompt whenever that profile is active. Paths can be absolute or relative to the config directory (`~/.local/share/cosmic_llm/`), so `profiles/diet.md` resolves to `~/.local/share/cosmic_llm/profiles/diet.md`. Cosmic LLM adds the content after the global system prompt if the file exists; missing files show a warning instead of failing silently.
+- `enabled_mcp` (optional) lists MCP server names to auto-enable for this profile. The value accepts a comma-separated string or a TOML list. Tools from other servers stay visible but default to disabled so you can opt in manually.
 
 ### Prompt Configuration
 ```toml

@@ -3,7 +3,7 @@ use crate::config::MCPConfig;
 use crate::mcp::transport::MCPTransport;
 use anyhow::Result;
 use log::{error, info};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -83,6 +83,27 @@ impl MCPServerRegistry {
     pub fn disable_all_tools(&mut self) {
         for tool in &self.all_tools {
             self.enabled_tools.insert(tool.name.clone(), false);
+        }
+    }
+
+    pub fn apply_profile_tool_defaults(&mut self, allowed_servers: &[String]) {
+        if allowed_servers.is_empty() {
+            return;
+        }
+
+        let allowed: HashSet<String> = allowed_servers
+            .iter()
+            .map(|name| name.trim().to_lowercase())
+            .filter(|name| !name.is_empty())
+            .collect();
+
+        if allowed.is_empty() {
+            return;
+        }
+
+        for (tool_name, server_name) in &self.tool_index {
+            let enabled = allowed.contains(&server_name.to_lowercase());
+            self.enabled_tools.insert(tool_name.clone(), enabled);
         }
     }
     
