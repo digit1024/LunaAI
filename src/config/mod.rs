@@ -137,6 +137,41 @@ impl Default for ServerConfig {
     }
 }
 
+fn default_summary_chars() -> u32 {
+    1000
+}
+
+fn default_summary_loop_sleep_seconds() -> u64 {
+    15
+}
+
+fn default_title_generation_system_prompt() -> String {
+    "Your task is to generate a conversation title that will describe the topic easily. Keep original conversation language and tone. YOU SHOULD ALWAYS ANSWER ONLY WITH TITLE. MAXIMUM 100CHARS. You will receive a part of the conversation transcript in next message".to_string()
+}
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct TitleSummaryConfig {
+    #[serde(default)]
+    pub title_generation_profile: Option<String>,
+    #[serde(default = "default_summary_chars")]
+    pub summary_chars: u32,
+    #[serde(default = "default_summary_loop_sleep_seconds")]
+    pub summary_loop_sleep_seconds: u64,
+    #[serde(default = "default_title_generation_system_prompt")]
+    pub title_generation_system_prompt: String,
+}
+
+impl Default for TitleSummaryConfig {
+    fn default() -> Self {
+        Self {
+            title_generation_profile: None,
+            summary_chars: default_summary_chars(),
+            summary_loop_sleep_seconds: default_summary_loop_sleep_seconds(),
+            title_generation_system_prompt: default_title_generation_system_prompt(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct AppConfig {
     pub default: String,
@@ -147,6 +182,8 @@ pub struct AppConfig {
     pub mcp: MCPConfig,
     #[serde(default)]
     pub server: ServerConfig,
+    #[serde(default)]
+    pub title_summary: TitleSummaryConfig,
 }
 
 impl Default for AppConfig {
@@ -160,6 +197,7 @@ impl Default for AppConfig {
             prompts: crate::prompts::PromptConfig::default(),
             mcp: MCPConfig::default(),
             server: ServerConfig::default(),
+            title_summary: TitleSummaryConfig::default(),
         }
     }
 }

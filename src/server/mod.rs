@@ -52,9 +52,14 @@ async fn launch(options: ServerOptions) -> Result<()> {
         config: config.clone(),
         server_cfg: Arc::new(config.server.clone()),
         prompt_manager,
-        storage,
+        storage: storage.clone(),
         mcp_registry,
     });
+
+    // Spawn background title generation thread only if profile is configured
+    if config.title_summary.title_generation_profile.is_some() {
+        spawn_title_generation_thread(config.clone(), storage);
+    }
 
     websocket::serve(ctx).await
 }
@@ -91,3 +96,101 @@ async fn initialize_mcp_registry(
         guard.apply_profile_tool_defaults(&default_tools);
     }
 }
+
+fn spawn_title_generation_thread(
+    config: Arc<AppConfig>,
+    storage: Arc<Mutex<Storage>>,
+) {
+    tokio::spawn(async move {
+        let title_config = &config.title_summary;
+        let sleep_duration = std::time::Duration::from_secs(title_config.summary_loop_sleep_seconds);
+
+        loop {
+            tokio::time::sleep(sleep_duration).await;
+
+            // Get conversations without titles
+            let conversation_ids = {
+                let storage_guard = storage.lock().await;
+                match storage_guard.get_conversations_without_title() {
+                    Ok(ids) => ids,
+                    Err(e) => {
+                        tracing::warn!("Failed to get conversations without titles: {}", e);
+                        continue;
+                    }
+                }
+            };
+
+            if conversation_ids.is_empty() {
+                continue;
+            }
+
+            // Get the profile to use for title generation
+            // This should always be Some since we only start the thread if profile is configured
+            let profile = match &title_config.title_generation_profile {
+                Some(profile_name) => config.get_profile(profile_name),
+                None => {
+                    tracing::warn!("Title generation profile not configured, stopping thread");
+                    break;
+                }
+            };
+
+            let profile = match profile {
+                Some(p) => p.clone(),
+                None => {
+                    tracing::warn!("Title generation profile '{}' not found, stopping thread", 
+                        title_config.title_generation_profile.as_ref().unwrap());
+                    break;
+                }
+            };
+
+                // Generate title for each conversation
+            for conversation_id in conversation_ids {
+                let conversation_id_str = conversation_id.to_string();
+                let profile_clone = profile.clone();
+                let summary_chars = title_config.summary_chars;
+                let system_prompt = title_config.title_generation_system_prompt.clone();
+                
+                // Generate title using Storage wrapper method
+                // Load messages first, then release lock before async LLM call
+                let title_result = {
+                    let messages = {
+                        let storage_guard = storage.lock().await;
+                        storage_guard.load_conversation_messages(&conversation_id_str)
+                    };
+                    
+                    let messages = match messages {
+                        Ok(msgs) => msgs,
+                        Err(e) => {
+                            tracing::warn!("Failed to load messages for conversation {}: {}", conversation_id, e);
+                            continue;
+                        }
+                    };
+                    
+                    // Now call async function without holding the lock
+                    use crate::storage::title_generation::generate_title_from_messages;
+                    generate_title_from_messages(
+                        messages,
+                        &profile_clone,
+                        summary_chars,
+                        &system_prompt,
+                    ).await
+                };
+
+                match title_result {
+                    Ok(title) => {
+                        let storage_guard = storage.lock().await;
+                        if let Err(e) = storage_guard.update_conversation_title_and_flag(&conversation_id, &title) {
+                            tracing::warn!("Failed to update title for conversation {}: {}", conversation_id, e);
+                        } else {
+                            tracing::info!("Generated title for conversation {}: {}", conversation_id, title);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to generate title for conversation {}: {}", conversation_id, e);
+                    }
+                }
+            }
+        }
+    });
+}
+

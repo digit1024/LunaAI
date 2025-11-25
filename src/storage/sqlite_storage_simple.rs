@@ -14,6 +14,7 @@ pub struct Conversation {
     pub id: String,
     pub title: String,
     pub created_at: i64,
+    pub title_generated: bool,
 }
 
 /// Represents a message in the database
@@ -118,7 +119,8 @@ impl SqliteStorage {
             "CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                title_generated INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
@@ -200,8 +202,8 @@ impl SqliteStorage {
         let created_at = Utc::now().timestamp();
 
         self.conn.execute(
-            "INSERT INTO conversations (id, title, created_at) VALUES (?1, ?2, ?3)",
-            params![id, title, created_at],
+            "INSERT INTO conversations (id, title, created_at, title_generated) VALUES (?1, ?2, ?3, ?4)",
+            params![id, title, created_at, 0],
         )?;
 
         Ok(id)
@@ -400,13 +402,14 @@ impl SqliteStorage {
     pub fn get_conversation(&self, conversation_id: &str) -> SqliteResult<Option<Conversation>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, title, created_at FROM conversations WHERE id = ?1")?;
+            .prepare("SELECT id, title, created_at, title_generated FROM conversations WHERE id = ?1")?;
 
         stmt.query_row(params![conversation_id], |row| {
             Ok(Conversation {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 created_at: row.get(2)?,
+                title_generated: row.get::<_, i32>(3)? != 0,
             })
         })
         .optional()
@@ -416,13 +419,14 @@ impl SqliteStorage {
     pub fn list_conversations(&self) -> SqliteResult<Vec<Conversation>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, title, created_at FROM conversations ORDER BY created_at DESC")?;
+            .prepare("SELECT id, title, created_at, title_generated FROM conversations ORDER BY created_at DESC")?;
 
         let conversation_iter = stmt.query_map([], |row| {
             Ok(Conversation {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 created_at: row.get(2)?,
+                title_generated: row.get::<_, i32>(3)? != 0,
             })
         })?;
 
@@ -447,6 +451,39 @@ impl SqliteStorage {
     /// Get the database connection (for advanced operations)
     pub fn connection(&self) -> &Connection {
         &self.conn
+    }
+
+    /// Get conversations without generated titles
+    pub fn get_conversations_without_title(&self) -> SqliteResult<Vec<Conversation>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, title, created_at, title_generated FROM conversations WHERE title_generated = 0 ORDER BY created_at ASC")?;
+
+        let conversation_iter = stmt.query_map([], |row| {
+            Ok(Conversation {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                created_at: row.get(2)?,
+                title_generated: row.get::<_, i32>(3)? != 0,
+            })
+        })?;
+
+        let mut conversations = Vec::new();
+        for conversation in conversation_iter {
+            conversations.push(conversation?);
+        }
+
+        Ok(conversations)
+    }
+
+    /// Update conversation title and set title_generated flag
+    pub fn update_conversation_title_and_flag(&self, conversation_id: &str, title: &str) -> SqliteResult<bool> {
+        let changes = self.conn.execute(
+            "UPDATE conversations SET title = ?1, title_generated = 1 WHERE id = ?2",
+            params![title, conversation_id],
+        )?;
+
+        Ok(changes > 0)
     }
 }
 

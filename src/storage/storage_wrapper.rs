@@ -226,6 +226,36 @@ impl Storage {
 
         Ok(index)
     }
+
+    /// Get conversations without generated titles
+    pub fn get_conversations_without_title(&self) -> SqliteResult<Vec<Uuid>> {
+        let db_conversations = self.sqlite.get_conversations_without_title()?;
+        let mut conversation_ids = Vec::new();
+
+        for db_conv in db_conversations {
+            let id = Uuid::parse_str(&db_conv.id).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!("Invalid UUID: {}", e))
+            })?;
+            conversation_ids.push(id);
+        }
+
+        Ok(conversation_ids)
+    }
+
+    /// Update conversation title and set title_generated flag
+    pub fn update_conversation_title_and_flag(
+        &self,
+        id: &Uuid,
+        title: &str,
+    ) -> SqliteResult<bool> {
+        let id_str = id.to_string();
+        self.sqlite.update_conversation_title_and_flag(&id_str, title)
+    }
+
+    /// Load messages for a conversation (exposed for title generation)
+    pub fn load_conversation_messages(&self, conversation_id: &str) -> SqliteResult<Vec<super::sqlite_storage_simple::Message>> {
+        self.sqlite.load_conversation(conversation_id)
+    }
 }
 
 impl Default for Storage {
