@@ -5,6 +5,7 @@ import 'application/app_controller.dart';
 import 'application/app_state.dart';
 import 'core/config/server_config.dart';
 import 'core/config/theme_config.dart';
+import 'core/theme/app_theme.dart';
 import 'services/foreground_guard.dart';
 import 'services/notification_service.dart';
 import 'ui/screens/chat_screen.dart';
@@ -47,9 +48,19 @@ class _LunaAppState extends ConsumerState<LunaApp> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    final backgrounded = state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached;
-    ref.read(appControllerProvider.notifier).setBackgrounded(backgrounded);
+    
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      // App going to background
+      ref.read(appControllerProvider.notifier).setBackgrounded(true);
+    } else if (state == AppLifecycleState.resumed) {
+      // App resuming from background
+      ref.read(appControllerProvider.notifier).setBackgrounded(false);
+      // Check connection and reconnect if needed
+      unawaited(
+        ref.read(appControllerProvider.notifier).checkAndReconnect(),
+      );
+    }
   }
 
   @override
@@ -65,16 +76,8 @@ class _LunaAppState extends ConsumerState<LunaApp> with WidgetsBindingObserver {
     return MaterialApp(
       title: 'Luna Mobile',
       themeMode: themeConfig.themeMode,
-      theme: ThemeData(
-        colorSchemeSeed: Colors.indigo,
-        brightness: Brightness.light,
-        useMaterial3: true,
-      ),
-      darkTheme: ThemeData(
-        colorSchemeSeed: Colors.indigo,
-        brightness: Brightness.dark,
-        useMaterial3: true,
-      ),
+      theme: AppTheme.lightTheme,
+      darkTheme: AppTheme.darkTheme,
       home: const _HomeRouter(),
     );
   }

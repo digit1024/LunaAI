@@ -32,6 +32,8 @@ flutter:
   assets:
     - assets/audio/typing.mp3
     - assets/audio/done.mp3
+    - assets/audio/sent.mp3
+    - assets/audio/tool.mp3
 
 flutter_launcher_icons:
   android: true

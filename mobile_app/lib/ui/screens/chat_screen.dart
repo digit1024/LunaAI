@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -21,8 +23,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _scrollController = ScrollController();
   late final AudioPlayer _typingPlayer;
   late final AudioPlayer _donePlayer;
+  late final AudioPlayer _sentPlayer;
+  late final AudioPlayer _toolPlayer;
   bool _typingActive = false;
   late final ProviderSubscription<bool> _streamingSubscription;
+  late final ProviderSubscription<List<ChatMessage>> _toolCompletionSubscription;
+  Set<String> _completedToolIds = {}; // Track completed tools to avoid replaying
 
   @override
   void initState() {
@@ -31,6 +37,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       ..setReleaseMode(ReleaseMode.stop);
     _donePlayer = AudioPlayer(playerId: 'typing_complete')
       ..setReleaseMode(ReleaseMode.stop);
+    _sentPlayer = AudioPlayer(playerId: 'sent_message')
+      ..setReleaseMode(ReleaseMode.stop);
+    // Preload sent sound for instant playback
+    unawaited(_sentPlayer.setSource(AssetSource('audio/sent.mp3')));
+    
+    _toolPlayer = AudioPlayer(playerId: 'tool_complete')
+      ..setReleaseMode(ReleaseMode.stop);
+    // Preload tool sound for instant playback
+    unawaited(_toolPlayer.setSource(AssetSource('audio/tool.mp3')));
 
     final streamingProvider =
         appControllerProvider.select((state) => state.streaming);
@@ -46,13 +61,33 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         }
       },
     );
+    
+    // Listen for tool completions
+    _toolCompletionSubscription = ref.listenManual<List<ChatMessage>>(
+      appControllerProvider.select((state) => state.chatMessages),
+      (previous, next) {
+        // Check for newly completed tools
+        for (final message in next) {
+          if (message.toolChip != null && 
+              message.toolChip!.status == 'done' &&
+              !_completedToolIds.contains(message.toolChip!.id)) {
+            _completedToolIds.add(message.toolChip!.id);
+            _toolPlayer.stop();
+            unawaited(_toolPlayer.play(AssetSource('audio/tool.mp3')));
+          }
+        }
+      },
+    );
   }
 
   @override
   void dispose() {
     _streamingSubscription.close();
+    _toolCompletionSubscription.close();
     _typingPlayer.dispose();
     _donePlayer.dispose();
+    _sentPlayer.dispose();
+    _toolPlayer.dispose();
     _controller.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -139,8 +174,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         _Composer(
           controller: _controller,
           onSend: () {
-            controller.sendPrompt(_controller.text);
-            _controller.clear();
+            final text = _controller.text;
+            if (text.trim().isNotEmpty) {
+              // Play sound immediately (preloaded + LOW_LATENCY mode = instant)
+              _sentPlayer.stop();
+              unawaited(_sentPlayer.play(AssetSource('audio/sent.mp3')));
+              controller.sendPrompt(text);
+              _controller.clear();
+            }
           },
         ),
         LunaBottomBar(
@@ -203,9 +244,13 @@ class _TopBar extends ConsumerWidget {
               if (state.availableProfiles.isNotEmpty && state.availableProfiles.contains(profile))
                 DropdownButton<String>(
                   value: profile,
-                  icon: const Icon(Icons.arrow_drop_down),
+                  icon: Icon(
+                    Icons.arrow_drop_down,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
                   elevation: 16,
-                  style: const TextStyle(color: Colors.black),
+                  style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
+                  dropdownColor: Theme.of(context).colorScheme.surfaceContainer,
                   underline: Container(
                     height: 2,
                     color: Theme.of(context).colorScheme.primary,

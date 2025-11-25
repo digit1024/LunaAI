@@ -5,6 +5,7 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 class ForegroundGuard {
   bool _initialized = false;
   bool _running = false;
+  bool _connectionGuardActive = false;
 
   Future<void> init() async {
     if (_initialized) return;
@@ -35,6 +36,7 @@ class ForegroundGuard {
     _initialized = true;
   }
 
+  /// Start service for streaming (temporary, stops after completion)
   Future<void> ensureStarted(String summary) async {
     if (!_initialized) {
       await init();
@@ -48,10 +50,38 @@ class ForegroundGuard {
     _running = true;
   }
 
+  /// Start service to keep connection alive (continuous, until explicitly stopped)
+  Future<void> startConnectionGuard() async {
+    if (!_initialized) {
+      await init();
+    }
+    if (_connectionGuardActive) return;
+    _connectionGuardActive = true;
+    if (!_running) {
+      await FlutterForegroundTask.startService(
+        notificationTitle: 'Luna',
+        notificationText: 'Connected to server',
+        callback: startLunaService,
+      );
+      _running = true;
+    }
+  }
+
+  /// Stop connection guard (but keep service if streaming is active)
+  Future<void> stopConnectionGuard() async {
+    _connectionGuardActive = false;
+    // Only stop if not streaming
+    if (!_running) return;
+    // Check if we should keep service running for streaming
+    // For now, we'll stop - streaming will restart it if needed
+    await stop();
+  }
+
   Future<void> stop() async {
     if (_running) {
       await FlutterForegroundTask.stopService();
       _running = false;
+      _connectionGuardActive = false;
     }
   }
 }

@@ -133,6 +133,7 @@ class AppController extends StateNotifier<AppState> {
   @override
   void dispose() {
     unawaited(_subscription?.cancel());
+    unawaited(guard.stopConnectionGuard());
     unawaited(wsClient.dispose());
     super.dispose();
   }
@@ -170,6 +171,23 @@ class AppController extends StateNotifier<AppState> {
     state = state.copyWith(backgrounded: value);
   }
 
+  /// Check connection health and reconnect if needed
+  /// Called when app resumes from background
+  Future<void> checkAndReconnect() async {
+    if (wsClient.isConnected) {
+      // Verify connection is actually alive with a health check
+      wsClient.send(ClientCommand.healthCheck());
+      // If connection is good, ensure guard is running
+      if (state.connection == ConnectionStatus.online) {
+        unawaited(guard.startConnectionGuard());
+      }
+    } else {
+      // Connection is dead, attempt to reconnect
+      debugPrint('Connection lost, attempting to reconnect...');
+      await connect();
+    }
+  }
+
   Future<void> startNewConversation() async {
     wsClient.send(ClientCommand.startConversation('Generating title...'));
   }
@@ -197,6 +215,8 @@ class AppController extends StateNotifier<AppState> {
         pane: ActivePane.conversations,
         error: null,
       );
+      // Start connection guard to keep connection alive
+      unawaited(guard.startConnectionGuard());
       wsClient.send(ClientCommand.listConversations());
     } else if (event is ErrorEvent) {
       state = state.copyWith(
@@ -267,10 +287,12 @@ class AppController extends StateNotifier<AppState> {
         defaultProfile: event.defaultProfile,
       );
     } else if (event is DisconnectedEvent) {
-      // Connection lost - go back to setup screen with error
+      // Stop connection guard when disconnected
+      unawaited(guard.stopConnectionGuard());
+      // Connection lost - preserve current screen but show error
       state = state.copyWith(
         connection: ConnectionStatus.error,
-        pane: ActivePane.setup,
+        // Don't change pane - keep user on current screen
         error: 'Connection to server lost. Please reconnect.',
       );
     }

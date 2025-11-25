@@ -24,6 +24,11 @@ class LunaWsClient {
   StreamSubscription? _subscription;
   final _eventController = StreamController<ServerEvent>.broadcast();
   bool _disposed = false;
+  Timer? _pingTimer;
+  DateTime? _lastPongReceived;
+
+  static const Duration _pingInterval = Duration(seconds: 30);
+  static const Duration _pongTimeout = Duration(seconds: 60);
 
   Stream<ServerEvent> get events => _eventController.stream;
   bool get isConnected => _channel != null && !_disposed;
@@ -61,9 +66,15 @@ class LunaWsClient {
       );
       debugPrint('✅ WebSocket connected');
 
+      _lastPongReceived = DateTime.now();
+      _startPingTimer();
+
       _subscription = channel.stream.listen(
         (raw) {
           try {
+            // Update last pong time (any message indicates connection is alive)
+            _lastPongReceived = DateTime.now();
+            
             final decoded = jsonDecode(raw as String) as Map<String, dynamic>;
             final event = ServerEvent.fromJson(decoded);
             _eventController.add(event);
@@ -73,6 +84,7 @@ class LunaWsClient {
         },
         onDone: () {
           debugPrint('🔌 WebSocket closed');
+          _stopPingTimer();
           _channel = null;
           // Emit disconnect event so UI can handle it
           if (!_disposed) {
@@ -81,6 +93,7 @@ class LunaWsClient {
         },
         onError: (err) {
           debugPrint('❌ WebSocket error: $err');
+          _stopPingTimer();
           if (!_disposed) {
             _eventController.add(DisconnectedEvent());
           }
@@ -104,11 +117,13 @@ class LunaWsClient {
 
   Future<void> dispose() async {
     _disposed = true;
+    _stopPingTimer();
     await _disposeChannel();
     await _eventController.close();
   }
 
   Future<void> _disposeChannel() async {
+    _stopPingTimer();
     await _subscription?.cancel();
     try {
       await _channel?.sink.close(WebSocketStatus.normalClosure);
@@ -117,6 +132,55 @@ class LunaWsClient {
     }
     _subscription = null;
     _channel = null;
+    _lastPongReceived = null;
+  }
+
+  void _startPingTimer() {
+    _stopPingTimer();
+    _pingTimer = Timer.periodic(_pingInterval, (timer) {
+      if (_disposed || _channel == null) {
+        timer.cancel();
+        return;
+      }
+
+      // Check if we've received a pong recently
+      if (_lastPongReceived != null) {
+        final timeSinceLastPong = DateTime.now().difference(_lastPongReceived!);
+        if (timeSinceLastPong > _pongTimeout) {
+          debugPrint('⚠️ No pong received for ${timeSinceLastPong.inSeconds}s, connection may be dead');
+          // Connection appears dead, emit disconnect
+          if (!_disposed) {
+            _eventController.add(DisconnectedEvent());
+          }
+          timer.cancel();
+          return;
+        }
+      }
+
+      // Send ping frame
+      try {
+        final socket = _channel?.sink;
+        if (socket != null) {
+          // IOWebSocketChannel doesn't expose ping directly, but the underlying
+          // WebSocket will handle ping/pong automatically via the protocol
+          // We'll use a health check command instead as a keepalive
+          // The server responds to health checks, which serves as our "pong"
+          send(ClientCommand.healthCheck());
+          debugPrint('💓 Ping sent (health check)');
+        }
+      } catch (e) {
+        debugPrint('❌ Failed to send ping: $e');
+        timer.cancel();
+        if (!_disposed) {
+          _eventController.add(DisconnectedEvent());
+        }
+      }
+    });
+  }
+
+  void _stopPingTimer() {
+    _pingTimer?.cancel();
+    _pingTimer = null;
   }
 }
 
