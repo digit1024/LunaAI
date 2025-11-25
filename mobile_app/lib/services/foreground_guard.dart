@@ -36,12 +36,17 @@ class ForegroundGuard {
     _initialized = true;
   }
 
-  /// Start service for streaming (temporary, stops after completion)
+  /// Start service for streaming (temporary, but connection guard keeps it running)
   Future<void> ensureStarted(String summary) async {
     if (!_initialized) {
       await init();
     }
-    if (_running) return;
+    // If service is already running (connection guard), keep it running
+    // The notification will show "Connected to server" which is fine
+    if (_running) {
+      // Service already running via connection guard, no need to restart
+      return;
+    }
     await FlutterForegroundTask.startService(
       notificationTitle: 'Luna is thinking…',
       notificationText: summary,
@@ -70,11 +75,9 @@ class ForegroundGuard {
   /// Stop connection guard (but keep service if streaming is active)
   Future<void> stopConnectionGuard() async {
     _connectionGuardActive = false;
-    // Only stop if not streaming
-    if (!_running) return;
-    // Check if we should keep service running for streaming
-    // For now, we'll stop - streaming will restart it if needed
-    await stop();
+    // Don't stop service here - let it continue if needed for streaming
+    // Service will be stopped explicitly on disconnect
+    // Notification will remain as is (either "Connected to server" or "Luna is thinking...")
   }
 
   Future<void> stop() async {

@@ -210,14 +210,22 @@ class AppController extends StateNotifier<AppState> {
 
   void _handleEvent(ServerEvent event) {
     if (event is HealthOkEvent) {
+      // Only change pane if we're not already on a specific screen
+      // This prevents keepalive health checks from kicking user out of chat
+      final shouldChangePane = state.pane == ActivePane.connecting || 
+                               state.pane == ActivePane.setup;
+      
       state = state.copyWith(
         connection: ConnectionStatus.online,
-        pane: ActivePane.conversations,
+        pane: shouldChangePane ? ActivePane.conversations : state.pane,
         error: null,
       );
       // Start connection guard to keep connection alive
       unawaited(guard.startConnectionGuard());
-      wsClient.send(ClientCommand.listConversations());
+      // Only send listConversations if we're changing to conversations pane
+      if (shouldChangePane) {
+        wsClient.send(ClientCommand.listConversations());
+      }
     } else if (event is ErrorEvent) {
       state = state.copyWith(
         connection: ConnectionStatus.error,
@@ -259,7 +267,9 @@ class AppController extends StateNotifier<AppState> {
       _markTool(event.toolCallId, 'error', event.name, event.error);
     } else if (event is ConversationCompleteEvent) {
       _waitingForResponse = false;
-      guard.stop();
+      // Don't stop guard here - keep connection guard running
+      // The guard.ensureStarted() for streaming will be replaced by connection guard
+      // Connection guard continues to keep connection alive
       if (state.backgrounded) {
         unawaited(
           notifications.showResponseNotification(
