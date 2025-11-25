@@ -371,6 +371,18 @@ fn conversation_to_llm(conversation: StoredConversation) -> Vec<LlmMessage> {
                         msg.tool_status.as_deref() == Some("error"),
                     )
                 }
+                Role::Assistant => {
+                    // Include tool_calls if present on assistant messages
+                    if let Some(tool_calls) = msg.tool_calls {
+                        if !tool_calls.is_empty() {
+                            LlmMessage::new_with_tool_calls(role, msg.content, tool_calls)
+                        } else {
+                            LlmMessage::new(role, msg.content)
+                        }
+                    } else {
+                        LlmMessage::new(role, msg.content)
+                    }
+                }
                 _ => LlmMessage::new(role, msg.content),
             })
         })

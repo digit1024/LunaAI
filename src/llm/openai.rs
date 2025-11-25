@@ -99,8 +99,14 @@ impl StreamedToolCallState {
         let id = self.id.as_ref()?;
         let name = self.name.as_ref()?;
         let params: serde_json::Value = serde_json::from_str(&self.arguments).ok()?;
+        // Generate UUID if provider returns empty ID (e.g., DeepSeek)
+        let final_id = if id.is_empty() {
+            uuid::Uuid::new_v4().to_string()
+        } else {
+            id.clone()
+        };
         Some(ToolCall {
-            id: id.clone(),
+            id: final_id,
             name: name.clone(),
             parameters: params,
         })
