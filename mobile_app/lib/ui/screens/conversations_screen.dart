@@ -7,19 +7,87 @@ import '../../data/ws/ws_dto.dart';
 import '../widgets/bottom_nav.dart';
 import '../widgets/conversation_card.dart';
 
-class ConversationsScreen extends ConsumerWidget {
+class ConversationsScreen extends ConsumerStatefulWidget {
   const ConversationsScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ConversationsScreen> createState() => _ConversationsScreenState();
+}
+
+class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
+  final ScrollController _scrollController = ScrollController();
+  bool _isLoadingMore = false;
+  bool _hasMore = true;
+  int _currentOffset = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController.addListener(_onScroll);
+    // Load initial conversations
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(appControllerProvider.notifier).refreshConversations();
+    });
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (_scrollController.position.pixels >=
+            _scrollController.position.maxScrollExtent * 0.8 &&
+        !_isLoadingMore &&
+        _hasMore) {
+      _loadMore();
+    }
+  }
+
+  void _loadMore() {
+    if (_isLoadingMore || !_hasMore) return;
+    setState(() {
+      _isLoadingMore = true;
+    });
+    final nextOffset = _currentOffset + 10;
+    ref.read(appControllerProvider.notifier).loadMoreConversations(nextOffset);
+    _currentOffset = nextOffset;
+    // Reset loading state after a delay (will be updated when new data arrives)
+    Future.delayed(const Duration(seconds: 1), () {
+      if (mounted) {
+        setState(() {
+          _isLoadingMore = false;
+        });
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final state = ref.watch(appControllerProvider);
     final controller = ref.read(appControllerProvider.notifier);
+
+    // Update hasMore based on loaded conversations
+    // If we got fewer than 10 conversations, we've reached the end
+    if (state.conversations.length <= _currentOffset && _currentOffset > 0) {
+      _hasMore = false;
+    } else if (state.conversations.length < 10 && _currentOffset == 0) {
+      _hasMore = false;
+    }
 
     return Column(
       children: [
         _Header(
           status: state.connection,
-          onRefresh: controller.refreshConversations,
+          onRefresh: () {
+            setState(() {
+              _currentOffset = 0;
+              _hasMore = true;
+              _isLoadingMore = false;
+            });
+            controller.refreshConversations();
+          },
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -35,18 +103,40 @@ class ConversationsScreen extends ConsumerWidget {
           child: _items(state).isEmpty
               ? const _EmptyPlaceholder()
               : ListView.separated(
-                  itemCount: _items(state).length,
+                  controller: _scrollController,
+                  itemCount: _items(state).length + (_hasMore && !state.searchQuery.isNotEmpty ? 1 : 0),
                   separatorBuilder: (_, __) => const Divider(height: 0),
                   itemBuilder: (context, index) {
+                    if (index >= _items(state).length) {
+                      return const Center(
+                        child: Padding(
+                          padding: EdgeInsets.all(16.0),
+                          child: CircularProgressIndicator(),
+                        ),
+                      );
+                    }
                     final entry = _items(state)[index];
                     return entry.map(
                       summary: (summary) {
                         final selected =
                             state.activeConversation?.id == summary.id;
-                        return ConversationCard(
-                          summary: summary,
-                          isSelected: selected,
-                          onTap: () => controller.selectConversation(summary.id),
+                        return Dismissible(
+                          key: Key(summary.id),
+                          direction: DismissDirection.endToStart,
+                          background: Container(
+                            color: Colors.red,
+                            alignment: Alignment.centerRight,
+                            padding: const EdgeInsets.only(right: 20),
+                            child: const Icon(Icons.delete, color: Colors.white),
+                          ),
+                          onDismissed: (direction) {
+                            controller.deleteConversation(summary.id);
+                          },
+                          child: ConversationCard(
+                            summary: summary,
+                            isSelected: selected,
+                            onTap: () => controller.selectConversation(summary.id),
+                          ),
                         );
                       },
                       searchResult: (result) => ListTile(

@@ -16,6 +16,13 @@ pub enum ClientCommand {
     ListConversations {
         query: Option<String>,
         limit: Option<u32>,
+        offset: Option<u32>,
+    },
+    DeleteConversation {
+        conversation_id: String,
+    },
+    StopStreaming {
+        conversation_id: Option<String>,
     },
     ChangeProfile {
         profile: String,
@@ -94,6 +101,12 @@ pub enum ServerEvent {
         error: String,
     },
     ConversationComplete {
+        conversation_id: String,
+    },
+    ConversationDeleted {
+        conversation_id: String,
+    },
+    StreamingStopped {
         conversation_id: String,
     },
 }

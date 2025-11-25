@@ -398,21 +398,26 @@ class _EmptyChat extends StatelessWidget {
   }
 }
 
-class _Composer extends StatelessWidget {
+class _Composer extends ConsumerWidget {
   const _Composer({required this.controller, required this.onSend});
 
   final TextEditingController controller;
   final VoidCallback onSend;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(appControllerProvider);
+    final controller = ref.read(appControllerProvider.notifier);
+    final isStreaming = state.streaming;
+
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
       child: Row(
         children: [
           Expanded(
             child: TextField(
-              controller: controller,
+              controller: this.controller,
+              enabled: !isStreaming,
               minLines: 1,
               maxLines: 5,
               decoration: const InputDecoration(
@@ -422,10 +427,24 @@ class _Composer extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          FilledButton(
-            onPressed: onSend,
-            child: const Text('⏎ Send'),
-          ),
+          if (isStreaming)
+            FilledButton.icon(
+              onPressed: () {
+                controller.stopStreaming(
+                  conversationId: state.activeConversation?.id,
+                );
+              },
+              icon: const Icon(Icons.stop),
+              label: const Text('Stop'),
+              style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.error,
+              ),
+            )
+          else
+            FilledButton(
+              onPressed: onSend,
+              child: const Text('⏎ Send'),
+            ),
         ],
       ),
     );

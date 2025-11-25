@@ -100,7 +100,16 @@ impl Storage {
 
     /// List all conversations
     pub fn list_conversations(&self) -> SqliteResult<Vec<FileConversation>> {
-        let db_conversations = self.sqlite.list_conversations()?;
+        self.list_conversations_paginated(None, None)
+    }
+
+    /// List conversations with pagination
+    pub fn list_conversations_paginated(
+        &self,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> SqliteResult<Vec<FileConversation>> {
+        let db_conversations = self.sqlite.list_conversations_paginated(offset, limit)?;
         let mut conversations = Vec::new();
 
         for db_conv in db_conversations {

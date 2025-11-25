@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
 import '../../application/app_state.dart';
@@ -28,40 +29,72 @@ class ChatBubble extends StatelessWidget {
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: ConstrainedBox(
         constraints: BoxConstraints(maxWidth: maxWidth),
-        child: Card(
-          color: bubbleColor,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            child: Column(
-              crossAxisAlignment: alignment,
-              children: [
-                if (message.toolChip != null)
-                  _ToolChip(chip: message.toolChip!),
-                if (isUser || message.isStreaming)
-                  Text(
-                    message.content,
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  )
-                else
-                  MarkdownBody(
-                    data: message.content,
-                    shrinkWrap: true,
-                    styleSheet: MarkdownStyleSheet(
-                      p: Theme.of(context).textTheme.bodyMedium,
+        child: GestureDetector(
+          onLongPress: () {
+            Clipboard.setData(ClipboardData(text: message.content));
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Message copied to clipboard'),
+                duration: Duration(seconds: 2),
+              ),
+            );
+          },
+          child: Card(
+            color: bubbleColor,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              child: Column(
+                crossAxisAlignment: alignment,
+                children: [
+                  if (message.toolChip != null)
+                    _ToolChip(chip: message.toolChip!),
+                  if (isUser || message.isStreaming)
+                    SelectableText(
+                      message.content,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    )
+                  else
+                    MarkdownBody(
+                      data: message.content,
+                      shrinkWrap: true,
+                      styleSheet: MarkdownStyleSheet(
+                        p: Theme.of(context).textTheme.bodyMedium,
+                      ),
                     ),
+                  const SizedBox(height: 6),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        _formatTimestamp(message.timestamp),
+                        style: Theme.of(context)
+                            .textTheme
+                            .labelSmall
+                            ?.copyWith(color: colorScheme.onSurfaceVariant),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.copy, size: 16),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        tooltip: 'Copy message',
+                        onPressed: () {
+                          Clipboard.setData(ClipboardData(text: message.content));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Message copied to clipboard'),
+                              duration: Duration(seconds: 2),
+                            ),
+                          );
+                        },
+                      ),
+                    ],
                   ),
-                const SizedBox(height: 6),
-                Text(
-                  _formatTimestamp(message.timestamp),
-                  style: Theme.of(context)
-                      .textTheme
-                      .labelSmall
-                      ?.copyWith(color: colorScheme.onSurfaceVariant),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),

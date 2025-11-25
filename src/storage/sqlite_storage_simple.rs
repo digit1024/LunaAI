@@ -417,9 +417,25 @@ impl SqliteStorage {
 
     /// List all conversations ordered by creation date (newest first)
     pub fn list_conversations(&self) -> SqliteResult<Vec<Conversation>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, title, created_at, title_generated FROM conversations ORDER BY created_at DESC")?;
+        self.list_conversations_paginated(None, None)
+    }
+
+    /// List conversations with pagination (offset, limit)
+    pub fn list_conversations_paginated(
+        &self,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> SqliteResult<Vec<Conversation>> {
+        let mut query = "SELECT id, title, created_at, title_generated FROM conversations ORDER BY created_at DESC".to_string();
+        
+        if let Some(lim) = limit {
+            query.push_str(&format!(" LIMIT {}", lim));
+            if let Some(off) = offset {
+                query.push_str(&format!(" OFFSET {}", off));
+            }
+        }
+        
+        let mut stmt = self.conn.prepare(&query)?;
 
         let conversation_iter = stmt.query_map([], |row| {
             Ok(Conversation {

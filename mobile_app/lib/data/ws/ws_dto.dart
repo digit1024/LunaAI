@@ -82,6 +82,10 @@ sealed class ServerEvent {
         );
       case 'conversation_complete':
         return ConversationCompleteEvent(json['conversation_id'] as String);
+      case 'conversation_deleted':
+        return ConversationDeletedEvent(json['conversation_id'] as String);
+      case 'streaming_stopped':
+        return StreamingStoppedEvent(json['conversation_id'] as String);
       default:
         return UnknownEvent(jsonEncode(json));
     }
@@ -213,6 +217,16 @@ class ConversationCompleteEvent extends ServerEvent {
 class UnknownEvent extends ServerEvent {
   final String payload;
   const UnknownEvent(this.payload);
+}
+
+class ConversationDeletedEvent extends ServerEvent {
+  final String conversationId;
+  const ConversationDeletedEvent(this.conversationId);
+}
+
+class StreamingStoppedEvent extends ServerEvent {
+  final String conversationId;
+  const StreamingStoppedEvent(this.conversationId);
 }
 
 /// Emitted when the WebSocket connection is lost.
@@ -363,7 +377,11 @@ class ClientCommand {
   Map<String, dynamic> toJson() => {'type': type, ...payload};
 
   static ClientCommand healthCheck() => ClientCommand('health_check');
-  static ClientCommand listConversations() => ClientCommand('list_conversations');
+  static ClientCommand listConversations({int? offset, int? limit}) =>
+      ClientCommand('list_conversations', {
+        if (offset != null) 'offset': offset,
+        if (limit != null) 'limit': limit,
+      });
   static ClientCommand search(String query) =>
       ClientCommand('list_conversations', {'query': query});
   static ClientCommand loadConversation(String id) =>
@@ -381,6 +399,12 @@ class ClientCommand {
   static ClientCommand changeProfile(String profile) =>
       ClientCommand('change_profile', {'profile': profile});
   static ClientCommand listProfiles() => ClientCommand('list_profiles');
+  static ClientCommand deleteConversation(String conversationId) =>
+      ClientCommand('delete_conversation', {'conversation_id': conversationId});
+  static ClientCommand stopStreaming({String? conversationId}) =>
+      ClientCommand('stop_streaming', {
+        if (conversationId != null) 'conversation_id': conversationId,
+      });
 }
 
 

@@ -166,6 +166,12 @@ fn spawn_title_generation_thread(
                         }
                     };
                     
+                    // Skip if there are no messages
+                    if messages.is_empty() {
+                        tracing::debug!("Skipping title generation for conversation {}: no messages", conversation_id);
+                        continue;
+                    }
+                    
                     // Check if last message is older than 1 minute
                     if let Some(last_message) = messages.last() {
                         let last_message_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(last_message.created_at as u64);

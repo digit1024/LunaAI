@@ -102,8 +102,8 @@ impl ServerHandler {
             ClientCommand::LoadConversation { conversation_id } => {
                 self.handle_load_conversation(conversation_id).await
             }
-            ClientCommand::ListConversations { query, limit } => {
-                self.handle_list_conversations(query, limit).await
+            ClientCommand::ListConversations { query, limit, offset } => {
+                self.handle_list_conversations(query, limit, offset).await
             }
             ClientCommand::ChangeProfile { profile } => self.handle_change_profile(profile).await,
             ClientCommand::ListProfiles => self.handle_list_profiles().await,
@@ -111,6 +111,12 @@ impl ServerHandler {
                 conversation_id,
                 content,
             } => self.handle_send_message(conversation_id, content).await,
+            ClientCommand::DeleteConversation { conversation_id } => {
+                self.handle_delete_conversation(conversation_id).await
+            }
+            ClientCommand::StopStreaming { conversation_id } => {
+                self.handle_stop_streaming(conversation_id).await
+            }
         };
 
         if let Err(err) = result {
@@ -162,6 +168,7 @@ impl ServerHandler {
         &self,
         query: Option<String>,
         limit: Option<u32>,
+        offset: Option<u32>,
     ) -> Result<()> {
         let storage = self.ctx.storage.lock().await;
         if let Some(q) = query.filter(|s| !s.trim().is_empty()) {
@@ -182,7 +189,10 @@ impl ServerHandler {
                 .send(ServerEvent::SearchResults { results: mapped });
         } else {
             let conversations = storage
-                .list_conversations()
+                .list_conversations_paginated(
+                    offset.map(|o| o as usize),
+                    limit.map(|l| l as usize),
+                )
                 .context("failed to list conversations")?;
             let summaries: Vec<ConversationSummary> = conversations
                 .into_iter()
@@ -310,6 +320,39 @@ impl ServerHandler {
         });
 
         self.session.track_task(handle);
+        Ok(())
+    }
+
+    async fn handle_delete_conversation(&self, conversation_id: String) -> Result<()> {
+        let uuid = Uuid::parse_str(&conversation_id).context("invalid conversation id format")?;
+        let storage = self.ctx.storage.lock().await;
+        let deleted = storage
+            .delete_conversation(&uuid)
+            .context("failed to delete conversation")?;
+        if deleted {
+            let _ = self.outbound.send(ServerEvent::ConversationDeleted {
+                conversation_id,
+            });
+        } else {
+            return Err(anyhow!("Conversation not found"));
+        }
+        Ok(())
+    }
+
+    async fn handle_stop_streaming(&mut self, conversation_id: Option<String>) -> Result<()> {
+        // Abort all inflight tasks
+        let mut handles = Vec::new();
+        std::mem::swap(&mut handles, &mut self.session.inflight);
+        
+        for handle in handles {
+            handle.abort();
+        }
+        
+        let conv_id = conversation_id.unwrap_or_else(|| "unknown".to_string());
+        let _ = self.outbound.send(ServerEvent::StreamingStopped {
+            conversation_id: conv_id,
+        });
+        
         Ok(())
     }
 

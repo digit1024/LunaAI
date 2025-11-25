@@ -139,7 +139,19 @@ class AppController extends StateNotifier<AppState> {
   }
 
   void refreshConversations() {
-    wsClient.send(ClientCommand.listConversations());
+    wsClient.send(ClientCommand.listConversations(limit: 10));
+  }
+
+  void loadMoreConversations(int offset) {
+    wsClient.send(ClientCommand.listConversations(offset: offset, limit: 10));
+  }
+
+  void deleteConversation(String conversationId) {
+    wsClient.send(ClientCommand.deleteConversation(conversationId));
+  }
+
+  void stopStreaming({String? conversationId}) {
+    wsClient.send(ClientCommand.stopStreaming(conversationId: conversationId));
   }
 
   void search(String query) {
@@ -228,7 +240,7 @@ class AppController extends StateNotifier<AppState> {
       unawaited(guard.startConnectionGuard());
       // Only send listConversations if we're changing to conversations pane
       if (shouldChangePane) {
-        wsClient.send(ClientCommand.listConversations());
+        wsClient.send(ClientCommand.listConversations(limit: 10));
       }
     } else if (event is ErrorEvent) {
       state = state.copyWith(
@@ -239,9 +251,24 @@ class AppController extends StateNotifier<AppState> {
     } else if (event is ConversationsListEvent) {
       final sorted = [...event.conversations]
         ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-      state = state.copyWith(conversations: sorted);
-      if (state.activeConversation == null && sorted.isNotEmpty) {
-        wsClient.send(ClientCommand.loadConversation(sorted.first.id));
+      // If we have existing conversations, check if these are new (pagination) or replacement
+      final existingIds = state.conversations.map((c) => c.id).toSet();
+      final newIds = sorted.map((c) => c.id).toSet();
+      
+      // If there's overlap, it's likely a refresh - replace
+      // If no overlap and we have existing, it's pagination - append
+      final List<ConversationSummary> updatedConversations;
+      if (existingIds.intersection(newIds).isNotEmpty || state.conversations.isEmpty) {
+        // Refresh or initial load - replace
+        updatedConversations = sorted;
+      } else {
+        // Pagination - append new ones
+        updatedConversations = [...state.conversations, ...sorted.where((c) => !existingIds.contains(c.id))];
+      }
+      
+      state = state.copyWith(conversations: updatedConversations);
+      if (state.activeConversation == null && updatedConversations.isNotEmpty) {
+        wsClient.send(ClientCommand.loadConversation(updatedConversations.first.id));
       }
     } else if (event is SearchResultsEvent) {
       state = state.copyWith(searchResults: event.results);
@@ -300,6 +327,22 @@ class AppController extends StateNotifier<AppState> {
         availableProfiles: profiles.toList(),
         defaultProfile: event.defaultProfile,
       );
+    } else if (event is ConversationDeletedEvent) {
+      // Remove deleted conversation from list
+      final updated = state.conversations
+          .where((c) => c.id != event.conversationId)
+          .toList();
+      // If deleted conversation was active, clear it
+      final activeConv = state.activeConversation?.id == event.conversationId
+          ? null
+          : state.activeConversation;
+      state = state.copyWith(
+        conversations: updated,
+        activeConversation: activeConv,
+        chatMessages: activeConv == null ? [] : state.chatMessages,
+      );
+    } else if (event is StreamingStoppedEvent) {
+      state = state.copyWith(streaming: false);
     } else if (event is DisconnectedEvent) {
       // Stop connection guard when disconnected
       unawaited(guard.stopConnectionGuard());
