@@ -224,6 +224,27 @@ class AppController extends StateNotifier<AppState> {
     ));
   }
 
+  void startDialogMode() {
+    if (state.isDialogModeActive) return;
+    state = state.copyWith(
+      isDialogModeActive: true,
+      dialogModeState: DialogModeState.listening,
+    );
+  }
+
+  void stopDialogMode() {
+    if (!state.isDialogModeActive) return;
+    state = state.copyWith(
+      isDialogModeActive: false,
+      dialogModeState: DialogModeState.listening,
+    );
+  }
+
+  void setDialogModeState(DialogModeState newState) {
+    if (!state.isDialogModeActive) return;
+    state = state.copyWith(dialogModeState: newState);
+  }
+
   void _handleEvent(ServerEvent event) {
     if (event is HealthOkEvent) {
       // Only change pane if we're not already on a specific screen

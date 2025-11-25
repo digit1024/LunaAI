@@ -6,6 +6,8 @@ enum ConnectionStatus { connecting, online, error }
 
 enum ActivePane { setup, connecting, conversations, chat, settings }
 
+enum DialogModeState { listening, processing, speaking }
+
 class ChatMessage extends Equatable {
   final String id;
   final String role;
@@ -100,6 +102,8 @@ class AppState extends Equatable {
   final String defaultProfile;
   final int
       connectionAttempt; // Current attempt (1, 2, 3) or 0 if not connecting
+  final bool isDialogModeActive;
+  final DialogModeState dialogModeState;
 
   const AppState({
     required this.connection,
@@ -115,6 +119,8 @@ class AppState extends Equatable {
     required this.availableProfiles,
     required this.defaultProfile,
     required this.connectionAttempt,
+    required this.isDialogModeActive,
+    required this.dialogModeState,
   });
 
   factory AppState.initial() => const AppState(
@@ -131,6 +137,8 @@ class AppState extends Equatable {
         availableProfiles: [],
         defaultProfile: '',
         connectionAttempt: 0,
+        isDialogModeActive: false,
+        dialogModeState: DialogModeState.listening,
       );
 
   AppState copyWith({
@@ -147,6 +155,8 @@ class AppState extends Equatable {
     List<String>? availableProfiles,
     String? defaultProfile,
     int? connectionAttempt,
+    bool? isDialogModeActive,
+    DialogModeState? dialogModeState,
   }) {
     return AppState(
       connection: connection ?? this.connection,
@@ -162,6 +172,8 @@ class AppState extends Equatable {
       availableProfiles: availableProfiles ?? this.availableProfiles,
       defaultProfile: defaultProfile ?? this.defaultProfile,
       connectionAttempt: connectionAttempt ?? this.connectionAttempt,
+      isDialogModeActive: isDialogModeActive ?? this.isDialogModeActive,
+      dialogModeState: dialogModeState ?? this.dialogModeState,
     );
   }
 
@@ -180,5 +192,7 @@ class AppState extends Equatable {
         availableProfiles,
         defaultProfile,
         connectionAttempt,
+        isDialogModeActive,
+        dialogModeState,
       ];
 }

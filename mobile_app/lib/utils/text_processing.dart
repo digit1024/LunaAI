@@ -29,47 +29,68 @@ String stripEmojis(String text) {
 /// Strips markdown formatting from text
 String stripMarkdown(String text) {
   String result = text;
-  
+
   // Remove headers (# ## ### etc.)
   result = result.replaceAll(RegExp(r'^#{1,6}\s+', multiLine: true), '');
-  
-  // Remove bold (**text** or __text__)
-  result = result.replaceAll(RegExp(r'\*\*([^*]+)\*\*'), r'$1');
-  result = result.replaceAll(RegExp(r'__([^_]+)__'), r'$1');
-  
-  // Remove italic (*text* or _text_)
-  result = result.replaceAll(RegExp(r'(?<!\*)\*([^*]+)\*(?!\*)'), r'$1');
-  result = result.replaceAll(RegExp(r'(?<!_)_([^_]+)_(?!_)'), r'$1');
-  
+
+  // Remove bold (**text** or __text__) - using replaceAllMapped for reliable capture groups
+  result = result.replaceAllMapped(
+    RegExp(r'\*\*(.+?)\*\*'),
+    (match) => match.group(1) ?? '',
+  );
+  result = result.replaceAllMapped(
+    RegExp(r'__(.+?)__'),
+    (match) => match.group(1) ?? '',
+  );
+
+  // Remove italic (*text* or _text_) - must come after bold removal
+  result = result.replaceAllMapped(
+    RegExp(r'(?<!\*)\*([^*]+)\*(?!\*)'),
+    (match) => match.group(1) ?? '',
+  );
+  result = result.replaceAllMapped(
+    RegExp(r'(?<!_)_([^_]+)_(?!_)'),
+    (match) => match.group(1) ?? '',
+  );
+
   // Remove code blocks (```code```)
   result = result.replaceAll(RegExp(r'```[\s\S]*?```'), '');
-  
+
   // Remove inline code (`code`)
-  result = result.replaceAll(RegExp(r'`([^`]+)`'), r'$1');
-  
-  // Remove links [text](url)
-  result = result.replaceAll(RegExp(r'\[([^\]]+)\]\([^\)]+\)'), r'$1');
-  
+  result = result.replaceAllMapped(
+    RegExp(r'`([^`]+)`'),
+    (match) => match.group(1) ?? '',
+  );
+
+  // Remove links [text](url) - keep the text
+  result = result.replaceAllMapped(
+    RegExp(r'\[([^\]]+)\]\([^\)]+\)'),
+    (match) => match.group(1) ?? '',
+  );
+
   // Remove images ![alt](url)
   result = result.replaceAll(RegExp(r'!\[([^\]]*)\]\([^\)]+\)'), '');
-  
+
   // Remove strikethrough (~~text~~)
-  result = result.replaceAll(RegExp(r'~~([^~]+)~~'), r'$1');
-  
+  result = result.replaceAllMapped(
+    RegExp(r'~~(.+?)~~'),
+    (match) => match.group(1) ?? '',
+  );
+
   // Remove blockquotes (> text)
   result = result.replaceAll(RegExp(r'^>\s+', multiLine: true), '');
-  
+
   // Remove horizontal rules (--- or ***)
   result = result.replaceAll(RegExp(r'^[-*]{3,}$', multiLine: true), '');
-  
+
   // Remove list markers (- * + or 1. 2. etc.)
   result = result.replaceAll(RegExp(r'^[\s]*[-*+]\s+', multiLine: true), '');
   result = result.replaceAll(RegExp(r'^[\s]*\d+\.\s+', multiLine: true), '');
-  
+
   // Clean up multiple spaces and newlines
   result = result.replaceAll(RegExp(r'\n{3,}'), '\n\n');
   result = result.replaceAll(RegExp(r'[ \t]+'), ' ');
-  
+
   return result.trim();
 }
 
@@ -77,4 +98,3 @@ String stripMarkdown(String text) {
 String stripEmojisAndMarkdown(String text) {
   return stripMarkdown(stripEmojis(text));
 }
-
