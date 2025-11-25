@@ -34,10 +34,26 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
     super.dispose();
   }
 
+  void _updateControllersFromConfig(ServerConfig config) {
+    if (_hostController.text != config.host) {
+      _hostController.text = config.host;
+    }
+    if (_portController.text != config.port.toString()) {
+      _portController.text = config.port.toString();
+    }
+    if (_apiKeyController.text != config.apiKey) {
+      _apiKeyController.text = config.apiKey;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = ref.watch(appControllerProvider);
+    final config = ref.watch(serverConfigProvider);
     final error = appState.error;
+
+    // Update controllers when config changes (e.g., when loaded from prefs)
+    _updateControllersFromConfig(config);
 
     final serverConfigNotifier = ref.read(serverConfigProvider.notifier);
     final appController = ref.read(appControllerProvider.notifier);
@@ -103,8 +119,14 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
           ),
           const SizedBox(height: 24),
           FilledButton(
-            onPressed: appController.connect,
-            child: const Text('Connect'),
+            onPressed: appState.connection == ConnectionStatus.connecting
+                ? null
+                : () => appController.connect(),
+            child: Text(
+              appState.connection == ConnectionStatus.connecting
+                  ? 'Connecting...'
+                  : 'Connect',
+            ),
           )
         ],
       ),

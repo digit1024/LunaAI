@@ -83,6 +83,7 @@ class AppState extends Equatable {
   final String? error;
   final List<String> availableProfiles;
   final String defaultProfile;
+  final int connectionAttempt; // Current attempt (1, 2, 3) or 0 if not connecting
 
   const AppState({
     required this.connection,
@@ -97,11 +98,12 @@ class AppState extends Equatable {
     required this.error,
     required this.availableProfiles,
     required this.defaultProfile,
+    required this.connectionAttempt,
   });
 
   factory AppState.initial() => const AppState(
         connection: ConnectionStatus.connecting,
-        pane: ActivePane.setup,
+        pane: ActivePane.connecting, // Start with connecting screen
         conversations: [],
         searchResults: [],
         searchQuery: '',
@@ -112,6 +114,7 @@ class AppState extends Equatable {
         error: null,
         availableProfiles: [],
         defaultProfile: '',
+        connectionAttempt: 0,
       );
 
   AppState copyWith({
@@ -127,6 +130,7 @@ class AppState extends Equatable {
     String? error,
     List<String>? availableProfiles,
     String? defaultProfile,
+    int? connectionAttempt,
   }) {
     return AppState(
       connection: connection ?? this.connection,
@@ -141,6 +145,7 @@ class AppState extends Equatable {
       error: error,
       availableProfiles: availableProfiles ?? this.availableProfiles,
       defaultProfile: defaultProfile ?? this.defaultProfile,
+      connectionAttempt: connectionAttempt ?? this.connectionAttempt,
     );
   }
 
@@ -158,5 +163,6 @@ class AppState extends Equatable {
         error,
         availableProfiles,
         defaultProfile,
+        connectionAttempt,
       ];
 }

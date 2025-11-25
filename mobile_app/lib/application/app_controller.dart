@@ -18,16 +18,21 @@ final foregroundGuardProvider = Provider<ForegroundGuard>((_) {
   throw UnimplementedError('foregroundGuardProvider must be overridden');
 });
 
+/// Singleton WebSocket client - does NOT recreate on config changes!
+/// Config is read at connect time, not at provider creation.
 final wsClientProvider = Provider<LunaWsClient>((ref) {
-  final config = ref.watch(serverConfigProvider);
-  return LunaWsClient(config);
+  final client = LunaWsClient();
+  ref.onDispose(() => client.dispose());
+  return client;
 });
 
+/// Singleton AppController - does NOT recreate on config/wsClient changes!
 final appControllerProvider =
     StateNotifierProvider<AppController, AppState>((ref) {
-  final wsClient = ref.watch(wsClientProvider);
-  final notifications = ref.watch(notificationServiceProvider);
-  final guard = ref.watch(foregroundGuardProvider);
+  // Use ref.read to avoid recreation on changes
+  final wsClient = ref.read(wsClientProvider);
+  final notifications = ref.read(notificationServiceProvider);
+  final guard = ref.read(foregroundGuardProvider);
   final controller = AppController(
     ref,
     wsClient: wsClient,
@@ -55,21 +60,74 @@ class AppController extends StateNotifier<AppState> {
   StreamSubscription<ServerEvent>? _subscription;
   bool _initialized = false;
   bool _waitingForResponse = false;
+  bool _connecting = false;
+
+  static const int _maxConnectionAttempts = 3;
+  static const Duration _connectionRetryDelay = Duration(seconds: 2);
 
   Future<void> init() async {
     if (_initialized) return;
     _initialized = true;
     await notifications.init();
     await guard.init();
+    // Wait for saved config to load before auto-connecting
+    await ref.read(serverConfigProvider.notifier).ensureLoaded();
+    // Auto-connect on startup
+    unawaited(connect());
   }
 
+  /// Attempts to connect up to [_maxConnectionAttempts] times.
+  /// Shows "connecting" screen with attempt count.
+  /// Falls back to setup screen if all attempts fail.
   Future<void> connect() async {
-    state = state.copyWith(pane: ActivePane.connecting, error: null);
-    await wsClient.connect();
-    _subscription = wsClient.events.listen(_handleEvent);
-    wsClient.send(ClientCommand.healthCheck());
-    wsClient.send(ClientCommand.listConversations());
-    wsClient.send(ClientCommand.listProfiles());
+    if (_connecting) return; // Prevent concurrent connect calls
+    _connecting = true;
+
+    // Cancel any existing subscription to prevent duplicates
+    await _subscription?.cancel();
+    _subscription = null;
+
+    final config = ref.read(serverConfigProvider);
+
+    for (int attempt = 1; attempt <= _maxConnectionAttempts; attempt++) {
+      state = state.copyWith(
+        pane: ActivePane.connecting,
+        error: null,
+        connectionAttempt: attempt,
+      );
+
+      try {
+        await wsClient.connect(config);
+
+        // Listen for events
+        _subscription = wsClient.events.listen(_handleEvent);
+
+        // Send initial handshake commands
+        wsClient.send(ClientCommand.healthCheck());
+        wsClient.send(ClientCommand.listConversations());
+        wsClient.send(ClientCommand.listProfiles());
+
+        _connecting = false;
+        return; // Success!
+      } catch (e) {
+        debugPrint('Connection attempt $attempt failed: $e');
+
+        if (attempt < _maxConnectionAttempts) {
+          // Wait before retry
+          await Future<void>.delayed(_connectionRetryDelay);
+        }
+      }
+    }
+
+    // All attempts failed - fall back to setup screen
+    _connecting = false;
+    state = state.copyWith(
+      pane: ActivePane.setup,
+      connection: ConnectionStatus.error,
+      error: 'Could not connect after $_maxConnectionAttempts attempts.\n'
+          'Please check server settings and try again.',
+      connectionAttempt: 0,
+    );
   }
 
   @override
@@ -203,6 +261,13 @@ class AppController extends StateNotifier<AppState> {
       state = state.copyWith(
         availableProfiles: profiles.toList(),
         defaultProfile: event.defaultProfile,
+      );
+    } else if (event is DisconnectedEvent) {
+      // Connection lost - go back to setup screen with error
+      state = state.copyWith(
+        connection: ConnectionStatus.error,
+        pane: ActivePane.setup,
+        error: 'Connection to server lost. Please reconnect.',
       );
     }
   }

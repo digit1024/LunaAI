@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/io.dart';
 
 import '../../core/config/server_config.dart';
@@ -9,37 +10,57 @@ import 'ws_dto.dart';
 
 typedef EventHandler = void Function(ServerEvent event);
 
+/// Singleton WebSocket client for Luna server communication.
+/// 
+/// Connection retries are handled by the caller (AppController).
+/// This class does NOT auto-reconnect to prevent connection storms.
 class LunaWsClient {
-  LunaWsClient(this._config);
+  LunaWsClient();
 
-  ServerConfig _config;
+  static const Duration _connectionTimeout = Duration(seconds: 5);
+
+  ServerConfig? _config;
   IOWebSocketChannel? _channel;
   StreamSubscription? _subscription;
   final _eventController = StreamController<ServerEvent>.broadcast();
   bool _disposed = false;
 
   Stream<ServerEvent> get events => _eventController.stream;
+  bool get isConnected => _channel != null && !_disposed;
 
-  Future<void> connect() async {
+  /// Connect to the server with the given config.
+  /// Throws [Exception] if connection fails - caller should handle retries.
+  Future<void> connect(ServerConfig config) async {
+    _config = config;
     await _disposeChannel();
     _disposed = false;
     await _openChannel();
   }
 
-  Future<void> reconnectWith(ServerConfig config) async {
-    _config = config;
-    await connect();
-  }
-
   Future<void> _openChannel() async {
-    final uri = _config.websocketUri();
+    final config = _config;
+    if (config == null) {
+      throw Exception('No server config provided');
+    }
+
+    final uri = config.websocketUri();
     final headers = {
-      'x-api-key': _config.apiKey,
-      'authorization': 'Bearer ${_config.apiKey}',
+      'x-api-key': config.apiKey,
+      'authorization': 'Bearer ${config.apiKey}',
     };
+
     try {
+      debugPrint('🔌 Connecting to $uri');
       final channel = IOWebSocketChannel.connect(uri, headers: headers);
       _channel = channel;
+
+      // Wait for connection with timeout
+      await channel.ready.timeout(
+        _connectionTimeout,
+        onTimeout: () => throw TimeoutException('Connection timed out', _connectionTimeout),
+      );
+      debugPrint('✅ WebSocket connected');
+
       _subscription = channel.stream.listen(
         (raw) {
           try {
@@ -51,20 +72,24 @@ class LunaWsClient {
           }
         },
         onDone: () {
+          debugPrint('🔌 WebSocket closed');
+          _channel = null;
+          // Emit disconnect event so UI can handle it
           if (!_disposed) {
-            _scheduleReconnect();
+            _eventController.add(DisconnectedEvent());
           }
         },
-        onError: (_) {
+        onError: (err) {
+          debugPrint('❌ WebSocket error: $err');
           if (!_disposed) {
-            _scheduleReconnect();
+            _eventController.add(DisconnectedEvent());
           }
         },
       );
-    } catch (_) {
-      if (!_disposed) {
-        await _scheduleReconnect();
-      }
+    } catch (e) {
+      debugPrint('❌ Connection failed: $e');
+      _channel = null;
+      rethrow; // Let caller handle retry logic
     }
   }
 
@@ -72,13 +97,8 @@ class LunaWsClient {
     final sink = _channel?.sink;
     if (sink != null) {
       sink.add(jsonEncode(command.toJson()));
-    }
-  }
-
-  Future<void> _scheduleReconnect() async {
-    await Future<void>.delayed(const Duration(seconds: 2));
-    if (!_disposed) {
-      await _openChannel();
+    } else {
+      debugPrint('⚠️ Cannot send - not connected');
     }
   }
 
@@ -90,7 +110,11 @@ class LunaWsClient {
 
   Future<void> _disposeChannel() async {
     await _subscription?.cancel();
-    await _channel?.sink.close(WebSocketStatus.normalClosure);
+    try {
+      await _channel?.sink.close(WebSocketStatus.normalClosure);
+    } catch (_) {
+      // Ignore close errors
+    }
     _subscription = null;
     _channel = null;
   }

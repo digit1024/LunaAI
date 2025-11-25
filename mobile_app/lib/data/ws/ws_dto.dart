@@ -215,6 +215,12 @@ class UnknownEvent extends ServerEvent {
   const UnknownEvent(this.payload);
 }
 
+/// Emitted when the WebSocket connection is lost.
+/// UI should handle this by showing reconnect option or trying to reconnect.
+class DisconnectedEvent extends ServerEvent {
+  const DisconnectedEvent();
+}
+
 class ConversationSummary {
   final String id;
   final String title;
