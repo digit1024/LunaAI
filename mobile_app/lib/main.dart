@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'application/app_controller.dart';
 import 'application/app_state.dart';
 import 'core/config/server_config.dart';
+import 'core/config/theme_config.dart';
 import 'services/foreground_guard.dart';
 import 'services/notification_service.dart';
 import 'ui/screens/chat_screen.dart';
@@ -59,10 +60,19 @@ class _LunaAppState extends ConsumerState<LunaApp> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    final themeConfig = ref.watch(themeConfigProvider);
+
     return MaterialApp(
       title: 'Luna Mobile',
+      themeMode: themeConfig.themeMode,
       theme: ThemeData(
         colorSchemeSeed: Colors.indigo,
+        brightness: Brightness.light,
+        useMaterial3: true,
+      ),
+      darkTheme: ThemeData(
+        colorSchemeSeed: Colors.indigo,
+        brightness: Brightness.dark,
         useMaterial3: true,
       ),
       home: const _HomeRouter(),

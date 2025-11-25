@@ -63,10 +63,7 @@ class ConversationsScreen extends ConsumerWidget {
         LunaBottomBar(
           onConversations: controller.openConversations,
           onStartNew: controller.startNewConversation,
-          onSettings: () =>
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('Open Settings from the chat view'),
-          )),
+          onSettings: controller.openSetup,
         ),
       ],
     );

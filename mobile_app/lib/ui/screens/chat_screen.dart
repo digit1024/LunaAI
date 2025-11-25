@@ -100,7 +100,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           connection: state.connection,
           profile: config.profile,
           streaming: state.streaming,
-          onSettings: () => _openSettings(context, config),
+          onSettings: controller.openSetup,
         ),
         Expanded(
           child: Stack(
@@ -146,16 +146,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         LunaBottomBar(
           onConversations: controller.openConversations,
           onStartNew: controller.startNewConversation,
-          onSettings: () => _openSettings(context, config),
+          onSettings: controller.openSetup,
         ),
       ],
-    );
-  }
-
-  void _openSettings(BuildContext context, ServerConfig config) {
-    showModalBottomSheet(
-      context: context,
-      builder: (_) => _SettingsSheet(config: config),
     );
   }
 }
@@ -311,63 +304,3 @@ class _Composer extends StatelessWidget {
     );
   }
 }
-
-class _SettingsSheet extends ConsumerWidget {
-  const _SettingsSheet({required this.config});
-
-  final ServerConfig config;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final notifier = ref.read(serverConfigProvider.notifier);
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Settings',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 12),
-          TextFormField(
-            initialValue: config.host,
-            decoration: const InputDecoration(labelText: 'Server host/IP'),
-            onChanged: notifier.updateHost,
-          ),
-          TextFormField(
-            initialValue: config.port.toString(),
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'Port'),
-            onChanged: (value) {
-              final parsed = int.tryParse(value);
-              if (parsed != null) notifier.updatePort(parsed);
-            },
-          ),
-          TextFormField(
-            initialValue: config.apiKey,
-            decoration: const InputDecoration(labelText: 'API key'),
-            onChanged: notifier.updateApiKey,
-          ),
-          TextFormField(
-            initialValue: config.profile,
-            decoration: const InputDecoration(labelText: 'Profile'),
-            onChanged: (value) {
-              notifier.updateProfile(value);
-              ref.read(appControllerProvider.notifier).changeProfile(value);
-            },
-          ),
-          const SizedBox(height: 12),
-          FilledButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-            },
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
