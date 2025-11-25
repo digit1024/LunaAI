@@ -36,9 +36,19 @@ enum AnthropicContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String, input: serde_json::Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
     #[serde(rename = "tool_result")]
-    ToolResult { tool_use_id: String, #[serde(skip_serializing_if = "Option::is_none")] content: Option<String>, #[serde(skip_serializing_if = "Option::is_none")] is_error: Option<bool> },
+    ToolResult {
+        tool_use_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,7 +62,11 @@ enum AnthropicResponseBlock {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String, input: serde_json::Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
 }
 
 // Streaming event minimal structs (we only care about text deltas)
@@ -89,7 +103,6 @@ impl AnthropicClient {
 
 #[async_trait]
 impl LlmClient for AnthropicClient {
-
     async fn send_message_stream(
         &self,
         messages: Vec<Message>,
@@ -183,7 +196,10 @@ impl LlmClient for AnthropicClient {
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::Api(format!("Anthropic API error: {}", error_text)));
+            return Err(LlmError::Api(format!(
+                "Anthropic API error: {}",
+                error_text
+            )));
         }
 
         let stream = response.bytes_stream();
@@ -198,17 +214,25 @@ impl LlmClient for AnthropicClient {
                     let mut content = String::new();
                     for line in chunk_str.lines() {
                         if let Some(data) = line.strip_prefix("data: ") {
-                            if data == "[DONE]" { continue; }
+                            if data == "[DONE]" {
+                                continue;
+                            }
                             // Try parse minimal delta structure
                             if let Ok(delta) = serde_json::from_str::<AnthropicSseDelta>(data) {
                                 if let Some(d) = delta.delta {
-                                    if let Some(t) = d.text { content.push_str(&t); }
+                                    if let Some(t) = d.text {
+                                        content.push_str(&t);
+                                    }
                                 }
                             }
                         }
                     }
 
-                    if content.is_empty() { Ok(None) } else { Ok(Some(content)) }
+                    if content.is_empty() {
+                        Ok(None)
+                    } else {
+                        Ok(Some(content))
+                    }
                 })
         });
         let stream = futures::StreamExt::filter_map(stream, |result| async move {
@@ -221,7 +245,7 @@ impl LlmClient for AnthropicClient {
 
         Ok(Box::pin(stream))
     }
-    
+
     async fn send_message_with_tools(
         &self,
         messages: Vec<Message>,
@@ -235,7 +259,9 @@ impl LlmClient for AnthropicClient {
         for msg in messages {
             match msg.role {
                 Role::System => {
-                    if system_prompt.is_none() { system_prompt = Some(msg.content); }
+                    if system_prompt.is_none() {
+                        system_prompt = Some(msg.content);
+                    }
                 }
                 _ => user_assistant.push(msg),
             }
@@ -247,9 +273,9 @@ impl LlmClient for AnthropicClient {
                 Role::User => {
                     println!("🔍 DEBUG: Converting message to Anthropic (tools): role={:?}, content={}, attachments={:?}", 
                         m.role, m.content, m.attachments);
-                    
+
                     let mut content_blocks = vec![AnthropicContentBlock::Text { text: m.content }];
-                    
+
                     // Handle attachments
                     if let Some(attachments) = m.attachments {
                         for attachment in attachments {
@@ -257,29 +283,38 @@ impl LlmClient for AnthropicClient {
                                 mime if mime.starts_with("image/") => {
                                     // For images, we need to read and encode them
                                     if let Some(_content) = &attachment.content {
-                                        content_blocks.push(AnthropicContentBlock::Text { 
-                                            text: format!("[Image: {} - {} bytes]", attachment.file_name, attachment.file_size)
+                                        content_blocks.push(AnthropicContentBlock::Text {
+                                            text: format!(
+                                                "[Image: {} - {} bytes]",
+                                                attachment.file_name, attachment.file_size
+                                            ),
                                         });
                                     }
                                 }
                                 mime if mime.starts_with("text/") => {
                                     // For text files, include content in text
                                     if let Some(content) = &attachment.content {
-                                        content_blocks.push(AnthropicContentBlock::Text { 
-                                            text: format!("File: {}\nContent:\n{}", attachment.file_name, content)
+                                        content_blocks.push(AnthropicContentBlock::Text {
+                                            text: format!(
+                                                "File: {}\nContent:\n{}",
+                                                attachment.file_name, content
+                                            ),
                                         });
                                     }
                                 }
                                 _ => {
                                     // For other files, just mention them
-                                    content_blocks.push(AnthropicContentBlock::Text { 
-                                        text: format!("File attached: {} ({} bytes)", attachment.file_name, attachment.file_size)
+                                    content_blocks.push(AnthropicContentBlock::Text {
+                                        text: format!(
+                                            "File attached: {} ({} bytes)",
+                                            attachment.file_name, attachment.file_size
+                                        ),
                                     });
                                 }
                             }
                         }
                     }
-                    
+
                     anthropic_messages.push(AnthropicMessage {
                         role: "user".to_string(),
                         content: content_blocks,
@@ -292,22 +327,41 @@ impl LlmClient for AnthropicClient {
                     }
                     if let Some(tool_calls) = m.tool_calls.clone() {
                         for tc in tool_calls.into_iter() {
-                            content_blocks.push(AnthropicContentBlock::ToolUse { id: tc.id, name: tc.name, input: tc.parameters });
+                            content_blocks.push(AnthropicContentBlock::ToolUse {
+                                id: tc.id,
+                                name: tc.name,
+                                input: tc.parameters,
+                            });
                         }
                     }
                     if content_blocks.is_empty() {
-                        content_blocks.push(AnthropicContentBlock::Text { text: String::new() });
+                        content_blocks.push(AnthropicContentBlock::Text {
+                            text: String::new(),
+                        });
                     }
-                    anthropic_messages.push(AnthropicMessage { role: "assistant".to_string(), content: content_blocks });
+                    anthropic_messages.push(AnthropicMessage {
+                        role: "assistant".to_string(),
+                        content: content_blocks,
+                    });
                 }
                 Role::Tool => {
                     // Convert tool result message into a user message with a tool_result block
                     let is_error = m.content.starts_with("Error: ");
-                    let content_text = if is_error { Some(m.content.trim_start_matches("Error: ").to_string()) } else { Some(m.content.clone()) };
-                    let tool_use_id = m.tool_call_id.unwrap_or_else(|| "unknown_tool_use".to_string());
+                    let content_text = if is_error {
+                        Some(m.content.trim_start_matches("Error: ").to_string())
+                    } else {
+                        Some(m.content.clone())
+                    };
+                    let tool_use_id = m
+                        .tool_call_id
+                        .unwrap_or_else(|| "unknown_tool_use".to_string());
                     anthropic_messages.push(AnthropicMessage {
                         role: "user".to_string(),
-                        content: vec![AnthropicContentBlock::ToolResult { tool_use_id, content: content_text, is_error: Some(is_error) }],
+                        content: vec![AnthropicContentBlock::ToolResult {
+                            tool_use_id,
+                            content: content_text,
+                            is_error: Some(is_error),
+                        }],
                     });
                 }
                 Role::System => {
@@ -320,13 +374,22 @@ impl LlmClient for AnthropicClient {
         let tools = if !has_tools {
             None
         } else {
-            Some(available_tools.into_iter().map(|t| {
-                let mut schema = t.parameters;
-                if !schema.is_object() {
-                    schema = serde_json::json!({"type":"object","properties":{}});
-                }
-                AnthropicToolDefinition { name: t.name, description: t.description, input_schema: schema }
-            }).collect())
+            Some(
+                available_tools
+                    .into_iter()
+                    .map(|t| {
+                        let mut schema = t.parameters;
+                        if !schema.is_object() {
+                            schema = serde_json::json!({"type":"object","properties":{}});
+                        }
+                        AnthropicToolDefinition {
+                            name: t.name,
+                            description: t.description,
+                            input_schema: schema,
+                        }
+                    })
+                    .collect(),
+            )
         };
 
         let request = AnthropicRequest {
@@ -336,7 +399,11 @@ impl LlmClient for AnthropicClient {
             temperature: temperature.or(self.profile.temperature),
             system: system_prompt,
             tools,
-            tool_choice: if has_tools { Some(json!({"type": "auto"})) } else { None },
+            tool_choice: if has_tools {
+                Some(json!({"type": "auto"}))
+            } else {
+                None
+            },
             stream: false,
         };
 
@@ -352,7 +419,10 @@ impl LlmClient for AnthropicClient {
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::Api(format!("Anthropic API error: {}", error_text)));
+            return Err(LlmError::Api(format!(
+                "Anthropic API error: {}",
+                error_text
+            )));
         }
 
         let response_data: AnthropicResponse = response.json().await?;
@@ -362,12 +432,19 @@ impl LlmClient for AnthropicClient {
             match block {
                 AnthropicResponseBlock::Text { text } => content.push_str(&text),
                 AnthropicResponseBlock::ToolUse { id, name, input } => {
-                    tool_calls.push(ToolCall { id, name, parameters: input });
+                    tool_calls.push(ToolCall {
+                        id,
+                        name,
+                        parameters: input,
+                    });
                 }
             }
         }
 
-        Ok(ChatResponse { content, tool_calls })
+        Ok(ChatResponse {
+            content,
+            tool_calls,
+        })
     }
 
     async fn send_message_stream_with_tools(
@@ -376,7 +453,8 @@ impl LlmClient for AnthropicClient {
         available_tools: Vec<ToolDefinition>,
         temperature: Option<f32>,
         max_tokens: Option<u32>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, LlmError>> + Send>>, LlmError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, LlmError>> + Send>>, LlmError>
+    {
         // Use non-streaming execution for now and map to stream events
         let response = self
             .send_message_with_tools(messages, available_tools, temperature, max_tokens)
@@ -395,4 +473,3 @@ impl LlmClient for AnthropicClient {
         Ok(Box::pin(UnboundedReceiverStream::new(rx)))
     }
 }
-

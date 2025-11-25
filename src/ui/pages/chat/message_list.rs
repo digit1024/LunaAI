@@ -1,20 +1,24 @@
+use crate::ui::app::{CosmicLlmApp, Message, ToolCallStatus};
+use crate::ui::widgets::ToolCallWidget;
 use cosmic::{
-    iced::{Length, Padding, Font},
+    iced::{Font, Length, Padding},
     widget::{self, markdown, scrollable},
     Element,
 };
-use crate::ui::app::{Message, CosmicLlmApp, ToolCallStatus};
-use crate::ui::widgets::ToolCallWidget;
 
 pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
     let mut column = cosmic::widget::column::with_capacity(app.messages.len()).spacing(12);
-    
+
     // Add regular chat messages
     for (i, msg) in app.messages.iter().enumerate() {
         let content = msg.content.clone();
         let mut tool_summaries: Vec<(String, String, String)> = Vec::new();
         if !msg.is_user {
-            for anchored in app.archived_tool_calls.iter().filter(|t| t.anchor_index == i) {
+            for anchored in app
+                .archived_tool_calls
+                .iter()
+                .filter(|t| t.anchor_index == i)
+            {
                 let summary_id = anchored
                     .tool_call
                     .id
@@ -53,13 +57,9 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                 .width(Length::Fill)
                 .into()
             } else if msg.is_error {
-                widget::container(
-                    cosmic::widget::text(&msg.content)
-                        .size(14)
-                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(
-                            0.8, 0.2, 0.2,
-                        ))),
-                )
+                widget::container(cosmic::widget::text(&msg.content).size(14).class(
+                    cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.8, 0.2, 0.2)),
+                ))
                 .width(Length::Fill)
                 .into()
             } else {
@@ -68,9 +68,9 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                     let style = widget::markdown::Style {
                         inline_code_padding: cosmic::iced::Padding::from([1, 2]),
                         inline_code_highlight: widget::markdown::Highlight {
-                            background: cosmic::iced::Background::Color(cosmic::iced::Color::from_rgb(
-                                0.1, 0.1, 0.1,
-                            )),
+                            background: cosmic::iced::Background::Color(
+                                cosmic::iced::Color::from_rgb(0.1, 0.1, 0.1),
+                            ),
                             border: cosmic::iced::Border::default().rounded(2),
                         },
                         inline_code_color: cosmic::iced::Color::WHITE,
@@ -111,14 +111,12 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                 }
             }
 
-            cosmic::widget::row::with_capacity(2)
-                .push(column)
-                .push(
-                    cosmic::widget::button::text("📋")
-                        .on_press(Message::ShowMessageDialog(content))
-                        .padding(4)
-                        .class(cosmic::style::Button::Text),
-                )
+            cosmic::widget::row::with_capacity(2).push(column).push(
+                cosmic::widget::button::text("📋")
+                    .on_press(Message::ShowMessageDialog(content))
+                    .padding(4)
+                    .class(cosmic::style::Button::Text),
+            )
         })
         .padding(Padding::from([12, 16]))
         .class(if msg.is_user {
@@ -129,7 +127,7 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
             cosmic::style::Container::Card
         })
         .width(Length::FillPortion(7)); // 70% width
-        
+
         let message_row = if msg.is_user {
             // User messages: right-aligned
             cosmic::widget::row::with_capacity(2)
@@ -165,7 +163,9 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                     error,
                     is_expanded,
                 }));
-                let widget_element = widget.view().map(move |msg| Message::ToolCallWidgetMessage(idx, msg));
+                let widget_element = widget
+                    .view()
+                    .map(move |msg| Message::ToolCallWidgetMessage(idx, msg));
                 let tool_call_row = cosmic::widget::row::with_capacity(2)
                     .push(widget_element)
                     .push(cosmic::widget::Space::with_width(Length::Fill));
@@ -196,7 +196,9 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                         error,
                         is_expanded,
                     }));
-                    let widget_element = widget.view().map(move |msg| Message::ToolCallWidgetMessage(idx, msg));
+                    let widget_element = widget
+                        .view()
+                        .map(move |msg| Message::ToolCallWidgetMessage(idx, msg));
                     let tool_call_row = cosmic::widget::row::with_capacity(2)
                         .push(widget_element)
                         .push(cosmic::widget::Space::with_width(Length::Fill));
@@ -213,13 +215,11 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
             }
         }
     }
-    
+
     // Add spacer at bottom to force scroll to bottom
-    column = column.push(
-        cosmic::widget::Space::with_height(Length::Fixed(1.0))
-            .width(Length::Fill)
-    );
-    
+    column =
+        column.push(cosmic::widget::Space::with_height(Length::Fixed(1.0)).width(Length::Fill));
+
     scrollable(column)
         .scrollbar_width(8)
         .scrollbar_padding(4)

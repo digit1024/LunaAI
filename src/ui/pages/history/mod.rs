@@ -1,13 +1,16 @@
-use cosmic::{Element, iced::Length};
-use crate::ui::app::{Message, CosmicLlmApp};
+use crate::ui::app::{CosmicLlmApp, Message};
+use cosmic::{iced::Length, Element};
 use uuid::Uuid;
 
 pub fn history_view(app: &CosmicLlmApp) -> Element<Message> {
-    let conversations = app.storage.list_conversations_from_index().unwrap_or_else(|e| {
-        eprintln!("Failed to list conversations: {}", e);
-        Vec::new()
-    });
-    
+    let conversations = app
+        .storage
+        .list_conversations_from_index()
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to list conversations: {}", e);
+            Vec::new()
+        });
+
     cosmic::widget::column::with_capacity(3)
         .push(
             // Enhanced header with icon and stats

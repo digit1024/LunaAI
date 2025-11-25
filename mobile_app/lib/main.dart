@@ -1,0 +1,103 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'application/app_controller.dart';
+import 'application/app_state.dart';
+import 'core/config/server_config.dart';
+import 'services/foreground_guard.dart';
+import 'services/notification_service.dart';
+import 'ui/screens/chat_screen.dart';
+import 'ui/screens/connecting_screen.dart';
+import 'ui/screens/conversations_screen.dart';
+import 'ui/screens/settings_screen.dart';
+import 'ui/screens/setup_screen.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final notificationService = NotificationService();
+  final foregroundGuard = ForegroundGuard();
+
+  runApp(
+    ProviderScope(
+      overrides: [
+        notificationServiceProvider.overrideWithValue(notificationService),
+        foregroundGuardProvider.overrideWithValue(foregroundGuard),
+      ],
+      child: const LunaApp(),
+    ),
+  );
+}
+
+class LunaApp extends ConsumerStatefulWidget {
+  const LunaApp({super.key});
+
+  @override
+  ConsumerState<LunaApp> createState() => _LunaAppState();
+}
+
+class _LunaAppState extends ConsumerState<LunaApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    ref.read(appControllerProvider.notifier).init();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    final backgrounded = state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached;
+    ref.read(appControllerProvider.notifier).setBackgrounded(backgrounded);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Luna Mobile',
+      theme: ThemeData(
+        colorSchemeSeed: Colors.indigo,
+        useMaterial3: true,
+      ),
+      home: const _HomeRouter(),
+    );
+  }
+}
+
+class _HomeRouter extends ConsumerWidget {
+  const _HomeRouter();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(appControllerProvider);
+
+    Widget child;
+    switch (state.pane) {
+      case ActivePane.setup:
+        child = const SetupScreen();
+        break;
+      case ActivePane.connecting:
+        child = const ConnectingScreen();
+        break;
+      case ActivePane.conversations:
+        child = const ConversationsScreen();
+        break;
+      case ActivePane.chat:
+        child = const ChatScreen();
+        break;
+      case ActivePane.settings:
+        child = const SettingsScreen();
+        break;
+    }
+
+    return Scaffold(
+      body: SafeArea(child: child),
+    );
+  }
+}

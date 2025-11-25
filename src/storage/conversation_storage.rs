@@ -1,3 +1,4 @@
+use crate::llm::ToolCall;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -5,7 +6,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
-use crate::llm::ToolCall;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Turn {
@@ -94,26 +94,26 @@ impl Conversation {
 
     pub fn rebuild_llm_messages(&self) -> Vec<crate::llm::Message> {
         let mut llm_messages = Vec::new();
-        
+
         // Add user messages
         for msg in &self.messages {
             if msg.role == "user" {
                 llm_messages.push(crate::llm::Message::new(
                     crate::llm::Role::User,
-                    msg.content.clone()
+                    msg.content.clone(),
                 ));
             }
         }
-        
+
         // Add assistant turns with tool calls and results
         for turn in &self.turns {
             if !turn.text.trim().is_empty() {
                 llm_messages.push(crate::llm::Message::new(
                     crate::llm::Role::Assistant,
-                    turn.text.clone()
+                    turn.text.clone(),
                 ));
             }
-            
+
             // Add tool results for this turn
             for tool in &turn.tools {
                 if let Some(tool_id) = &tool.id {
@@ -124,16 +124,16 @@ impl Conversation {
                     } else {
                         continue;
                     };
-                    
+
                     llm_messages.push(crate::llm::Message::new_tool_result(
                         tool_id.clone(),
                         content,
-                        tool.status == ToolCallStatus::Error
+                        tool.status == ToolCallStatus::Error,
                     ));
                 }
             }
         }
-        
+
         llm_messages
     }
 }
@@ -191,7 +191,8 @@ impl Storage {
     }
 
     fn conversation_file_path(&self, conversation_id: &Uuid) -> PathBuf {
-        self.conversations_dir.join(format!("{}.json", conversation_id))
+        self.conversations_dir
+            .join(format!("{}.json", conversation_id))
     }
 
     fn load_conversations(&mut self) {
@@ -203,7 +204,7 @@ impl Storage {
 
         // Load conversation index
         let index = self.load_conversation_index();
-        
+
         // Load each conversation from its individual file
         for conv_index in index {
             let file_path = self.conversation_file_path(&conv_index.id);
@@ -230,7 +231,8 @@ impl Storage {
 
     fn save_conversation_index(&self) {
         println!("💾 Saving conversation index...");
-        let index: Vec<ConversationIndex> = self.conversations
+        let index: Vec<ConversationIndex> = self
+            .conversations
             .values()
             .map(|conv| ConversationIndex {
                 id: conv.id,
@@ -239,12 +241,12 @@ impl Storage {
                 updated_at: conv.updated_at,
             })
             .collect();
-        
+
         println!("📝 Index contains {} conversations", index.len());
         for conv in &index {
             println!("  - {}: '{}'", conv.id, conv.title);
         }
-        
+
         if let Some(parent) = self.index_file.parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -311,7 +313,12 @@ impl Storage {
         }
     }
 
-    pub fn add_message_to_conversation(&mut self, conversation_id: &Uuid, role: String, content: String) {
+    pub fn add_message_to_conversation(
+        &mut self,
+        conversation_id: &Uuid,
+        role: String,
+        content: String,
+    ) {
         if let Some(conversation) = self.conversations.get_mut(conversation_id) {
             conversation.add_message(role, content);
             // Clone the conversation to avoid borrowing issues
@@ -346,5 +353,4 @@ impl Storage {
             false
         }
     }
-
 }

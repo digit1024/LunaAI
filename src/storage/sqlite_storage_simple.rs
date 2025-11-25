@@ -3,9 +3,10 @@ use rusqlite::{params, Connection, OptionalExtension, Result as SqliteResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{self, Value};
 use std::path::Path;
+use std::time::Duration;
 use uuid::Uuid;
 
-use crate::llm::ToolCall;
+use crate::{config::ServerConfig, llm::ToolCall};
 
 /// Represents a conversation in the database
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,19 +47,69 @@ pub struct SqliteStorage {
     conn: Connection,
 }
 
+#[derive(Debug, Clone)]
+pub struct SqliteSettings {
+    pub wal_enabled: bool,
+    pub wal_autocheckpoint: u32,
+    pub busy_timeout_ms: u64,
+}
+
+impl Default for SqliteSettings {
+    fn default() -> Self {
+        Self {
+            wal_enabled: true,
+            wal_autocheckpoint: 200,
+            busy_timeout_ms: 5_000,
+        }
+    }
+}
+
+impl From<&ServerConfig> for SqliteSettings {
+    fn from(cfg: &ServerConfig) -> Self {
+        Self {
+            wal_enabled: cfg.wal_enabled,
+            wal_autocheckpoint: cfg.wal_autocheckpoint,
+            busy_timeout_ms: cfg.sqlite_busy_timeout_ms,
+        }
+    }
+}
+
 impl SqliteStorage {
     /// Create a new SQLite storage instance
     pub fn new<P: AsRef<Path>>(db_path: P) -> SqliteResult<Self> {
+        Self::new_with_settings(db_path, &SqliteSettings::default())
+    }
+
+    /// Create a new SQLite storage instance with explicit settings
+    pub fn new_with_settings<P: AsRef<Path>>(
+        db_path: P,
+        settings: &SqliteSettings,
+    ) -> SqliteResult<Self> {
         let conn = Connection::open(db_path)?;
+        Self::configure_connection(&conn, settings)?;
         let storage = Self { conn };
         storage.init_database()?;
         Ok(storage)
     }
 
+    fn configure_connection(conn: &Connection, settings: &SqliteSettings) -> SqliteResult<()> {
+        if settings.wal_enabled {
+            conn.pragma_update(None, "journal_mode", &"WAL")?;
+            conn.pragma_update(None, "wal_autocheckpoint", &settings.wal_autocheckpoint)?;
+        } else {
+            conn.pragma_update(None, "journal_mode", &"DELETE")?;
+        }
+
+        conn.busy_timeout(Duration::from_millis(settings.busy_timeout_ms))?;
+        Ok(())
+    }
+
     /// Initialize the database schema
     fn init_database(&self) -> SqliteResult<()> {
         // Enable FTS5 extension (this is just a check, we don't need the results)
-        let _: Vec<String> = self.conn.prepare("PRAGMA compile_options")?
+        let _: Vec<String> = self
+            .conn
+            .prepare("PRAGMA compile_options")?
             .query_map([], |row| row.get(0))?
             .collect::<Result<Vec<String>, _>>()?;
 
@@ -147,7 +198,7 @@ impl SqliteStorage {
     pub fn insert_conversation(&self, title: &str) -> SqliteResult<String> {
         let id = Uuid::new_v4().to_string();
         let created_at = Utc::now().timestamp();
-        
+
         self.conn.execute(
             "INSERT INTO conversations (id, title, created_at) VALUES (?1, ?2, ?3)",
             params![id, title, created_at],
@@ -182,10 +233,14 @@ impl SqliteStorage {
         metadata: &MessageMetadata<'_>,
     ) -> SqliteResult<()> {
         let created_at = Utc::now().timestamp();
-        
+
         // Convert embedding to bytes if provided
         let embedding_bytes = if let Some(emb) = embedding {
-            Some(emb.iter().flat_map(|&f| f.to_le_bytes()).collect::<Vec<u8>>())
+            Some(
+                emb.iter()
+                    .flat_map(|&f| f.to_le_bytes())
+                    .collect::<Vec<u8>>(),
+            )
         } else {
             None
         };
@@ -250,9 +305,12 @@ impl SqliteStorage {
         let message_iter = stmt.query_map(params![conversation_id], |row| {
             let embedding_bytes: Option<Vec<u8>> = row.get(4)?;
             let embedding = if let Some(bytes) = embedding_bytes {
-                Some(bytes.chunks_exact(4)
-                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-                    .collect())
+                Some(
+                    bytes
+                        .chunks_exact(4)
+                        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                        .collect(),
+                )
             } else {
                 None
             };
@@ -308,7 +366,7 @@ impl SqliteStorage {
              JOIN messages m ON fts.rowid = m.id
              WHERE messages_fts MATCH ?1
              ORDER BY rank
-             LIMIT ?2"
+             LIMIT ?2",
         )?;
 
         let snippet_iter = stmt.query_map(params![query, limit], |row| {
@@ -340,9 +398,9 @@ impl SqliteStorage {
 
     /// Get conversation by ID
     pub fn get_conversation(&self, conversation_id: &str) -> SqliteResult<Option<Conversation>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, title, created_at FROM conversations WHERE id = ?1"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, title, created_at FROM conversations WHERE id = ?1")?;
 
         stmt.query_row(params![conversation_id], |row| {
             Ok(Conversation {
@@ -350,14 +408,15 @@ impl SqliteStorage {
                 title: row.get(1)?,
                 created_at: row.get(2)?,
             })
-        }).optional()
+        })
+        .optional()
     }
 
     /// List all conversations ordered by creation date (newest first)
     pub fn list_conversations(&self) -> SqliteResult<Vec<Conversation>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, title, created_at FROM conversations ORDER BY created_at DESC"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, title, created_at FROM conversations ORDER BY created_at DESC")?;
 
         let conversation_iter = stmt.query_map([], |row| {
             Ok(Conversation {
@@ -401,7 +460,7 @@ mod tests {
         // Create a temporary database
         let temp_dir = std::env::temp_dir();
         let db_path = temp_dir.join("test_cosmic_llm.db");
-        
+
         // Remove existing test database
         let _ = fs::remove_file(&db_path);
 
@@ -474,6 +533,24 @@ mod tests {
         assert!(messages[0].embedding.is_some());
         assert_eq!(messages[0].embedding.as_ref().unwrap(), &embedding);
 
+        let _ = fs::remove_file(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn wal_mode_enabled_when_requested() -> SqliteResult<()> {
+        let db_path = std::env::temp_dir()
+            .join(format!("wal_mode_test_{}.db", Uuid::new_v4()));
+        let settings = SqliteSettings {
+            wal_enabled: true,
+            wal_autocheckpoint: 5,
+            busy_timeout_ms: 1_000,
+        };
+        let storage = SqliteStorage::new_with_settings(&db_path, &settings)?;
+        let mode: String = storage
+            .conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        assert_eq!(mode.to_lowercase(), "wal");
         let _ = fs::remove_file(&db_path);
         Ok(())
     }

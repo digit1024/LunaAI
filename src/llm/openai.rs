@@ -272,7 +272,6 @@ impl OpenAIClient {
 
 #[async_trait]
 impl LlmClient for OpenAIClient {
-
     async fn send_message_stream(
         &self,
         messages: Vec<Message>,
@@ -318,20 +317,22 @@ impl LlmClient for OpenAIClient {
                 .and_then(|chunk| {
                     let chunk_str = String::from_utf8(chunk.to_vec())
                         .map_err(|e| LlmError::Api(format!("Invalid UTF-8: {}", e)))?;
-                    
+
                     // Parse SSE format
                     let lines: Vec<&str> = chunk_str.lines().collect();
                     let mut content = String::new();
-                    
+
                     for line in lines {
                         if line.starts_with("data: ") {
                             let data = &line[6..]; // Remove "data: " prefix
                             if data == "[DONE]" {
                                 break;
                             }
-                            
+
                             // Parse JSON
-                            if let Ok(stream_response) = serde_json::from_str::<OpenAIStreamResponse>(data) {
+                            if let Ok(stream_response) =
+                                serde_json::from_str::<OpenAIStreamResponse>(data)
+                            {
                                 if let Some(choice) = stream_response.choices.first() {
                                     if let Some(content_delta) = &choice.delta.content {
                                         content.push_str(content_delta);
@@ -340,7 +341,7 @@ impl LlmClient for OpenAIClient {
                             }
                         }
                     }
-                    
+
                     if content.is_empty() {
                         Ok(None)
                     } else {
@@ -358,7 +359,7 @@ impl LlmClient for OpenAIClient {
 
         Ok(Box::pin(stream))
     }
-    
+
     async fn send_message_with_tools(
         &self,
         messages: Vec<Message>,
@@ -372,14 +373,19 @@ impl LlmClient for OpenAIClient {
         let tools = if !has_tools {
             None
         } else {
-            Some(available_tools.into_iter().map(|tool| OpenAITool {
-                r#type: "function".to_string(),
-                function: OpenAIToolFunction {
-                    name: tool.name,
-                    description: tool.description,
-                    parameters: tool.parameters,
-                },
-            }).collect())
+            Some(
+                available_tools
+                    .into_iter()
+                    .map(|tool| OpenAITool {
+                        r#type: "function".to_string(),
+                        function: OpenAIToolFunction {
+                            name: tool.name,
+                            description: tool.description,
+                            parameters: tool.parameters,
+                        },
+                    })
+                    .collect(),
+            )
         };
 
         let request = OpenAIRequest {
@@ -389,7 +395,11 @@ impl LlmClient for OpenAIClient {
             max_tokens: max_tokens.or(self.profile.max_tokens),
             stream: false,
             tools,
-            tool_choice: if has_tools { Some("auto".to_string()) } else { None },
+            tool_choice: if has_tools {
+                Some("auto".to_string())
+            } else {
+                None
+            },
         };
 
         if let Ok(payload) = serde_json::to_string(&request) {
@@ -435,13 +445,16 @@ impl LlmClient for OpenAIClient {
             }
             _ => String::new(),
         };
-        
+
         let tool_calls = if let Some(tool_calls) = &choice.message.tool_calls {
-            tool_calls.iter().map(|tc| ToolCall {
-                id: tc.id.clone(),
-                name: tc.function.name.clone(),
-                parameters: serde_json::from_str(&tc.function.arguments).unwrap_or_default(),
-            }).collect()
+            tool_calls
+                .iter()
+                .map(|tc| ToolCall {
+                    id: tc.id.clone(),
+                    name: tc.function.name.clone(),
+                    parameters: serde_json::from_str(&tc.function.arguments).unwrap_or_default(),
+                })
+                .collect()
         } else {
             Vec::new()
         };
@@ -458,7 +471,8 @@ impl LlmClient for OpenAIClient {
         available_tools: Vec<ToolDefinition>,
         temperature: Option<f32>,
         max_tokens: Option<u32>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, LlmError>> + Send>>, LlmError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, LlmError>> + Send>>, LlmError>
+    {
         let openai_messages = Self::map_messages(messages);
 
         let has_tools = !available_tools.is_empty();
@@ -553,4 +567,3 @@ impl LlmClient for OpenAIClient {
         Ok(Box::pin(UnboundedReceiverStream::new(rx)))
     }
 }
-

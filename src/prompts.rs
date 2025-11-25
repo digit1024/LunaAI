@@ -15,10 +15,20 @@ impl Default for PromptConfig {
         let data_dir = dirs::data_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join("cosmic_llm");
-        
+
         Self {
-            system_prompt_file: Some(data_dir.join("system_prompt.md").to_string_lossy().to_string()),
-            user_prompt_file: Some(data_dir.join("user_prompt.md").to_string_lossy().to_string()),
+            system_prompt_file: Some(
+                data_dir
+                    .join("system_prompt.md")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+            user_prompt_file: Some(
+                data_dir
+                    .join("user_prompt.md")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
         }
     }
 }
@@ -35,7 +45,7 @@ impl PromptManager {
                 Ok(content) => {
                     debug!("✅ Loaded system prompt from: {}", path);
                     Some(content.trim().to_string())
-                },
+                }
                 Err(e) => {
                     warn!("⚠️ Failed to load system prompt from {}: {}", path, e);
                     None
@@ -46,9 +56,7 @@ impl PromptManager {
             None
         };
 
-        Ok(Self {
-            system_prompt,
-        })
+        Ok(Self { system_prompt })
     }
 
     pub fn get_system_prompt(&self) -> Option<&str> {

@@ -1,12 +1,11 @@
-use crate::llm::{ChatStreamEvent, Message, Role, LlmClient, ToolCall, ToolResult, LlmError};
 use super::protocol::{AgentUpdate, PlannedTool};
+use crate::llm::{ChatStreamEvent, LlmClient, LlmError, Message, Role, ToolCall, ToolResult};
 use crate::mcp::MCPServerRegistry;
 use anyhow::Result;
 use futures::StreamExt;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
-
 
 pub struct AgenticLoop {
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
@@ -15,14 +14,17 @@ pub struct AgenticLoop {
 }
 
 impl AgenticLoop {
-    pub fn new(mcp_registry: Arc<RwLock<MCPServerRegistry>>, llm_client: Arc<dyn LlmClient>) -> Self {
+    pub fn new(
+        mcp_registry: Arc<RwLock<MCPServerRegistry>>,
+        llm_client: Arc<dyn LlmClient>,
+    ) -> Self {
         Self {
             mcp_registry,
             llm_client,
             tool_logger: super::tool_logger::ToolLogger::new("agentic_tool_calls.log".to_string()),
         }
     }
-    
+
     pub async fn process_message(
         &mut self,
         mut messages: Vec<Message>,
@@ -144,9 +146,9 @@ impl AgenticLoop {
                     });
                 }
 
-                let result =
-                    self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref())
-                        .await;
+                let result = self
+                    .execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref())
+                    .await;
 
                 self.tool_logger
                     .log_tool_result(&tool_call, &result.content, result.is_error)?;
@@ -308,9 +310,9 @@ impl AgenticLoop {
                     });
                 }
 
-                let result =
-                    self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref())
-                        .await;
+                let result = self
+                    .execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref())
+                    .await;
 
                 self.tool_logger
                     .log_tool_result(&tool_call, &result.content, result.is_error)?;
@@ -332,4 +334,3 @@ impl AgenticLoop {
         }
     }
 }
-

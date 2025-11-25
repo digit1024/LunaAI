@@ -24,14 +24,16 @@ struct GeminiContent {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 enum GeminiPart {
-    Text { text: String },
-    FunctionCall { 
-        #[serde(rename = "functionCall")]
-        function_call: GeminiFunctionCall 
+    Text {
+        text: String,
     },
-    FunctionResponse { 
+    FunctionCall {
+        #[serde(rename = "functionCall")]
+        function_call: GeminiFunctionCall,
+    },
+    FunctionResponse {
         #[serde(rename = "functionResponse")]
-        function_response: GeminiFunctionResponse 
+        function_response: GeminiFunctionResponse,
     },
 }
 
@@ -115,27 +117,23 @@ impl GeminiClient {
                 map.remove("maxLength");
                 map.remove("minItems");
                 map.remove("maxItems");
-                
+
                 // Recursively sanitize "properties" (object with schema values)
                 if let Some(serde_json::Value::Object(properties)) = map.get_mut("properties") {
                     for (_key, value) in properties.iter_mut() {
                         *value = self.sanitize_schema(value.clone());
                     }
                 }
-                
+
                 // Recursively sanitize "items" (array element schema)
                 if let Some(items) = map.get_mut("items") {
                     *items = self.sanitize_schema(items.clone());
                 }
-                
+
                 serde_json::Value::Object(map)
             }
             serde_json::Value::Array(arr) => {
-                serde_json::Value::Array(
-                    arr.into_iter()
-                        .map(|v| self.sanitize_schema(v))
-                        .collect()
-                )
+                serde_json::Value::Array(arr.into_iter().map(|v| self.sanitize_schema(v)).collect())
             }
             other => other,
         }
@@ -147,9 +145,11 @@ impl GeminiClient {
         let mut current_parts: Vec<GeminiPart> = Vec::new();
 
         for msg in messages {
-            println!("🔍 DEBUG: Converting message to Gemini: role={:?}, content={}, attachments={:?}", 
-                msg.role, msg.content, msg.attachments);
-                
+            println!(
+                "🔍 DEBUG: Converting message to Gemini: role={:?}, content={}, attachments={:?}",
+                msg.role, msg.content, msg.attachments
+            );
+
             let role = match msg.role {
                 Role::User => "user",
                 Role::Assistant => "model",
@@ -193,26 +193,35 @@ impl GeminiClient {
             } else {
                 // Regular text message with potential attachments
                 let mut text_content = msg.content;
-                
+
                 // Handle attachments
                 if let Some(attachments) = msg.attachments {
                     for attachment in attachments {
                         match attachment.mime_type.as_str() {
                             mime if mime.starts_with("image/") => {
-                                text_content.push_str(&format!("\n[Image: {} - {} bytes]", attachment.file_name, attachment.file_size));
+                                text_content.push_str(&format!(
+                                    "\n[Image: {} - {} bytes]",
+                                    attachment.file_name, attachment.file_size
+                                ));
                             }
                             mime if mime.starts_with("text/") => {
                                 if let Some(file_content) = &attachment.content {
-                                    text_content.push_str(&format!("\n\nFile: {}\nContent:\n{}", attachment.file_name, file_content));
+                                    text_content.push_str(&format!(
+                                        "\n\nFile: {}\nContent:\n{}",
+                                        attachment.file_name, file_content
+                                    ));
                                 }
                             }
                             _ => {
-                                text_content.push_str(&format!("\nFile attached: {} ({} bytes)", attachment.file_name, attachment.file_size));
+                                text_content.push_str(&format!(
+                                    "\nFile attached: {} ({} bytes)",
+                                    attachment.file_name, attachment.file_size
+                                ));
                             }
                         }
                     }
                 }
-                
+
                 current_parts.push(GeminiPart::Text { text: text_content });
             }
 
@@ -235,7 +244,6 @@ impl GeminiClient {
 
 #[async_trait]
 impl LlmClient for GeminiClient {
-
     async fn send_message_stream(
         &self,
         messages: Vec<Message>,
@@ -256,7 +264,8 @@ impl LlmClient for GeminiClient {
         };
 
         // Build endpoint with model
-        let endpoint = format!("{}:streamGenerateContent?key={}", 
+        let endpoint = format!(
+            "{}:streamGenerateContent?key={}",
             self.profile.endpoint.trim_end_matches('/'),
             self.profile.api_key
         );
@@ -281,15 +290,15 @@ impl LlmClient for GeminiClient {
                 .and_then(|chunk| {
                     let chunk_str = String::from_utf8(chunk.to_vec())
                         .map_err(|e| LlmError::Api(format!("Invalid UTF-8: {}", e)))?;
-                    
+
                     let mut content = String::new();
-                    
+
                     // Gemini streaming returns JSON objects separated by newlines
                     for line in chunk_str.lines() {
                         if line.trim().is_empty() {
                             continue;
                         }
-                        
+
                         if let Ok(response) = serde_json::from_str::<GeminiResponse>(line) {
                             if let Some(candidate) = response.candidates.first() {
                                 for part in &candidate.content.parts {
@@ -300,7 +309,7 @@ impl LlmClient for GeminiClient {
                             }
                         }
                     }
-                    
+
                     if content.is_empty() {
                         Ok(None)
                     } else {
@@ -308,7 +317,7 @@ impl LlmClient for GeminiClient {
                     }
                 })
         });
-        
+
         let stream = futures::StreamExt::filter_map(stream, |result| async move {
             match result {
                 Ok(Some(content)) => Some(Ok(content)),
@@ -319,7 +328,7 @@ impl LlmClient for GeminiClient {
 
         Ok(Box::pin(stream))
     }
-    
+
     async fn send_message_with_tools(
         &self,
         messages: Vec<Message>,
@@ -338,15 +347,18 @@ impl LlmClient for GeminiClient {
             None
         } else {
             Some(vec![GeminiTool {
-                function_declarations: available_tools.into_iter().map(|tool| {
-                    let sanitized_params = self.sanitize_schema(tool.parameters);
-                    log::debug!("🔧 Gemini tool: {} (sanitized schema)", tool.name);
-                    GeminiFunctionDeclaration {
-                        name: tool.name,
-                        description: tool.description,
-                        parameters: sanitized_params,
-                    }
-                }).collect(),
+                function_declarations: available_tools
+                    .into_iter()
+                    .map(|tool| {
+                        let sanitized_params = self.sanitize_schema(tool.parameters);
+                        log::debug!("🔧 Gemini tool: {} (sanitized schema)", tool.name);
+                        GeminiFunctionDeclaration {
+                            name: tool.name,
+                            description: tool.description,
+                            parameters: sanitized_params,
+                        }
+                    })
+                    .collect(),
             }])
         };
 
@@ -355,12 +367,15 @@ impl LlmClient for GeminiClient {
             generation_config: Some(generation_config),
             tools,
         };
-        
-        log::debug!("📤 Sending Gemini request with {} tools", 
-            request.tools.as_ref().map(|t| t.len()).unwrap_or(0));
+
+        log::debug!(
+            "📤 Sending Gemini request with {} tools",
+            request.tools.as_ref().map(|t| t.len()).unwrap_or(0)
+        );
 
         // Build endpoint with model
-        let endpoint = format!("{}:generateContent?key={}", 
+        let endpoint = format!(
+            "{}:generateContent?key={}",
             self.profile.endpoint.trim_end_matches('/'),
             self.profile.api_key
         );
@@ -416,7 +431,8 @@ impl LlmClient for GeminiClient {
         available_tools: Vec<ToolDefinition>,
         temperature: Option<f32>,
         max_tokens: Option<u32>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, LlmError>> + Send>>, LlmError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, LlmError>> + Send>>, LlmError>
+    {
         let response = self
             .send_message_with_tools(messages, available_tools, temperature, max_tokens)
             .await?;
@@ -434,4 +450,3 @@ impl LlmClient for GeminiClient {
         Ok(Box::pin(UnboundedReceiverStream::new(rx)))
     }
 }
-

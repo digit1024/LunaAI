@@ -1,0 +1,21 @@
+# Flutter & Dart artifacts
+.dart_tool/
+.packages
+.flutter-plugins
+.flutter-plugins-dependencies
+.metadata
+build/
+pubspec.lock
+
+# Platform specific build directories
+android/.gradle/
+android/local.properties
+android/app/build/
+ios/Pods/
+ios/Runner.xcodeproj/project.xcworkspace/
+macos/Pods/
+
+# Generated files
+**/*.generated.dart
+lib/generated/
+
