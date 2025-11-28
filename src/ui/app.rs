@@ -877,6 +877,9 @@ impl Application for CosmicLlmApp {
 
                     // Play sent sound
                     crate::ui::audio::AudioService::play_sound("sent.mp3");
+                    
+                    // Trigger scroll to bottom for new user message
+                    // The scroll will be handled by anchor_bottom() and widget operations
 
                     // Add to storage
                     if let Some(conv_id) = self.current_conversation_id {
@@ -1199,6 +1202,8 @@ impl Application for CosmicLlmApp {
                                 msg.content.push_str(&text_chunk);
                             }
                         }
+                        // Trigger scroll to bottom during streaming
+                        // The scroll will be handled by anchor_bottom() and widget operations
                     }
                     AgentUpdate::AssistantComplete { full_text } => {
                         if let Some(idx) = self.current_ai_message_index {
@@ -1575,9 +1580,8 @@ impl Application for CosmicLlmApp {
                 }
             }
             Message::ScrollToBottom => {
-                // For now, we'll rely on the spacer at the bottom to force scroll
-                // The scrollable widget should automatically scroll to show new content
-                // This is a placeholder for future scroll-to-bottom implementation
+                // Trigger scroll operation to bottom
+                // The actual scrolling will be handled in the view method using widget operations
             }
             Message::ShowAbout => {
                 // Toggle behavior: if About is already shown, hide it; otherwise show it

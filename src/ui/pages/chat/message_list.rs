@@ -251,5 +251,6 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
         .scrollbar_width(8)
         .scrollbar_padding(4)
         .id(app.scrollable_id.clone())
+        .anchor_bottom()
         .into()
 }
