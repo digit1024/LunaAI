@@ -1,4 +1,4 @@
-use crate::llm::ToolCall;
+use crate::llm::{Attachment, ToolCall};
 use crate::storage::conversation_storage::StoredMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -31,6 +31,8 @@ pub enum ClientCommand {
     SendMessage {
         conversation_id: Option<String>,
         content: String,
+        #[serde(default)]
+        attachment_ids: Option<Vec<String>>,
     },
 }
 
@@ -148,6 +150,8 @@ pub struct MessageView {
     pub tool_status: Option<String>,
     pub tool_params_json: Option<Value>,
     pub tool_result_json: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<Attachment>>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -170,6 +174,7 @@ impl From<&StoredMessage> for MessageView {
             tool_status: msg.tool_status.clone(),
             tool_params_json: msg.tool_params_json.clone(),
             tool_result_json: msg.tool_result_json.clone(),
+            attachments: None, // StoredMessage doesn't have attachments yet
         }
     }
 }

@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/config/server_config.dart';
+import '../data/http/file_client.dart';
 import '../data/ws/luna_ws_client.dart';
 import '../data/ws/ws_dto.dart';
 import '../services/foreground_guard.dart';
@@ -217,15 +220,21 @@ class AppController extends StateNotifier<AppState> {
   }
 
   Future<void> sendPrompt(String text) async {
-    if (text.trim().isEmpty) return;
+    if (text.trim().isEmpty && state.attachedFiles.isEmpty) return;
     final conversationId = state.activeConversation?.id;
+    final attachmentIds = state.attachedFiles.map((f) => f.fileId).toList();
     _appendUserMessage(text.trim());
     await guard.ensureStarted('Streaming reply');
     _waitingForResponse = true;
     wsClient.send(ClientCommand.sendMessage(
       conversationId: conversationId,
       content: text.trim(),
+      attachmentIds: attachmentIds.isNotEmpty ? attachmentIds : null,
     ));
+    // Clear attached files after sending
+    if (attachmentIds.isNotEmpty) {
+      state = state.copyWith(attachedFiles: []);
+    }
   }
 
   void startDialogMode() {
@@ -234,6 +243,45 @@ class AppController extends StateNotifier<AppState> {
       isDialogModeActive: true,
       dialogModeState: DialogModeState.listening,
     );
+  }
+
+  /// Attach a file from a File object
+  Future<void> attachFile(File file) async {
+    try {
+      final config = ref.read(serverConfigProvider);
+      final fileClient = FileClient(config);
+      final attachment = await fileClient.uploadFile(file);
+      state = state.copyWith(
+        attachedFiles: [...state.attachedFiles, attachment],
+      );
+    } catch (e) {
+      debugPrint('Error attaching file: $e');
+      state = state.copyWith(
+        error: 'Failed to attach file: ${e.toString()}',
+      );
+    }
+  }
+
+  /// Remove an attached file
+  Future<void> removeAttachedFile(String fileId) async {
+    try {
+      final config = ref.read(serverConfigProvider);
+      final fileClient = FileClient(config);
+      await fileClient.removeFile(fileId);
+      state = state.copyWith(
+        attachedFiles: state.attachedFiles
+            .where((f) => f.fileId != fileId)
+            .toList(),
+      );
+    } catch (e) {
+      debugPrint('Error removing file: $e');
+      // Still remove from UI even if server removal fails
+      state = state.copyWith(
+        attachedFiles: state.attachedFiles
+            .where((f) => f.fileId != fileId)
+            .toList(),
+      );
+    }
   }
 
   void stopDialogMode() {

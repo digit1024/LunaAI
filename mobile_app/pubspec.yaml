@@ -23,6 +23,8 @@ dependencies:
   flutter_tts: ^4.2.0
   speech_to_text: ^7.0.0
   wakelock_plus: ^1.2.1
+  http: ^1.2.0
+  file_picker: ^8.0.0+1
 
 dev_dependencies:
   flutter_test:

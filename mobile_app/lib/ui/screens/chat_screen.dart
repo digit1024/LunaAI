@@ -1,6 +1,9 @@
 import 'dart:async';
 
+import 'dart:io';
+
 import 'package:audioplayers/audioplayers.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -8,6 +11,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../application/app_controller.dart';
 import '../../application/app_state.dart';
 import '../../core/config/server_config.dart';
+import '../../data/http/file_client.dart';
 import '../../core/config/tts_preferences.dart';
 import '../../services/speech_service.dart';
 import '../../services/tts_service.dart';
@@ -461,9 +465,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
         _Composer(
           controller: _controller,
+          attachedFiles: state.attachedFiles,
           onSend: () {
             final text = _controller.text;
-            if (text.trim().isNotEmpty) {
+            if (text.trim().isNotEmpty || state.attachedFiles.isNotEmpty) {
               // Play sound immediately (preloaded + LOW_LATENCY mode = instant)
               _sentPlayer.stop();
               unawaited(_sentPlayer.play(AssetSource('audio/sent.mp3')));
@@ -473,6 +478,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           },
           onVoiceMode: () {
             controller.startDialogMode();
+          },
+          onAttachFile: () async {
+            final result = await FilePicker.platform.pickFiles(
+              type: FileType.any,
+              allowMultiple: false,
+            );
+            if (result != null && result.files.single.path != null) {
+              final file = File(result.files.single.path!);
+              await controller.attachFile(file);
+            }
+          },
+          onRemoveFile: (fileId) {
+            controller.removeAttachedFile(fileId);
           },
         ),
         LunaBottomBar(
@@ -613,11 +631,17 @@ class _Composer extends ConsumerWidget {
     required this.controller,
     required this.onSend,
     required this.onVoiceMode,
+    required this.attachedFiles,
+    required this.onAttachFile,
+    required this.onRemoveFile,
   });
 
   final TextEditingController controller;
   final VoidCallback onSend;
   final VoidCallback onVoiceMode;
+  final List<FileAttachment> attachedFiles;
+  final VoidCallback onAttachFile;
+  final Function(String) onRemoveFile;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -627,46 +651,81 @@ class _Composer extends ConsumerWidget {
 
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            child: TextField(
-              controller: this.controller,
-              enabled: !isStreaming,
-              minLines: 1,
-              maxLines: 5,
-              decoration: const InputDecoration(
-                hintText: '✏ Message…',
-                border: OutlineInputBorder(),
+          // Display attached files
+          if (attachedFiles.isNotEmpty)
+            Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: attachedFiles.map<Widget>((attachment) {
+                  return Chip(
+                    label: Text(
+                      attachment.fileName,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    avatar: const Icon(
+                      Icons.attach_file,
+                      size: 18,
+                    ),
+                    deleteIcon: const Icon(Icons.close, size: 18),
+                    onDeleted: () => onRemoveFile(attachment.fileId),
+                  );
+                }).toList(),
               ),
             ),
+          Row(
+            children: [
+              // Attach file button
+              if (!isStreaming && !state.isDialogModeActive)
+                IconButton(
+                  onPressed: onAttachFile,
+                  icon: const Icon(Icons.attach_file),
+                  tooltip: 'Attach file',
+                ),
+              Expanded(
+                child: TextField(
+                  controller: this.controller,
+                  enabled: !isStreaming,
+                  minLines: 1,
+                  maxLines: 5,
+                  decoration: const InputDecoration(
+                    hintText: '✏ Message…',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              if (!isStreaming && !state.isDialogModeActive)
+                IconButton(
+                  onPressed: onVoiceMode,
+                  icon: const Icon(Icons.mic),
+                  tooltip: 'Voice mode',
+                ),
+              const SizedBox(width: 8),
+              if (isStreaming)
+                FilledButton.icon(
+                  onPressed: () {
+                    controller.stopStreaming(
+                      conversationId: state.activeConversation?.id,
+                    );
+                  },
+                  icon: const Icon(Icons.stop),
+                  label: const Text('Stop'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Theme.of(context).colorScheme.error,
+                  ),
+                )
+              else
+                FilledButton(
+                  onPressed: onSend,
+                  child: const Text('⏎ Send'),
+                ),
+            ],
           ),
-          const SizedBox(width: 8),
-          if (!isStreaming && !state.isDialogModeActive)
-            IconButton(
-              onPressed: onVoiceMode,
-              icon: const Icon(Icons.mic),
-              tooltip: 'Voice mode',
-            ),
-          const SizedBox(width: 8),
-          if (isStreaming)
-            FilledButton.icon(
-              onPressed: () {
-                controller.stopStreaming(
-                  conversationId: state.activeConversation?.id,
-                );
-              },
-              icon: const Icon(Icons.stop),
-              label: const Text('Stop'),
-              style: FilledButton.styleFrom(
-                backgroundColor: Theme.of(context).colorScheme.error,
-              ),
-            )
-          else
-            FilledButton(
-              onPressed: onSend,
-              child: const Text('⏎ Send'),
-            ),
         ],
       ),
     );

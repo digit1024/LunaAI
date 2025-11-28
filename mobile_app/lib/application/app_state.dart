@@ -1,5 +1,6 @@
 import 'package:equatable/equatable.dart';
 
+import '../data/http/file_client.dart';
 import '../data/ws/ws_dto.dart';
 
 enum ConnectionStatus { connecting, online, error }
@@ -152,6 +153,7 @@ class AppState extends Equatable {
       connectionAttempt; // Current attempt (1, 2, 3) or 0 if not connecting
   final bool isDialogModeActive;
   final DialogModeState dialogModeState;
+  final List<FileAttachment> attachedFiles;
 
   const AppState({
     required this.connection,
@@ -169,6 +171,7 @@ class AppState extends Equatable {
     required this.connectionAttempt,
     required this.isDialogModeActive,
     required this.dialogModeState,
+    required this.attachedFiles,
   });
 
   factory AppState.initial() => const AppState(
@@ -187,6 +190,7 @@ class AppState extends Equatable {
         connectionAttempt: 0,
         isDialogModeActive: false,
         dialogModeState: DialogModeState.listening,
+        attachedFiles: [],
       );
 
   AppState copyWith({
@@ -205,6 +209,7 @@ class AppState extends Equatable {
     int? connectionAttempt,
     bool? isDialogModeActive,
     DialogModeState? dialogModeState,
+    List<FileAttachment>? attachedFiles,
   }) {
     return AppState(
       connection: connection ?? this.connection,
@@ -222,6 +227,7 @@ class AppState extends Equatable {
       connectionAttempt: connectionAttempt ?? this.connectionAttempt,
       isDialogModeActive: isDialogModeActive ?? this.isDialogModeActive,
       dialogModeState: dialogModeState ?? this.dialogModeState,
+      attachedFiles: attachedFiles ?? this.attachedFiles,
     );
   }
 
@@ -242,5 +248,6 @@ class AppState extends Equatable {
         connectionAttempt,
         isDialogModeActive,
         dialogModeState,
+        attachedFiles,
       ];
 }
