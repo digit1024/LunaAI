@@ -104,6 +104,9 @@ i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester
 # SQLite for storage
 rusqlite = { version = "0.37", features = ["bundled", "chrono", "uuid"] }
 tokio-stream = "0.1"
+# Audio playback
+rodio = "0.17"
+symphonia = { version = "0.5", features = ["mp3"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

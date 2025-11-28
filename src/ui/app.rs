@@ -84,6 +84,8 @@ pub enum Message {
     // Inline error handling
     InlineError(String),
     DismissError,
+    // Typing indicator animation tick
+    TypingIndicatorTick(cosmic::iced::time::Instant),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +198,9 @@ pub struct CosmicLlmApp {
     // Search functionality
     pub search_query: String,
     pub search_results: Vec<crate::storage::sqlite_storage_simple::Snippet>,
+    // Typing indicator animation state
+    pub typing_indicator_progress: f32,
+    pub typing_indicator_start_time: Option<cosmic::iced::time::Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -344,6 +349,8 @@ impl CosmicLlmApp {
             pending_llm_messages: None,
             search_query: String::new(),
             search_results: Vec::new(),
+            typing_indicator_progress: 0.0,
+            typing_indicator_start_time: None,
         }
     }
 
@@ -784,12 +791,25 @@ impl Application for CosmicLlmApp {
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
+        use cosmic::iced::time;
+        use cosmic::iced_futures::Subscription;
+        
         // Create a subscription for streaming LLM responses
-        if self.is_streaming {
+        let streaming_sub = if self.is_streaming {
             self.create_streaming_subscription(self.current_streaming_id)
         } else {
             Subscription::none()
-        }
+        };
+        
+        // Create a timer subscription for typing indicator animation
+        let animation_sub = if self.is_streaming {
+            time::every(time::Duration::from_millis(50))
+                .map(|instant| Message::TypingIndicatorTick(instant))
+        } else {
+            Subscription::none()
+        };
+        
+        Subscription::batch(vec![streaming_sub, animation_sub])
     }
 
     fn update(&mut self, message: Self::Message) -> app::Task<Self::Message> {
@@ -854,6 +874,9 @@ impl Application for CosmicLlmApp {
                         is_error: false,
                     };
                     self.messages.push(user_msg.clone());
+
+                    // Play sent sound
+                    crate::ui::audio::AudioService::play_sound("sent.mp3");
 
                     // Add to storage
                     if let Some(conv_id) = self.current_conversation_id {
@@ -976,6 +999,12 @@ impl Application for CosmicLlmApp {
                     let streaming_id = uuid::Uuid::new_v4();
                     self.current_streaming_id = Some(streaming_id);
                     self.is_streaming = true;
+                    // Initialize typing indicator animation
+                    self.typing_indicator_start_time = Some(cosmic::iced::time::Instant::now());
+                    self.typing_indicator_progress = 0.0;
+                    
+                    // Play typing sound
+                    crate::ui::audio::AudioService::play_sound("typing.mp3");
 
                     // Store the last user message for retry functionality
                     self.last_user_message = Some(input_text.clone());
@@ -990,6 +1019,8 @@ impl Application for CosmicLlmApp {
                     self.is_streaming = false;
                     self.current_streaming_id = None;
                     self.pending_llm_messages = None; // Clear prepared messages
+                    self.typing_indicator_start_time = None;
+                    self.typing_indicator_progress = 0.0;
 
                     // Remove any incomplete assistant message
                     if let Some(index) = self.current_ai_message_index {
@@ -1006,6 +1037,8 @@ impl Application for CosmicLlmApp {
                     if self.is_streaming {
                         self.is_streaming = false;
                         self.current_streaming_id = None;
+                        self.typing_indicator_start_time = None;
+                        self.typing_indicator_progress = 0.0;
                     }
 
                     // Remove the last assistant message if it exists
@@ -1331,6 +1364,9 @@ impl Application for CosmicLlmApp {
                                 anchor_index: anchor,
                                 tool_call: entry,
                             });
+                            
+                            // Play tool completion sound
+                            crate::ui::audio::AudioService::play_sound("tool.mp3");
                         }
 
                         if let Some(conv_id) = self.current_conversation_id {
@@ -1455,9 +1491,14 @@ impl Application for CosmicLlmApp {
                         self.current_streaming_id = None;
                         self.current_ai_message_index = None;
                         self.pending_llm_messages = None;
+                        self.typing_indicator_start_time = None;
+                        self.typing_indicator_progress = 0.0;
                         self.active_tool_calls.clear();
                         self.pending_tool_calls_for_history.clear();
                         self.tool_runtime_context.clear();
+                        
+                        // Play completion sound
+                        crate::ui::audio::AudioService::play_sound("done.mp3");
                     }
                     AgentUpdate::ModelError { error } => {
                         // Stop streaming and show error message
@@ -1465,6 +1506,8 @@ impl Application for CosmicLlmApp {
                         self.current_streaming_id = None;
                         self.current_ai_message_index = None;
                         self.pending_llm_messages = None;
+                        self.typing_indicator_start_time = None;
+                        self.typing_indicator_progress = 0.0;
                         self.active_tool_calls.clear();
                         self.pending_tool_calls_for_history.clear();
                         self.tool_runtime_context.clear();
@@ -1763,6 +1806,13 @@ impl Application for CosmicLlmApp {
             }
             Message::DismissError => {
                 self.current_error = None;
+            }
+            Message::TypingIndicatorTick(instant) => {
+                if let Some(start_time) = self.typing_indicator_start_time {
+                    let elapsed = instant.duration_since(start_time);
+                    // Update animation progress (cycles every 1.2 seconds)
+                    self.typing_indicator_progress = (elapsed.as_secs_f32() / 1.2) % 1.0;
+                }
             }
         }
 

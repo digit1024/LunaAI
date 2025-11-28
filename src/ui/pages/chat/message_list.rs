@@ -52,7 +52,7 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                 widget::container(
                     cosmic::widget::text(&msg.content)
                         .size(14)
-                        .class(cosmic::style::Text::Color(cosmic::iced::Color::WHITE)),
+                        .class(cosmic::style::Text::Color(cosmic::iced::Color::BLACK)),
                 )
                 .width(Length::Fill)
                 .into()
@@ -120,7 +120,7 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
         })
         .padding(Padding::from([12, 16]))
         .class(if msg.is_user {
-            cosmic::style::Container::Primary
+            cosmic::style::Container::Card
         } else if msg.is_error {
             cosmic::style::Container::Card
         } else {
@@ -204,15 +204,42 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                         .push(cosmic::widget::Space::with_width(Length::Fill));
                     column = column.push(tool_call_row);
                 }
-                // If there are no active tool calls yet, but we're streaming, show a spinner row
+                // If there are no active tool calls yet, but we're streaming, show typing indicator
                 if app.active_tool_calls.is_empty() && app.is_streaming {
-                    let spinner = cosmic::widget::text("Working…").size(12);
+                    use crate::ui::widgets::typing_indicator;
+                    let indicator_widget = cosmic::widget::container(
+                        typing_indicator(app.typing_indicator_progress)
+                            .map(|_| Message::ScrollToBottom)
+                    )
+                    .width(Length::FillPortion(7)); // 70% width like AI messages
+                    // AI messages: left-aligned
                     let row = cosmic::widget::row::with_capacity(2)
-                        .push(spinner)
-                        .push(cosmic::widget::Space::with_width(Length::Fill));
+                        .push(indicator_widget)
+                        .push(cosmic::widget::Space::with_width(Length::FillPortion(3)));
                     column = column.push(row);
                 }
             }
+        }
+    }
+
+    // Show typing indicator at bottom if streaming and no messages yet, or after all messages
+    if app.is_streaming && app.active_tool_calls.is_empty() {
+        // Check if we already added it inside the loop
+        let already_shown = app.current_ai_message_index.is_some() && 
+            app.current_ai_message_index.map(|idx| idx < app.messages.len()).unwrap_or(false);
+        
+        if !already_shown {
+            use crate::ui::widgets::typing_indicator;
+            let indicator_widget = cosmic::widget::container(
+                typing_indicator(app.typing_indicator_progress)
+                    .map(|_| Message::ScrollToBottom)
+            )
+            .width(Length::FillPortion(7)); // 70% width like AI messages
+            // AI messages: left-aligned
+            let row = cosmic::widget::row::with_capacity(2)
+                .push(indicator_widget)
+                .push(cosmic::widget::Space::with_width(Length::FillPortion(3)));
+            column = column.push(row);
         }
     }
 

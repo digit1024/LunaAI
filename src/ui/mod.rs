@@ -1,4 +1,5 @@
 pub mod app;
+pub mod audio;
 pub mod context;
 pub mod dialogs;
 pub mod icons;
