@@ -49,18 +49,65 @@ pub fn create_attachment(file_path: &str) -> Result<Attachment> {
     // Determine MIME type from extension
     let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
     let mime_type = get_mime_type_from_extension(extension);
+    let file_type = FileType::from_extension(extension);
 
-    // Read content for text files
-    let content = if FileType::from_extension(extension) == FileType::Text {
-        Some(fs::read_to_string(path)?)
-    } else {
-        None
+    // Extract content based on file type
+    let (content, final_mime_type, final_file_name) = match file_type {
+        FileType::Text => {
+            // For text files, read content directly
+            let text_content = fs::read_to_string(path).ok();
+            (text_content, mime_type, file_name)
+        }
+        FileType::Document => {
+            // For document files (PDF, DOCX, XLSX, etc.), convert to markdown
+            match markdownify::convert(path) {
+                Ok(markdown_content) => {
+                    eprintln!(
+                        "✅ Converted {} to markdown ({} bytes)",
+                        file_name,
+                        markdown_content.len()
+                    );
+                    // Update file name to indicate it's now markdown
+                    let markdown_file_name = if let Some(base_name) = path
+                        .file_stem()
+                        .and_then(|n| n.to_str())
+                    {
+                        format!("{}.md", base_name)
+                    } else {
+                        format!("{}.md", file_name)
+                    };
+                    (
+                        Some(markdown_content),
+                        "text/markdown".to_string(),
+                        markdown_file_name,
+                    )
+                }
+                Err(e) => {
+                    eprintln!(
+                        "⚠️ Failed to convert {} to markdown: {}. Storing without content.",
+                        file_name,
+                        e
+                    );
+                    // Fall back to storing original file without content
+                    (None, mime_type, file_name)
+                }
+            }
+        }
+        FileType::Image => {
+            // Images are handled separately by LLM providers
+            (None, mime_type, file_name)
+        }
+        FileType::Unsupported => {
+            // Unsupported files - try to read as text
+            let text_content = fs::read_to_string(path).ok();
+            (text_content, mime_type, file_name)
+        }
     };
 
     Ok(Attachment {
         file_path: file_path.to_string(),
-        file_name,
-        mime_type,
+        file_name: final_file_name,
+        mime_type: final_mime_type,
         file_size,
         content,
     })

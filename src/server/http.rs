@@ -227,23 +227,111 @@ pub async fn attach_file_handler(
         mime_type.clone()
     };
 
-    // Determine if this is a text file based on extension (same logic as desktop app)
-    let content = if file_utils::FileType::from_extension(extension) == file_utils::FileType::Text {
-        String::from_utf8(data.clone()).ok()
-    } else {
-        None
-    };
-
-    // Save file to temp directory
+    // Save file to temp directory first - preserve original extension for markdownify detection
     let temp_dir = std::env::temp_dir().join("cosmic_llm_attachments");
     std::fs::create_dir_all(&temp_dir).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let temp_file_path = temp_dir.join(&file_id);
+    // Use file_id with original extension so markdownify can detect file type
+    let temp_file_name = if extension.is_empty() {
+        file_id.clone()
+    } else {
+        format!("{}.{}", file_id, extension)
+    };
+    let temp_file_path = temp_dir.join(&temp_file_name);
     std::fs::write(&temp_file_path, &data).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    // Verify file was written correctly
+    let written_size = std::fs::metadata(&temp_file_path)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .len();
+    if written_size != file_size {
+        tracing::warn!(
+            "File size mismatch: expected {} bytes, wrote {} bytes",
+            file_size,
+            written_size
+        );
+    }
+
+    // Determine file type and extract content
+    let file_type = file_utils::FileType::from_extension(extension);
+    tracing::info!(
+        "Processing file upload: name={}, extension={}, detected_type={:?}, size={} bytes",
+        file_name,
+        extension,
+        file_type,
+        file_size
+    );
+    let (content, final_file_name, final_mime_type_for_content) = match file_type {
+        file_utils::FileType::Text => {
+            // For text files, read content directly
+            let text_content = String::from_utf8(data.clone()).ok();
+            (text_content, file_name.clone(), final_mime_type.clone())
+        }
+        file_utils::FileType::Document => {
+            // For document files (PDF, DOCX, XLSX, etc.), convert to markdown
+            tracing::info!(
+                "Attempting to convert document {} (extension: {}) to markdown",
+                file_name,
+                extension
+            );
+            // Verify file exists and is readable before conversion
+            if !temp_file_path.exists() {
+                tracing::error!("Temp file {} does not exist before conversion", temp_file_path.display());
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+            // markdownify::convert expects &Path
+            match markdownify::convert(temp_file_path.as_path()) {
+                Ok(markdown_content) => {
+                    tracing::info!(
+                        "Successfully converted {} to markdown ({} bytes)",
+                        file_name,
+                        markdown_content.len()
+                    );
+                    // Update file name to indicate it's now markdown
+                    let markdown_file_name = if let Some(base_name) = StdPath::new(&file_name)
+                        .file_stem()
+                        .and_then(|n| n.to_str())
+                    {
+                        format!("{}.md", base_name)
+                    } else {
+                        format!("{}.md", file_name)
+                    };
+                    (
+                        Some(markdown_content),
+                        markdown_file_name,
+                        "text/markdown".to_string(),
+                    )
+                }
+                Err(e) => {
+                    // Log detailed error information
+                    tracing::error!(
+                        "Failed to convert {} to markdown: {}. This may be due to PDF format compatibility issues.",
+                        file_name,
+                        e
+                    );
+                    // Try to get more error context
+                    if let Some(source_err) = e.source() {
+                        tracing::error!("Underlying error: {}", source_err);
+                    }
+                    // Fall back to storing original file without content
+                    (None, file_name.clone(), final_mime_type.clone())
+                }
+            }
+        }
+        file_utils::FileType::Image => {
+            // Images are handled separately by LLM providers
+            (None, file_name.clone(), final_mime_type.clone())
+        }
+        file_utils::FileType::Unsupported => {
+            // Unsupported files - try to read as text
+            let text_content = String::from_utf8(data.clone()).ok();
+            (text_content, file_name.clone(), final_mime_type.clone())
+        }
+    };
 
     let attachment = Attachment {
         file_path: temp_file_path.to_string_lossy().to_string(),
-        file_name: file_name.clone(),
-        mime_type: final_mime_type,
+        file_name: final_file_name,
+        mime_type: final_mime_type_for_content,
         file_size,
         content,
     };
