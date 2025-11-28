@@ -8,21 +8,41 @@ enum ActivePane { setup, connecting, conversations, chat, settings }
 
 enum DialogModeState { listening, processing, speaking }
 
+/// Bubble types for simplified display logic
+enum BubbleType {
+  user,        // User message
+  assistant,   // Assistant text content
+  toolRequest, // Tool call with parameters (when tool starts)
+  toolResult,  // Tool result (when tool completes)
+}
+
 class ChatMessage extends Equatable {
   final String id;
   final String role;
   final String content;
   final bool isStreaming;
   final DateTime timestamp;
-  final ToolCallChip? toolChip;
+  final BubbleType bubbleType;
+  final String? toolCallId;   // For tool bubbles
+  final String? toolName;     // For tool bubbles
+  final String? toolStatus;   // planned, running, done, error
+  final dynamic toolParams;   // For toolRequest bubbles
+  final dynamic toolResult;   // For toolResult bubbles
+  final String? toolError;    // For error state
 
   const ChatMessage({
     required this.id,
     required this.role,
     required this.content,
     required this.timestamp,
+    required this.bubbleType,
     this.isStreaming = false,
-    this.toolChip,
+    this.toolCallId,
+    this.toolName,
+    this.toolStatus,
+    this.toolParams,
+    this.toolResult,
+    this.toolError,
   });
 
   ChatMessage copyWith({
@@ -31,23 +51,51 @@ class ChatMessage extends Equatable {
     String? content,
     bool? isStreaming,
     DateTime? timestamp,
-    ToolCallChip? toolChip,
+    BubbleType? bubbleType,
+    String? toolCallId,
+    String? toolName,
+    String? toolStatus,
+    Object? toolParams = _unset,
+    Object? toolResult = _unset,
+    Object? toolError = _unset,
   }) {
     return ChatMessage(
       id: id ?? this.id,
       role: role ?? this.role,
       content: content ?? this.content,
       timestamp: timestamp ?? this.timestamp,
+      bubbleType: bubbleType ?? this.bubbleType,
       isStreaming: isStreaming ?? this.isStreaming,
-      toolChip: toolChip ?? this.toolChip,
+      toolCallId: toolCallId ?? this.toolCallId,
+      toolName: toolName ?? this.toolName,
+      toolStatus: toolStatus ?? this.toolStatus,
+      toolParams: identical(toolParams, _unset) ? this.toolParams : toolParams,
+      toolResult: identical(toolResult, _unset) ? this.toolResult : toolResult,
+      toolError: identical(toolError, _unset) ? this.toolError : toolError as String?,
     );
   }
 
+  static const Object _unset = Object();
+
   @override
-  List<Object?> get props =>
-      [id, role, content, isStreaming, timestamp, toolChip];
+  List<Object?> get props => [
+        id,
+        role,
+        content,
+        isStreaming,
+        timestamp,
+        bubbleType,
+        toolCallId,
+        toolName,
+        toolStatus,
+        toolParams,
+        toolResult,
+        toolError,
+      ];
 }
 
+/// Legacy ToolCallChip - kept for backwards compatibility with loaded messages
+/// New code should use ChatMessage with BubbleType.toolRequest/toolResult
 class ToolCallChip extends Equatable {
   static const Object _unset = Object();
 

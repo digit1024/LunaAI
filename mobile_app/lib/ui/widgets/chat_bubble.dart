@@ -6,52 +6,104 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 
 import '../../application/app_state.dart';
 
+/// Main chat bubble widget - routes to appropriate bubble type
 class ChatBubble extends StatelessWidget {
   const ChatBubble({
     super.key,
     required this.message,
-    required this.isUser,
   });
 
   final ChatMessage message;
-  final bool isUser;
+
+  @override
+  Widget build(BuildContext context) {
+    switch (message.bubbleType) {
+      case BubbleType.user:
+        return _UserBubble(message: message);
+      case BubbleType.assistant:
+        return _AssistantBubble(message: message);
+      case BubbleType.toolRequest:
+        return _ToolRequestBubble(message: message);
+      case BubbleType.toolResult:
+        return _ToolResultBubble(message: message);
+    }
+  }
+}
+
+/// User message bubble (right-aligned)
+class _UserBubble extends StatelessWidget {
+  const _UserBubble({required this.message});
+
+  final ChatMessage message;
 
   @override
   Widget build(BuildContext context) {
     final maxWidth = MediaQuery.of(context).size.width * 0.7;
     final colorScheme = Theme.of(context).colorScheme;
-    final bubbleColor =
-        isUser ? colorScheme.primaryContainer : colorScheme.surfaceVariant;
-    final alignment =
-        isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start;
 
     return Align(
-      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      alignment: Alignment.centerRight,
       child: ConstrainedBox(
         constraints: BoxConstraints(maxWidth: maxWidth),
         child: GestureDetector(
-          onLongPress: () {
-            Clipboard.setData(ClipboardData(text: message.content));
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Message copied to clipboard'),
-                duration: Duration(seconds: 2),
-              ),
-            );
-          },
+          onLongPress: () => _copyToClipboard(context, message.content),
           child: Card(
-            color: bubbleColor,
+            color: colorScheme.primaryContainer,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(18),
             ),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               child: Column(
-                crossAxisAlignment: alignment,
+                crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  if (message.toolChip != null)
-                    _ToolChip(chip: message.toolChip!),
-                  if (isUser || message.isStreaming)
+                  SelectableText(
+                    message.content,
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                  const SizedBox(height: 6),
+                  _TimestampRow(
+                    timestamp: message.timestamp,
+                    onCopy: () => _copyToClipboard(context, message.content),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Assistant message bubble (left-aligned)
+class _AssistantBubble extends StatelessWidget {
+  const _AssistantBubble({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final maxWidth = MediaQuery.of(context).size.width * 0.7;
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: maxWidth),
+        child: GestureDetector(
+          onLongPress: () => _copyToClipboard(context, message.content),
+          child: Card(
+            color: colorScheme.surfaceContainerHighest,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (message.isStreaming)
                     SelectableText(
                       message.content,
                       style: Theme.of(context).textTheme.bodyMedium,
@@ -65,33 +117,9 @@ class ChatBubble extends StatelessWidget {
                       ),
                     ),
                   const SizedBox(height: 6),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        _formatTimestamp(message.timestamp),
-                        style: Theme.of(context)
-                            .textTheme
-                            .labelSmall
-                            ?.copyWith(color: colorScheme.onSurfaceVariant),
-                      ),
-                      const SizedBox(width: 8),
-                      IconButton(
-                        icon: const Icon(Icons.copy, size: 16),
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(),
-                        tooltip: 'Copy message',
-                        onPressed: () {
-                          Clipboard.setData(ClipboardData(text: message.content));
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Message copied to clipboard'),
-                              duration: Duration(seconds: 2),
-                            ),
-                          );
-                        },
-                      ),
-                    ],
+                  _TimestampRow(
+                    timestamp: message.timestamp,
+                    onCopy: () => _copyToClipboard(context, message.content),
                   ),
                 ],
               ),
@@ -101,32 +129,16 @@ class ChatBubble extends StatelessWidget {
       ),
     );
   }
-
-  String _formatTimestamp(DateTime timestamp) {
-    final timeOfDay = TimeOfDay.fromDateTime(timestamp);
-    final minutes = timeOfDay.minute.toString().padLeft(2, '0');
-    final hours = timeOfDay.hour.toString().padLeft(2, '0');
-    return '$hours:$minutes';
-  }
 }
 
-class _ToolChip extends StatelessWidget {
-  const _ToolChip({required this.chip});
+/// Tool request bubble - shows tool name, status, and parameters
+class _ToolRequestBubble extends StatelessWidget {
+  const _ToolRequestBubble({required this.message});
 
-  final ToolCallChip chip;
-
-  String? _stringify(dynamic data) {
-    if (data == null) return null;
-    if (data is String) return data;
-    try {
-      return const JsonEncoder.withIndent('  ').convert(data);
-    } catch (_) {
-      return data.toString();
-    }
-  }
+  final ChatMessage message;
 
   Color _statusColor(BuildContext context) {
-    switch (chip.status) {
+    switch (message.toolStatus) {
       case 'done':
         return Colors.green;
       case 'error':
@@ -138,83 +150,298 @@ class _ToolChip extends StatelessWidget {
     }
   }
 
+  IconData _statusIcon() {
+    switch (message.toolStatus) {
+      case 'done':
+        return Icons.check_circle;
+      case 'error':
+        return Icons.error;
+      case 'running':
+        return Icons.hourglass_top;
+      default:
+        return Icons.schedule;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final paramsText = _stringify(chip.params);
-    final resultText = _stringify(chip.result);
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('🧰 ${chip.name}'),
-              const SizedBox(width: 6),
-              Container(
-                decoration: BoxDecoration(
-                  color: _statusColor(context).withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(12),
+    final colorScheme = Theme.of(context).colorScheme;
+    final paramsText = _stringify(message.toolParams);
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * 0.85,
+        ),
+        child: Card(
+          color: colorScheme.tertiaryContainer.withOpacity(0.6),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+            side: BorderSide(
+              color: _statusColor(context).withOpacity(0.4),
+              width: 1,
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Header row
+                Row(
+                  children: [
+                    Icon(
+                      Icons.build_circle,
+                      size: 20,
+                      color: colorScheme.tertiary,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '📤 ${message.toolName ?? 'Tool'}',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                      ),
+                    ),
+                    _StatusChip(
+                      status: message.toolStatus ?? 'planned',
+                      color: _statusColor(context),
+                      icon: _statusIcon(),
+                    ),
+                  ],
                 ),
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                child: Text(
-                  chip.status.toUpperCase(),
+                
+                // Parameters (collapsible)
+                if (paramsText != null && paramsText.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  _CollapsiblePayload(
+                    icon: Icons.tune,
+                    label: 'Parameters',
+                    payload: paramsText,
+                    initiallyExpanded: message.toolStatus == 'running',
+                  ),
+                ],
+                
+                const SizedBox(height: 6),
+                Text(
+                  _formatTimestamp(message.timestamp),
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: _statusColor(context),
-                        fontWeight: FontWeight.bold,
+                        color: colorScheme.onSurfaceVariant,
                       ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-          if (chip.error?.isNotEmpty == true) ...[
-            const SizedBox(height: 6),
-            Text(
-              chip.error!,
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
-                  ?.copyWith(color: Theme.of(context).colorScheme.error),
+        ),
+      ),
+    );
+  }
+}
+
+/// Tool result bubble - shows tool result or error
+class _ToolResultBubble extends StatelessWidget {
+  const _ToolResultBubble({required this.message});
+
+  final ChatMessage message;
+
+  bool get isError => message.toolStatus == 'error' || message.toolError != null;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final resultText = _stringify(message.toolResult);
+    final errorText = message.toolError;
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * 0.85,
+        ),
+        child: Card(
+          color: isError
+              ? colorScheme.errorContainer.withOpacity(0.6)
+              : colorScheme.secondaryContainer.withOpacity(0.6),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+            side: BorderSide(
+              color: isError
+                  ? colorScheme.error.withOpacity(0.4)
+                  : Colors.green.withOpacity(0.4),
+              width: 1,
             ),
-          ],
-          if (paramsText != null && paramsText.isNotEmpty) ...[
-            const SizedBox(height: 6),
-            _CollapsiblePayload(
-              icon: Icons.tune,
-              label: 'Parameters',
-              payload: paramsText,
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Header row
+                Row(
+                  children: [
+                    Icon(
+                      isError ? Icons.error : Icons.check_circle,
+                      size: 20,
+                      color: isError ? colorScheme.error : Colors.green,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '📥 ${message.toolName ?? 'Tool'} Result',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                      ),
+                    ),
+                    _StatusChip(
+                      status: isError ? 'ERROR' : 'DONE',
+                      color: isError ? colorScheme.error : Colors.green,
+                      icon: isError ? Icons.close : Icons.check,
+                    ),
+                  ],
+                ),
+                
+                // Error message
+                if (errorText != null && errorText.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: colorScheme.error.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.warning, size: 16, color: colorScheme.error),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            errorText,
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                  color: colorScheme.error,
+                                ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                
+                // Result (collapsible)
+                if (resultText != null && resultText.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  _CollapsiblePayload(
+                    icon: Icons.summarize,
+                    label: 'Result',
+                    payload: resultText,
+                    initiallyExpanded: false,
+                  ),
+                ],
+                
+                const SizedBox(height: 6),
+                Text(
+                  _formatTimestamp(message.timestamp),
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                ),
+              ],
             ),
-          ],
-          if (resultText != null && resultText.isNotEmpty) ...[
-            const SizedBox(height: 6),
-            _CollapsiblePayload(
-              icon: Icons.summarize,
-              label: 'Result',
-              payload: resultText,
-            ),
-          ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Status chip widget
+class _StatusChip extends StatelessWidget {
+  const _StatusChip({
+    required this.status,
+    required this.color,
+    required this.icon,
+  });
+
+  final String status;
+  final Color color;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.2),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 4),
+          Text(
+            status.toUpperCase(),
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: color,
+                  fontWeight: FontWeight.bold,
+                ),
+          ),
         ],
       ),
     );
   }
 }
 
+/// Timestamp row with copy button
+class _TimestampRow extends StatelessWidget {
+  const _TimestampRow({
+    required this.timestamp,
+    required this.onCopy,
+  });
+
+  final DateTime timestamp;
+  final VoidCallback onCopy;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          _formatTimestamp(timestamp),
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+        ),
+        const SizedBox(width: 8),
+        IconButton(
+          icon: const Icon(Icons.copy, size: 16),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(),
+          tooltip: 'Copy message',
+          onPressed: onCopy,
+        ),
+      ],
+    );
+  }
+}
+
+/// Collapsible payload section for params/results
 class _CollapsiblePayload extends StatelessWidget {
   const _CollapsiblePayload({
     required this.icon,
     required this.label,
     required this.payload,
+    this.initiallyExpanded = false,
   });
 
   final IconData icon;
   final String label;
   final String payload;
+  final bool initiallyExpanded;
 
   @override
   Widget build(BuildContext context) {
@@ -234,6 +461,7 @@ class _CollapsiblePayload extends StatelessWidget {
         ),
         child: ExpansionTile(
           dense: true,
+          initiallyExpanded: initiallyExpanded,
           tilePadding: const EdgeInsets.symmetric(horizontal: 12),
           childrenPadding:
               const EdgeInsets.only(left: 16, right: 12, bottom: 12),
@@ -248,7 +476,7 @@ class _CollapsiblePayload extends StatelessWidget {
               width: double.infinity,
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: colorScheme.surfaceVariant.withOpacity(0.4),
+                color: colorScheme.surfaceContainerHighest.withOpacity(0.4),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: SelectableText(
@@ -263,4 +491,32 @@ class _CollapsiblePayload extends StatelessWidget {
       ),
     );
   }
+}
+
+// Helper functions
+String _formatTimestamp(DateTime timestamp) {
+  final timeOfDay = TimeOfDay.fromDateTime(timestamp);
+  final minutes = timeOfDay.minute.toString().padLeft(2, '0');
+  final hours = timeOfDay.hour.toString().padLeft(2, '0');
+  return '$hours:$minutes';
+}
+
+String? _stringify(dynamic data) {
+  if (data == null) return null;
+  if (data is String) return data;
+  try {
+    return const JsonEncoder.withIndent('  ').convert(data);
+  } catch (_) {
+    return data.toString();
+  }
+}
+
+void _copyToClipboard(BuildContext context, String text) {
+  Clipboard.setData(ClipboardData(text: text));
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(
+      content: Text('Message copied to clipboard'),
+      duration: Duration(seconds: 2),
+    ),
+  );
 }

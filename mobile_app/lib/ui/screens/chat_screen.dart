@@ -77,12 +77,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _toolCompletionSubscription = ref.listenManual<List<ChatMessage>>(
       appControllerProvider.select((state) => state.chatMessages),
       (previous, next) {
-        // Check for newly completed tools
+        // Check for newly completed tools (toolResult bubbles)
         for (final message in next) {
-          if (message.toolChip != null && 
-              message.toolChip!.status == 'done' &&
-              !_completedToolIds.contains(message.toolChip!.id)) {
-            _completedToolIds.add(message.toolChip!.id);
+          if (message.bubbleType == BubbleType.toolResult && 
+              message.toolStatus == 'done' &&
+              message.toolCallId != null &&
+              !_completedToolIds.contains(message.toolCallId!)) {
+            _completedToolIds.add(message.toolCallId!);
             _toolPlayer.stop();
             unawaited(_toolPlayer.play(AssetSource('audio/tool.mp3')));
           }
@@ -162,12 +163,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     // Find the last assistant message
     final lastAssistant = next.lastWhere(
-      (m) => m.role == 'assistant' && !m.isStreaming,
+      (m) => m.bubbleType == BubbleType.assistant && !m.isStreaming,
       orElse: () => ChatMessage(
         id: '',
         role: 'assistant',
         content: '',
         timestamp: DateTime.now(),
+        bubbleType: BubbleType.assistant,
       ),
     );
 
@@ -189,12 +191,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     // Get the last assistant message
     final lastAssistant = state.chatMessages.lastWhere(
-      (m) => m.role == 'assistant' && !m.isStreaming,
+      (m) => m.bubbleType == BubbleType.assistant && !m.isStreaming,
       orElse: () => ChatMessage(
         id: '',
         role: 'assistant',
         content: '',
         timestamp: DateTime.now(),
+        bubbleType: BubbleType.assistant,
       ),
     );
 
@@ -428,13 +431,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   itemBuilder: (context, index) {
                     if (index < state.chatMessages.length) {
                       final message = state.chatMessages[index];
-                      final isUser = message.role == 'user';
                       return Padding(
                         padding: const EdgeInsets.symmetric(vertical: 6),
-                        child: ChatBubble(
-                          message: message,
-                          isUser: isUser,
-                        ),
+                        child: ChatBubble(message: message),
                       );
                     }
                     return const Padding(

@@ -61,6 +61,10 @@ class AppController extends StateNotifier<AppState> {
   bool _initialized = false;
   bool _waitingForResponse = false;
   bool _connecting = false;
+  
+  /// Tracks current assistant bubble ID for streaming
+  /// Reset when tools interrupt or new turn starts
+  String? _currentAssistantBubbleId;
 
   static const int _maxConnectionAttempts = 3;
   static const Duration _connectionRetryDelay = Duration(seconds: 2);
@@ -304,19 +308,22 @@ class AppController extends StateNotifier<AppState> {
     } else if (event is ConversationCreatedEvent) {
       wsClient.send(ClientCommand.loadConversation(event.conversationId));
     } else if (event is StreamingStartedEvent) {
+      _currentAssistantBubbleId = null; // Reset for new streaming session
       state = state.copyWith(streaming: true);
     } else if (event is AssistantDeltaEvent) {
       _applyAssistantDelta(event.chunk);
     } else if (event is AssistantCompleteEvent) {
       _completeAssistant(event.content);
     } else if (event is ToolPlannedEvent) {
-      _injectToolPlans(event.tools);
+      // Tools interrupt assistant stream - reset so next delta creates new bubble
+      _currentAssistantBubbleId = null;
+      _addToolRequestBubbles(event.tools);
     } else if (event is ToolStartedEvent) {
-      _markTool(event.toolCallId, 'running', event.name, event.paramsJson);
+      _updateToolRequest(event.toolCallId, 'running', event.name, event.paramsJson);
     } else if (event is ToolResultEvent) {
-      _markTool(event.toolCallId, 'done', event.name, event.resultJson);
+      _addToolResultBubble(event.toolCallId, event.name, event.resultJson);
     } else if (event is ToolErrorEvent) {
-      _markTool(event.toolCallId, 'error', event.name, event.error);
+      _addToolErrorBubble(event.toolCallId, event.name, event.error);
     } else if (event is ConversationCompleteEvent) {
       _waitingForResponse = false;
       // Don't stop guard here - keep connection guard running
@@ -377,36 +384,66 @@ class AppController extends StateNotifier<AppState> {
   }
 
   List<ChatMessage> _mapMessages(List<MessageView> messages) {
-    return messages
-        .map(
-          (m) => ChatMessage(
-            id: m.id,
-            role: m.role,
-            content: m.content,
-            timestamp: DateTime.fromMillisecondsSinceEpoch(m.timestamp * 1000),
-            toolChip: m.toolCallId != null
-                ? ToolCallChip(
-                    id: m.toolCallId!,
-                    name: m.toolName ?? 'tool',
-                    status: m.toolStatus ?? 'pending',
-                    params: m.toolParams,
-                    result: m.toolResult,
-                    error: m.toolStatus == 'error'
-                        ? (m.toolResult ?? m.toolParams)?.toString()
-                        : null,
-                  )
+    final result = <ChatMessage>[];
+    
+    for (final m in messages) {
+      final timestamp = DateTime.fromMillisecondsSinceEpoch(m.timestamp * 1000);
+      
+      if (m.toolCallId != null) {
+        // Tool message - split into request and result bubbles
+        // Add tool request bubble (with params)
+        result.add(ChatMessage(
+          id: '${m.toolCallId}_request',
+          role: 'tool',
+          content: '🧰 ${m.toolName ?? 'tool'}',
+          timestamp: timestamp,
+          bubbleType: BubbleType.toolRequest,
+          toolCallId: m.toolCallId,
+          toolName: m.toolName ?? 'tool',
+          toolStatus: m.toolStatus ?? 'done',
+          toolParams: m.toolParams,
+        ));
+        
+        // Add tool result bubble (if has result or error)
+        if (m.toolResult != null || m.toolStatus == 'error') {
+          result.add(ChatMessage(
+            id: '${m.toolCallId}_result',
+            role: 'tool',
+            content: '🧰 ${m.toolName ?? 'tool'}',
+            timestamp: timestamp,
+            bubbleType: BubbleType.toolResult,
+            toolCallId: m.toolCallId,
+            toolName: m.toolName ?? 'tool',
+            toolStatus: m.toolStatus ?? 'done',
+            toolResult: m.toolResult,
+            toolError: m.toolStatus == 'error'
+                ? (m.toolResult ?? m.toolParams)?.toString()
                 : null,
-          ),
-        )
-        .toList();
+          ));
+        }
+      } else {
+        // Regular user/assistant message
+        result.add(ChatMessage(
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          timestamp: timestamp,
+          bubbleType: m.role == 'user' ? BubbleType.user : BubbleType.assistant,
+        ));
+      }
+    }
+    
+    return result;
   }
 
   void _appendUserMessage(String content) {
+    _currentAssistantBubbleId = null; // Reset for new conversation turn
     final entry = ChatMessage(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       role: 'user',
       content: content,
       timestamp: DateTime.now(),
+      bubbleType: BubbleType.user,
     );
     state = state.copyWith(
       chatMessages: [...state.chatMessages, entry],
@@ -415,166 +452,190 @@ class AppController extends StateNotifier<AppState> {
 
   void _applyAssistantDelta(String chunk) {
     final messages = [...state.chatMessages];
-    if (messages.isEmpty || messages.last.role != 'assistant') {
-      messages.add(ChatMessage(
-        id: DateTime.now().microsecondsSinceEpoch.toString(),
-        role: 'assistant',
-        content: chunk,
-        timestamp: DateTime.now(),
-        isStreaming: true,
-      ));
-    } else {
-      final last = messages.last;
-      messages[messages.length - 1] = last.copyWith(
-        content: '${last.content}$chunk',
-        isStreaming: true,
-      );
+    
+    // Find existing bubble by our tracked ID, or create new one
+    if (_currentAssistantBubbleId != null) {
+      final idx = messages.indexWhere((m) => m.id == _currentAssistantBubbleId);
+      if (idx >= 0) {
+        // Append to existing bubble
+        final existing = messages[idx];
+        messages[idx] = existing.copyWith(
+          content: '${existing.content}$chunk',
+          isStreaming: true,
+        );
+        state = state.copyWith(chatMessages: messages);
+        return;
+      }
     }
+    
+    // Create new assistant bubble
+    final newId = DateTime.now().microsecondsSinceEpoch.toString();
+    _currentAssistantBubbleId = newId;
+    messages.add(ChatMessage(
+      id: newId,
+      role: 'assistant',
+      content: chunk,
+      timestamp: DateTime.now(),
+      bubbleType: BubbleType.assistant,
+      isStreaming: true,
+    ));
     state = state.copyWith(chatMessages: messages);
   }
 
   void _completeAssistant(String content) {
     final messages = [...state.chatMessages];
-    if (messages.isEmpty || messages.last.role != 'assistant') {
+    
+    // Find our tracked bubble or the last assistant bubble
+    if (_currentAssistantBubbleId != null) {
+      final idx = messages.indexWhere((m) => m.id == _currentAssistantBubbleId);
+      if (idx >= 0) {
+        messages[idx] = messages[idx].copyWith(
+          content: content,
+          isStreaming: false,
+        );
+        state = state.copyWith(chatMessages: messages);
+        return;
+      }
+    }
+    
+    // Fallback: update last assistant or create new
+    final lastAssistantIdx = messages.lastIndexWhere(
+      (m) => m.bubbleType == BubbleType.assistant,
+    );
+    if (lastAssistantIdx >= 0) {
+      messages[lastAssistantIdx] = messages[lastAssistantIdx].copyWith(
+        content: content,
+        isStreaming: false,
+      );
+    } else {
       messages.add(ChatMessage(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
         role: 'assistant',
         content: content,
         timestamp: DateTime.now(),
+        bubbleType: BubbleType.assistant,
         isStreaming: false,
       ));
-    } else {
-      final last = messages.last;
-      messages[messages.length - 1] =
-          last.copyWith(content: content, isStreaming: false);
     }
     state = state.copyWith(chatMessages: messages);
   }
 
-  void _injectToolPlans(List<PlannedToolView> plans) {
+  /// Add tool request bubbles when tools are planned
+  void _addToolRequestBubbles(List<PlannedToolView> plans) {
     final messages = [...state.chatMessages];
     for (final plan in plans) {
       messages.add(ChatMessage(
-        id: plan.id,
+        id: '${plan.id}_request',
         role: 'tool',
         content: '🧰 ${plan.name}',
         timestamp: DateTime.now(),
-        toolChip: ToolCallChip(
-          id: plan.id,
-          name: plan.name,
-          status: 'planned',
-          params: plan.paramsJson,
-        ),
+        bubbleType: BubbleType.toolRequest,
+        toolCallId: plan.id,
+        toolName: plan.name,
+        toolStatus: 'planned',
+        toolParams: plan.paramsJson,
       ));
     }
     state = state.copyWith(chatMessages: messages);
   }
 
-  void _markTool(
+  /// Update tool request bubble when tool starts running
+  void _updateToolRequest(
     String toolCallId,
     String status,
     String name,
-    dynamic payload,
+    dynamic params,
   ) {
     final messages = [...state.chatMessages];
-    final idx = messages.lastIndexWhere((m) => m.toolChip?.id == toolCallId);
+    final idx = messages.lastIndexWhere(
+      (m) => m.toolCallId == toolCallId && m.bubbleType == BubbleType.toolRequest,
+    );
+    
     if (idx >= 0) {
-      final message = messages[idx];
-      messages[idx] = message.copyWith(
-        toolChip: _updatedToolChip(
-          original: message.toolChip,
-          status: status,
-          payload: payload,
-          toolId: toolCallId,
-          toolName: name,
-        ),
-        content: '🧰 $name',
+      messages[idx] = messages[idx].copyWith(
+        toolStatus: status,
+        toolParams: params,
       );
     } else {
+      // Tool wasn't planned - create request bubble now
       messages.add(ChatMessage(
-        id: toolCallId,
+        id: '${toolCallId}_request',
         role: 'tool',
         content: '🧰 $name',
         timestamp: DateTime.now(),
-        toolChip: _buildToolChip(
-          id: toolCallId,
-          name: name,
-          status: status,
-          payload: payload,
-        ),
+        bubbleType: BubbleType.toolRequest,
+        toolCallId: toolCallId,
+        toolName: name,
+        toolStatus: status,
+        toolParams: params,
       ));
     }
     state = state.copyWith(chatMessages: messages);
   }
 
-  ToolCallChip _updatedToolChip({
-    required ToolCallChip? original,
-    required String status,
-    required String toolId,
-    required String toolName,
-    dynamic payload,
-  }) {
-    final chip =
-        original ?? ToolCallChip(id: toolId, name: toolName, status: status);
-    switch (status) {
-      case 'planned':
-      case 'running':
-        return chip.copyWith(status: status, params: payload);
-      case 'done':
-        return chip.copyWith(status: status, result: payload);
-      case 'error':
-        return chip.copyWith(status: status, error: payload?.toString());
-      default:
-        return chip.copyWith(status: status);
+  /// Add separate tool result bubble when tool completes
+  void _addToolResultBubble(String toolCallId, String name, dynamic result) {
+    final messages = [...state.chatMessages];
+    
+    // Update request bubble status to done
+    final requestIdx = messages.lastIndexWhere(
+      (m) => m.toolCallId == toolCallId && m.bubbleType == BubbleType.toolRequest,
+    );
+    if (requestIdx >= 0) {
+      messages[requestIdx] = messages[requestIdx].copyWith(toolStatus: 'done');
     }
+    
+    // Add result bubble
+    messages.add(ChatMessage(
+      id: '${toolCallId}_result',
+      role: 'tool',
+      content: '🧰 $name',
+      timestamp: DateTime.now(),
+      bubbleType: BubbleType.toolResult,
+      toolCallId: toolCallId,
+      toolName: name,
+      toolStatus: 'done',
+      toolResult: result,
+    ));
+    state = state.copyWith(chatMessages: messages);
   }
 
-  ToolCallChip _buildToolChip({
-    required String id,
-    required String name,
-    required String status,
-    dynamic payload,
-  }) {
-    switch (status) {
-      case 'planned':
-      case 'running':
-        return ToolCallChip(
-          id: id,
-          name: name,
-          status: status,
-          params: payload,
-        );
-      case 'done':
-        return ToolCallChip(
-          id: id,
-          name: name,
-          status: status,
-          result: payload,
-        );
-      case 'error':
-        return ToolCallChip(
-          id: id,
-          name: name,
-          status: status,
-          error: payload?.toString(),
-        );
-      default:
-        return ToolCallChip(
-          id: id,
-          name: name,
-          status: status,
-        );
+  /// Add tool error bubble
+  void _addToolErrorBubble(String toolCallId, String name, String error) {
+    final messages = [...state.chatMessages];
+    
+    // Update request bubble status to error
+    final requestIdx = messages.lastIndexWhere(
+      (m) => m.toolCallId == toolCallId && m.bubbleType == BubbleType.toolRequest,
+    );
+    if (requestIdx >= 0) {
+      messages[requestIdx] = messages[requestIdx].copyWith(toolStatus: 'error');
     }
+    
+    // Add error result bubble
+    messages.add(ChatMessage(
+      id: '${toolCallId}_error',
+      role: 'tool',
+      content: '🧰 $name',
+      timestamp: DateTime.now(),
+      bubbleType: BubbleType.toolResult,
+      toolCallId: toolCallId,
+      toolName: name,
+      toolStatus: 'error',
+      toolError: error,
+    ));
+    state = state.copyWith(chatMessages: messages);
   }
 
   String _latestAssistantText() {
     final lastAssistant = state.chatMessages.lastWhere(
-      (m) => m.role == 'assistant',
+      (m) => m.bubbleType == BubbleType.assistant,
       orElse: () => ChatMessage(
         id: 'noop',
         role: 'assistant',
         content: 'Ready to help',
         timestamp: DateTime.fromMillisecondsSinceEpoch(0),
+        bubbleType: BubbleType.assistant,
       ),
     );
     return lastAssistant.content;
