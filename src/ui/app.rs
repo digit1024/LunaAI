@@ -86,6 +86,8 @@ pub enum Message {
     DismissError,
     // Typing indicator animation tick
     TypingIndicatorTick(cosmic::iced::time::Instant),
+    // Refresh conversation list for nav bar
+    RefreshConversationList,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +96,13 @@ pub enum NavigationPage {
     History,
     MCPConfig,
     Settings,
+}
+
+// NavItem represents either a navigation page or a conversation in the nav bar
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NavItem {
+    Page(NavigationPage),
+    Conversation(Uuid),
 }
 
 // ContextPage moved to ui::context module for better organization
@@ -201,6 +210,8 @@ pub struct CosmicLlmApp {
     // Typing indicator animation state
     pub typing_indicator_progress: f32,
     pub typing_indicator_start_time: Option<cosmic::iced::time::Instant>,
+    // Recent conversations for nav bar (last 10)
+    pub recent_conversations: Vec<(Uuid, String)>, // (id, title)
 }
 
 #[derive(Debug, Clone)]
@@ -304,29 +315,29 @@ impl CosmicLlmApp {
             context_page: ContextPage::About,
             about,
             nav_model: {
-                // Build and populate a segmented nav model mirroring app sections
+                // Build initial nav model - will be updated after loading conversations
                 let mut model = widget::segmented_button::ModelBuilder::default().build();
                 model
                     .insert()
-                    .text("Chat")
+                    .text("New Chat")
                     .icon(crate::ui::icons::get_icon("chat-symbolic", 16))
-                    .data(NavigationPage::Chat);
+                    .data(NavItem::Page(NavigationPage::Chat));
                 model
                     .insert()
-                    .text("History")
+                    .text("More history")
                     .icon(crate::ui::icons::get_icon("list-large-symbolic", 16))
-                    .data(NavigationPage::History)
+                    .data(NavItem::Page(NavigationPage::History))
                     .divider_above(true);
                 model
                     .insert()
                     .text("MCP Config")
                     .icon(crate::ui::icons::get_icon("configure-symbolic", 16))
-                    .data(NavigationPage::MCPConfig);
+                    .data(NavItem::Page(NavigationPage::MCPConfig));
                 model
                     .insert()
                     .text("Settings")
                     .icon(crate::ui::icons::get_icon("settings-symbolic", 16))
-                    .data(NavigationPage::Settings)
+                    .data(NavItem::Page(NavigationPage::Settings))
                     .divider_above(true);
                 // Activate first item - collect entity first to avoid borrow issues
                 let first_entity = model.iter().next();
@@ -351,6 +362,7 @@ impl CosmicLlmApp {
             search_results: Vec::new(),
             typing_indicator_progress: 0.0,
             typing_indicator_start_time: None,
+            recent_conversations: Vec::new(),
         }
     }
 
@@ -771,6 +783,10 @@ impl Application for CosmicLlmApp {
             is_error: false,
         });
 
+        // Load recent conversations and update nav model
+        app.load_recent_conversations();
+        app.update_nav_model();
+
         // Load MCP tools on startup (same as refresh button)
         let load_tools_task = cosmic::Task::perform(
             async move {
@@ -809,7 +825,11 @@ impl Application for CosmicLlmApp {
             Subscription::none()
         };
         
-        Subscription::batch(vec![streaming_sub, animation_sub])
+        // Create a periodic subscription to refresh conversation list every 15 seconds
+        let conversation_refresh_sub = time::every(time::Duration::from_secs(15))
+            .map(|_| Message::RefreshConversationList);
+        
+        Subscription::batch(vec![streaming_sub, animation_sub, conversation_refresh_sub])
     }
 
     fn update(&mut self, message: Self::Message) -> app::Task<Self::Message> {
@@ -839,6 +859,9 @@ impl Application for CosmicLlmApp {
                                 Uuid::new_v4()
                             });
                         self.current_conversation_id = Some(conv_id);
+                        // Update nav model to reflect new conversation
+                        self.load_recent_conversations();
+                        self.update_nav_model();
 
                         // Generate title synchronously
                         println!("🚀 Starting title generation for conversation {}", conv_id);
@@ -1159,6 +1182,9 @@ impl Application for CosmicLlmApp {
                 if let Ok(Some(conv)) = self.storage.get_conversation(&id) {
                     self.rebuild_conversation_view(conv);
                 }
+                // Update nav model to reflect current conversation
+                self.load_recent_conversations();
+                self.update_nav_model();
             }
             Message::DeleteConversation(id) => {
                 // If deleting the active conversation, clear the chat
@@ -1170,6 +1196,9 @@ impl Application for CosmicLlmApp {
                 let _ = self.storage.delete_conversation(&id);
                 // Stay on History page to reflect changes
                 self.current_page = NavigationPage::History;
+                // Update nav model to reflect deleted conversation
+                self.load_recent_conversations();
+                self.update_nav_model();
             }
             Message::NewConversation => {
                 self.current_conversation_id = None;
@@ -1182,6 +1211,9 @@ impl Application for CosmicLlmApp {
                 self.pending_tool_calls_for_history.clear();
                 self.tool_runtime_context.clear();
                 self.expanded_tool_summaries.clear();
+                // Update nav model to reflect new conversation
+                self.load_recent_conversations();
+                self.update_nav_model();
             }
             Message::AgentUpdate(u) => {
                 match u {
@@ -1818,6 +1850,10 @@ impl Application for CosmicLlmApp {
                     self.typing_indicator_progress = (elapsed.as_secs_f32() / 1.2) % 1.0;
                 }
             }
+            Message::RefreshConversationList => {
+                self.load_recent_conversations();
+                self.update_nav_model();
+            }
         }
 
         app::Task::none()
@@ -1858,8 +1894,20 @@ impl Application for CosmicLlmApp {
         &mut self,
         entity: widget::segmented_button::Entity,
     ) -> app::Task<Self::Message> {
-        if let Some(page) = self.nav_model.data::<NavigationPage>(entity) {
-            self.current_page = *page;
+        if let Some(nav_item) = self.nav_model.data::<NavItem>(entity) {
+            match nav_item {
+                NavItem::Page(page) => {
+                    self.current_page = *page;
+                }
+                NavItem::Conversation(conv_id) => {
+                    // Select the conversation
+                    let conv_id = *conv_id;
+                    return app::Task::perform(
+                        async move { cosmic::Action::App(Message::SelectConversation(conv_id)) },
+                        |action| action,
+                    );
+                }
+            }
         }
         app::Task::none()
     }
@@ -1913,6 +1961,135 @@ impl Application for CosmicLlmApp {
 }
 
 impl CosmicLlmApp {
+    /// Update the nav model with current conversation title and recent conversations
+    fn update_nav_model(&mut self) {
+        // Clear and rebuild the nav model
+        let mut model = widget::segmented_button::ModelBuilder::default().build();
+        
+        // Get current conversation title
+        let current_title = if let Some(conv_id) = self.current_conversation_id {
+            self.recent_conversations
+                .iter()
+                .find(|(id, _)| *id == conv_id)
+                .map(|(_, title)| title.clone())
+                .or_else(|| {
+                    // Try to get from storage if not in recent list
+                    self.storage
+                        .get_conversation(&conv_id)
+                        .ok()
+                        .flatten()
+                        .map(|c| c.title)
+                })
+                .unwrap_or_else(|| "New Chat".to_string())
+        } else {
+            "New Chat".to_string()
+        };
+        
+        // Add current chat title (non-selectable, just for display)
+        model
+            .insert()
+            .text(current_title.clone())
+            .icon(crate::ui::icons::get_icon("chat-symbolic", 16))
+            .data(NavItem::Page(NavigationPage::Chat));
+        
+        // Add separator
+        // Add recent conversations (up to 10)
+        let recent_conv_ids: Vec<(Uuid, String)> = self.recent_conversations
+            .iter()
+            .filter(|(conv_id, _)| Some(*conv_id) != self.current_conversation_id)
+            .map(|(id, title)| (*id, title.clone()))
+            .collect();
+        
+        for (conv_id, title) in recent_conv_ids {
+            model
+                .insert()
+                .text(title)
+                .icon(crate::ui::icons::get_icon("chat-bubble-text-symbolic", 16))
+                .data(NavItem::Conversation(conv_id));
+        }
+        
+        // Add "More history" (replaces History)
+        model
+            .insert()
+            .text("More history")
+            .icon(crate::ui::icons::get_icon("list-large-symbolic", 16))
+            .data(NavItem::Page(NavigationPage::History))
+            .divider_above(true);
+        
+        // Add MCP Config
+        model
+            .insert()
+            .text("MCP Config")
+            .icon(crate::ui::icons::get_icon("configure-symbolic", 16))
+            .data(NavItem::Page(NavigationPage::MCPConfig));
+        
+        // Add Settings
+        model
+            .insert()
+            .text("Settings")
+            .icon(crate::ui::icons::get_icon("settings-symbolic", 16))
+            .data(NavItem::Page(NavigationPage::Settings))
+            .divider_above(true);
+        
+        // Activate the current page or conversation
+        let current_conv_id = self.current_conversation_id;
+        let mut active_entity_opt = None;
+        let mut chat_entity_opt = None;
+        let mut first_entity_opt = None;
+        
+        for entity in model.iter() {
+            if first_entity_opt.is_none() {
+                first_entity_opt = Some(entity);
+            }
+            
+            if let Some(nav_item) = model.data::<NavItem>(entity) {
+                match nav_item {
+                    NavItem::Page(NavigationPage::Chat) => {
+                        if chat_entity_opt.is_none() {
+                            chat_entity_opt = Some(entity);
+                        }
+                    }
+                    NavItem::Conversation(id) => {
+                        if let Some(conv_id) = current_conv_id {
+                            if id == &conv_id {
+                                active_entity_opt = Some(entity);
+                                break; // Found the active conversation, no need to continue
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
+        // Activate the found entity or fallback to Chat or first
+        if let Some(entity) = active_entity_opt {
+            model.activate(entity);
+        } else if let Some(entity) = chat_entity_opt {
+            model.activate(entity);
+        } else if let Some(entity) = first_entity_opt {
+            model.activate(entity);
+        }
+        
+        self.nav_model = model;
+    }
+    
+    /// Load recent conversations from storage (last 10)
+    fn load_recent_conversations(&mut self) {
+        match self.storage.list_conversations_paginated(None, Some(10)) {
+            Ok(conversations) => {
+                self.recent_conversations = conversations
+                    .into_iter()
+                    .map(|c| (c.id, c.title))
+                    .collect();
+            }
+            Err(e) => {
+                eprintln!("Failed to load recent conversations: {}", e);
+                self.recent_conversations.clear();
+            }
+        }
+    }
+    
     pub(crate) fn error_banner(&self) -> Option<Element<Message>> {
         self.current_error.as_ref().map(|error| {
             let content = widget::row::with_children(vec![
