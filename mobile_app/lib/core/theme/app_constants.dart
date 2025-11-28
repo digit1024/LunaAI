@@ -267,3 +267,5 @@ class AppConstants {
   static bool isDesktop(double screenWidth) => screenWidth >= breakpointDesktop;
 }
 
+
+
