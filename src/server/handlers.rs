@@ -137,11 +137,12 @@ impl ServerHandler {
         Ok(())
     }
 
-    async fn handle_start_conversation(&self, title: Option<String>) -> Result<()> {
+    async fn handle_start_conversation(&mut self, title: Option<String>) -> Result<()> {
         let title_text = title.unwrap_or_else(|| "Generating title...".to_string());
+        let profile_name = Some(self.session.profile_name.clone());
         let storage = self.ctx.storage.lock().await;
         let conversation_id = storage
-            .create_conversation(title_text)
+            .create_conversation_with_profile(title_text, profile_name.as_deref())
             .context("failed to create conversation")?;
         let _ = self.outbound.send(ServerEvent::ConversationCreated {
             conversation_id: conversation_id.to_string(),
@@ -149,13 +150,24 @@ impl ServerHandler {
         Ok(())
     }
 
-    async fn handle_load_conversation(&self, conversation_id: String) -> Result<()> {
+    async fn handle_load_conversation(&mut self, conversation_id: String) -> Result<()> {
         let uuid = Uuid::parse_str(&conversation_id).context("invalid conversation id format")?;
         let storage = self.ctx.storage.lock().await;
         if let Some(conv) = storage
             .get_conversation(&uuid)
             .context("failed to load conversation")?
         {
+            // Restore profile if conversation has one and it differs from current session
+            if let Some(conv_profile) = &conv.profile_name {
+                if conv_profile != &self.session.profile_name {
+                    // Restore the conversation's profile
+                    self.session.update_profile(conv_profile, &self.ctx.config)?;
+                    let _ = self.outbound.send(ServerEvent::ProfileChanged {
+                        profile: conv_profile.clone(),
+                    });
+                }
+            }
+            
             let view = to_conversation_view(&conv);
             let _ = self
                 .outbound
@@ -255,8 +267,10 @@ impl ServerHandler {
         let conversation_uuid = if let Some(existing) = conversation_id {
             Uuid::parse_str(&existing).context("invalid conversation id")?
         } else {
+            // Store current profile when creating new conversation
+            let profile_name = Some(self.session.profile_name.clone());
             let conv_id = storage
-                .create_conversation("Generating title...".to_string())
+                .create_conversation_with_profile("Generating title...".to_string(), profile_name.as_deref())
                 .context("failed to create conversation")?;
             let preview = truncate_preview(&content);
             let _ = storage.update_conversation_title(&conv_id, preview);
@@ -413,6 +427,7 @@ fn to_conversation_view(conv: &StoredConversation) -> ConversationView {
         created_at: conv.created_at.timestamp(),
         updated_at: conv.updated_at.timestamp(),
         messages: conv.messages.iter().map(MessageView::from).collect(),
+        profile_name: conv.profile_name.clone(),
     }
 }
 

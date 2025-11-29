@@ -41,6 +41,7 @@ pub struct Conversation {
     pub updated_at: DateTime<Utc>,
     pub messages: Vec<StoredMessage>,
     pub turns: Vec<Turn>,
+    pub profile_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +60,10 @@ pub struct StoredMessage {
 
 impl Conversation {
     pub fn new(title: String) -> Self {
+        Self::new_with_profile(title, None)
+    }
+    
+    pub fn new_with_profile(title: String, profile_name: Option<String>) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
@@ -67,6 +72,7 @@ impl Conversation {
             updated_at: now,
             messages: Vec::new(),
             turns: Vec::new(),
+            profile_name,
         }
     }
 

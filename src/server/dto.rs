@@ -136,6 +136,7 @@ pub struct ConversationView {
     pub created_at: i64,
     pub updated_at: i64,
     pub messages: Vec<MessageView>,
+    pub profile_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]

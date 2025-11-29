@@ -287,6 +287,7 @@ class ConversationView {
   final int createdAt;
   final int updatedAt;
   final List<MessageView> messages;
+  final String? profileName;
 
   ConversationView({
     required this.id,
@@ -294,6 +295,7 @@ class ConversationView {
     required this.createdAt,
     required this.updatedAt,
     required this.messages,
+    this.profileName,
   });
 
   factory ConversationView.fromJson(Map<String, dynamic> json) {
@@ -305,6 +307,7 @@ class ConversationView {
       messages: (json['messages'] as List<dynamic>? ?? [])
           .map((entry) => MessageView.fromJson(entry))
           .toList(),
+      profileName: json['profile_name'] as String?,
     );
   }
 }

@@ -47,7 +47,12 @@ impl Storage {
 
     /// Create a new conversation
     pub fn create_conversation(&self, title: String) -> SqliteResult<Uuid> {
-        let id_str = self.sqlite.insert_conversation(&title)?;
+        self.create_conversation_with_profile(title, None)
+    }
+    
+    /// Create a new conversation with profile
+    pub fn create_conversation_with_profile(&self, title: String, profile_name: Option<&str>) -> SqliteResult<Uuid> {
+        let id_str = self.sqlite.insert_conversation_with_profile(&title, profile_name)?;
         Uuid::parse_str(&id_str)
             .map_err(|e| rusqlite::Error::InvalidParameterName(format!("Invalid UUID: {}", e)))
     }
@@ -83,6 +88,7 @@ impl Storage {
                     .unwrap_or_else(Utc::now), // SQLite doesn't track updated_at yet
                 messages: stored_messages,
                 turns: Vec::new(), // Turns are not yet migrated to SQLite
+                profile_name: db_conv.profile_name.clone(),
             };
 
             Ok(Some(conversation))
@@ -143,6 +149,7 @@ impl Storage {
                     .unwrap_or_else(Utc::now),
                 messages: stored_messages,
                 turns: Vec::new(), // Turns are not yet migrated to SQLite
+                profile_name: db_conv.profile_name.clone(),
             };
 
             conversations.push(conversation);

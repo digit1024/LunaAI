@@ -3,6 +3,7 @@ mod config;
 mod llm;
 mod mcp;
 mod prompts;
+mod resources;
 mod server;
 mod storage;
 mod ui;

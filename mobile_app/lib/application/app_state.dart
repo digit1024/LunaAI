@@ -149,6 +149,7 @@ class AppState extends Equatable {
   final String? error;
   final List<String> availableProfiles;
   final String defaultProfile;
+  final String currentProfile; // Current server profile (from server, not config)
   final int
       connectionAttempt; // Current attempt (1, 2, 3) or 0 if not connecting
   final bool isDialogModeActive;
@@ -168,6 +169,7 @@ class AppState extends Equatable {
     required this.error,
     required this.availableProfiles,
     required this.defaultProfile,
+    required this.currentProfile,
     required this.connectionAttempt,
     required this.isDialogModeActive,
     required this.dialogModeState,
@@ -187,6 +189,7 @@ class AppState extends Equatable {
         error: null,
         availableProfiles: [],
         defaultProfile: '',
+        currentProfile: '',
         connectionAttempt: 0,
         isDialogModeActive: false,
         dialogModeState: DialogModeState.listening,
@@ -206,6 +209,7 @@ class AppState extends Equatable {
     String? error,
     List<String>? availableProfiles,
     String? defaultProfile,
+    String? currentProfile,
     int? connectionAttempt,
     bool? isDialogModeActive,
     DialogModeState? dialogModeState,
@@ -224,6 +228,7 @@ class AppState extends Equatable {
       error: error,
       availableProfiles: availableProfiles ?? this.availableProfiles,
       defaultProfile: defaultProfile ?? this.defaultProfile,
+      currentProfile: currentProfile ?? this.currentProfile,
       connectionAttempt: connectionAttempt ?? this.connectionAttempt,
       isDialogModeActive: isDialogModeActive ?? this.isDialogModeActive,
       dialogModeState: dialogModeState ?? this.dialogModeState,
@@ -245,6 +250,7 @@ class AppState extends Equatable {
         error,
         availableProfiles,
         defaultProfile,
+        currentProfile,
         connectionAttempt,
         isDialogModeActive,
         dialogModeState,

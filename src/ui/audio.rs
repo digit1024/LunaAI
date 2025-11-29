@@ -1,56 +1,42 @@
-use std::path::PathBuf;
+use crate::resources::AudioAssets;
+use std::io::Cursor;
 
 /// Simple audio service for playing sound effects
+/// Uses embedded audio files, so sounds work regardless of launch location
 pub struct AudioService;
 
 impl AudioService {
     /// Play a sound file asynchronously without blocking the UI
+    /// The sound file is embedded in the executable, so it's always available
     pub fn play_sound(filename: &str) {
-        if let Some(path) = Self::get_audio_path(filename) {
-            let path_clone = path.clone();
-            tokio::spawn(async move {
-                if let Err(e) = Self::play_sound_internal(path_clone) {
-                    eprintln!("Failed to play sound: {}", e);
-                }
-            });
-        } else {
-            eprintln!("Audio file not found: {}", filename);
-        }
+        let filename = filename.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = Self::play_sound_internal(&filename) {
+                eprintln!("Failed to play sound '{}': {}", filename, e);
+            }
+        });
     }
 
-    fn play_sound_internal(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    fn play_sound_internal(filename: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // Get embedded audio file
+        let audio_data = AudioAssets::get(filename)
+            .ok_or_else(|| format!("Audio file '{}' not found in embedded resources", filename))?;
+
+        // Convert to owned bytes for the cursor
+        let audio_bytes = audio_data.data.into_owned();
+
+        // Create audio stream
         let (_stream, stream_handle) = rodio::OutputStream::try_default()?;
         let sink = rodio::Sink::try_new(&stream_handle)?;
 
-        let file = std::fs::File::open(&path)?;
-        let source = rodio::Decoder::new(std::io::BufReader::new(file))?;
+        // Decode from memory using Cursor
+        let cursor = Cursor::new(audio_bytes);
+        let source = rodio::Decoder::new(cursor)?;
         
         sink.append(source);
         sink.sleep_until_end();
         
         Ok(())
-    }
-
-    /// Get path to audio file in res/audio directory
-    pub fn get_audio_path(filename: &str) -> Option<PathBuf> {
-        // Try different possible locations for the audio files
-        let possible_paths = [
-            PathBuf::from("res/audio").join(filename),
-            PathBuf::from("../res/audio").join(filename),
-            PathBuf::from("../../res/audio").join(filename),
-            std::env::current_dir()
-                .ok()?
-                .join("res/audio")
-                .join(filename),
-        ];
-
-        for path in possible_paths.iter() {
-            if path.exists() {
-                return Some(path.clone());
-            }
-        }
-
-        None
     }
 }
 

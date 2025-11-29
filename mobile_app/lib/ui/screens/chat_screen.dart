@@ -418,7 +418,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         _TopBar(
           title: heading,
           connection: state.connection,
-          profile: config.profile,
+          profile: state.currentProfile.isNotEmpty ? state.currentProfile : config.profile,
           streaming: state.streaming,
           onSettings: controller.openSetup,
         ),

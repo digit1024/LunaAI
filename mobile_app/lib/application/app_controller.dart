@@ -212,6 +212,8 @@ class AppController extends StateNotifier<AppState> {
   }
 
   Future<void> startNewConversation() async {
+    // Ensure profile is set before starting a new conversation
+    _ensureProfileIsSet(null);
     wsClient.send(ClientCommand.startConversation('Generating title...'));
   }
 
@@ -297,6 +299,39 @@ class AppController extends StateNotifier<AppState> {
     state = state.copyWith(dialogModeState: newState);
   }
 
+  /// Ensures the saved profile from config is set on the server.
+  /// Compares the saved profile with the server's current profile and sends
+  /// changeProfile command if they differ.
+  void _ensureProfileIsSet(String? serverCurrentProfile) {
+    final config = ref.read(serverConfigProvider);
+    final savedProfile = config.profile;
+    
+    // If server profile is provided and matches saved profile, no action needed
+    if (serverCurrentProfile != null && serverCurrentProfile == savedProfile) {
+      return;
+    }
+    
+    // If we have available profiles, check if saved profile is valid
+    if (state.availableProfiles.isNotEmpty) {
+      if (!state.availableProfiles.contains(savedProfile)) {
+        // Saved profile is not available, use default or first available
+        final profileToUse = state.defaultProfile.isNotEmpty 
+            ? state.defaultProfile 
+            : state.availableProfiles.first;
+        if (profileToUse != savedProfile) {
+          ref.read(serverConfigProvider.notifier).updateProfile(profileToUse);
+        }
+        wsClient.send(ClientCommand.changeProfile(profileToUse));
+        return;
+      }
+    }
+    
+    // If server profile differs from saved profile, set it
+    if (serverCurrentProfile == null || serverCurrentProfile != savedProfile) {
+      wsClient.send(ClientCommand.changeProfile(savedProfile));
+    }
+  }
+
   void _handleEvent(ServerEvent event) {
     if (event is HealthOkEvent) {
       // Only change pane if we're not already on a specific screen
@@ -304,10 +339,14 @@ class AppController extends StateNotifier<AppState> {
       final shouldChangePane = state.pane == ActivePane.connecting || 
                                state.pane == ActivePane.setup;
       
+      // Ensure the saved profile is set when connection is established
+      _ensureProfileIsSet(event.profile);
+      
       state = state.copyWith(
         connection: ConnectionStatus.online,
         pane: shouldChangePane ? ActivePane.conversations : state.pane,
         error: null,
+        currentProfile: event.profile, // Track server's current profile
       );
       // Start connection guard to keep connection alive
       unawaited(guard.startConnectionGuard());
@@ -346,12 +385,15 @@ class AppController extends StateNotifier<AppState> {
     } else if (event is SearchResultsEvent) {
       state = state.copyWith(searchResults: event.results);
     } else if (event is ConversationLoadedEvent) {
+      // Update current profile from conversation or keep existing
+      final profileToUse = event.conversation.profileName ?? state.currentProfile;
       state = state.copyWith(
         activeConversation: event.conversation,
         pane: ActivePane.chat,
         chatMessages: _mapMessages(event.conversation.messages),
         streaming: false,
         error: null,
+        currentProfile: profileToUse, // Track server's current profile
       );
     } else if (event is ConversationCreatedEvent) {
       wsClient.send(ClientCommand.loadConversation(event.conversationId));
@@ -392,7 +434,10 @@ class AppController extends StateNotifier<AppState> {
       // Ensure the new profile is in the available profiles list
       final profiles = state.availableProfiles.toSet();
       profiles.add(event.profile);
-      state = state.copyWith(availableProfiles: profiles.toList());
+      state = state.copyWith(
+        availableProfiles: profiles.toList(),
+        currentProfile: event.profile, // Update current server profile
+      );
     } else if (event is ProfilesListEvent) {
       final config = ref.read(serverConfigProvider);
       final currentProfile = config.profile;
@@ -403,6 +448,10 @@ class AppController extends StateNotifier<AppState> {
         availableProfiles: profiles.toList(),
         defaultProfile: event.defaultProfile,
       );
+      
+      // Ensure the saved profile is set after receiving profiles list
+      // This handles the case where profiles list arrives before HealthOkEvent
+      _ensureProfileIsSet(null);
     } else if (event is ConversationDeletedEvent) {
       // Remove deleted conversation from list
       final updated = state.conversations

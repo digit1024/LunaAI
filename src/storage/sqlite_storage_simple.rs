@@ -15,6 +15,7 @@ pub struct Conversation {
     pub title: String,
     pub created_at: i64,
     pub title_generated: bool,
+    pub profile_name: Option<String>,
 }
 
 /// Represents a message in the database
@@ -120,10 +121,17 @@ impl SqliteStorage {
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
-                title_generated INTEGER NOT NULL DEFAULT 0
+                title_generated INTEGER NOT NULL DEFAULT 0,
+                profile_name TEXT
             )",
             [],
         )?;
+        
+        // Migrate existing conversations: add profile_name column if it doesn't exist
+        let _ = self.conn.execute(
+            "ALTER TABLE conversations ADD COLUMN profile_name TEXT",
+            [],
+        );
 
         // Create messages table
         self.conn.execute(
@@ -198,12 +206,17 @@ impl SqliteStorage {
 
     /// Insert a new conversation
     pub fn insert_conversation(&self, title: &str) -> SqliteResult<String> {
+        self.insert_conversation_with_profile(title, None)
+    }
+    
+    /// Insert a new conversation with profile
+    pub fn insert_conversation_with_profile(&self, title: &str, profile_name: Option<&str>) -> SqliteResult<String> {
         let id = Uuid::new_v4().to_string();
         let created_at = Utc::now().timestamp();
 
         self.conn.execute(
-            "INSERT INTO conversations (id, title, created_at, title_generated) VALUES (?1, ?2, ?3, ?4)",
-            params![id, title, created_at, 0],
+            "INSERT INTO conversations (id, title, created_at, title_generated, profile_name) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, title, created_at, 0, profile_name],
         )?;
 
         Ok(id)
@@ -402,7 +415,7 @@ impl SqliteStorage {
     pub fn get_conversation(&self, conversation_id: &str) -> SqliteResult<Option<Conversation>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, title, created_at, title_generated FROM conversations WHERE id = ?1")?;
+            .prepare("SELECT id, title, created_at, title_generated, profile_name FROM conversations WHERE id = ?1")?;
 
         stmt.query_row(params![conversation_id], |row| {
             Ok(Conversation {
@@ -410,6 +423,7 @@ impl SqliteStorage {
                 title: row.get(1)?,
                 created_at: row.get(2)?,
                 title_generated: row.get::<_, i32>(3)? != 0,
+                profile_name: row.get(4)?,
             })
         })
         .optional()
@@ -426,7 +440,7 @@ impl SqliteStorage {
         offset: Option<usize>,
         limit: Option<usize>,
     ) -> SqliteResult<Vec<Conversation>> {
-        let mut query = "SELECT id, title, created_at, title_generated FROM conversations ORDER BY created_at DESC".to_string();
+        let mut query = "SELECT id, title, created_at, title_generated, profile_name FROM conversations ORDER BY created_at DESC".to_string();
         
         if let Some(lim) = limit {
             query.push_str(&format!(" LIMIT {}", lim));
@@ -443,6 +457,7 @@ impl SqliteStorage {
                 title: row.get(1)?,
                 created_at: row.get(2)?,
                 title_generated: row.get::<_, i32>(3)? != 0,
+                profile_name: row.get(4)?,
             })
         })?;
 
@@ -473,7 +488,7 @@ impl SqliteStorage {
     pub fn get_conversations_without_title(&self) -> SqliteResult<Vec<Conversation>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, title, created_at, title_generated FROM conversations WHERE title_generated = 0 ORDER BY created_at ASC")?;
+            .prepare("SELECT id, title, created_at, title_generated, profile_name FROM conversations WHERE title_generated = 0 ORDER BY created_at ASC")?;
 
         let conversation_iter = stmt.query_map([], |row| {
             Ok(Conversation {
@@ -481,6 +496,7 @@ impl SqliteStorage {
                 title: row.get(1)?,
                 created_at: row.get(2)?,
                 title_generated: row.get::<_, i32>(3)? != 0,
+                profile_name: row.get(4)?,
             })
         })?;
 
