@@ -71,6 +71,7 @@ pub enum Message {
     // MCP actions
     MCPToolsUpdated(Vec<crate::llm::ToolDefinition>),
     RefreshMCPTools,
+    ToggleMCPServer(String), // server_name
     // Tool toggle actions
     ToggleAllTools(bool),     // true = enable all, false = disable all
     ToggleTool(String, bool), // tool_name, enabled
@@ -173,6 +174,7 @@ pub struct CosmicLlmApp {
     pub archived_tool_calls: Vec<AnchoredToolCall>,
     pub expanded_tool_calls: std::collections::HashSet<usize>,
     pub expanded_tool_summaries: std::collections::HashSet<(usize, String)>,
+    pub expanded_mcp_servers: std::collections::HashSet<String>,
     pub scrollable_id: cosmic::widget::Id,
     pub key_binds: std::collections::HashMap<menu::KeyBind, MenuAction>,
     pub settings_changed: bool,
@@ -307,6 +309,7 @@ impl CosmicLlmApp {
             archived_tool_calls: Vec::new(),
             expanded_tool_calls: std::collections::HashSet::new(),
             expanded_tool_summaries: std::collections::HashSet::new(),
+            expanded_mcp_servers: std::collections::HashSet::new(),
             scrollable_id: cosmic::widget::Id::unique(),
             key_binds: Self::create_key_binds(),
             settings_changed: false,
@@ -1609,6 +1612,13 @@ impl Application for CosmicLlmApp {
                     self.expanded_tool_summaries.remove(&key);
                 } else {
                     self.expanded_tool_summaries.insert(key);
+                }
+            }
+            Message::ToggleMCPServer(server_name) => {
+                if self.expanded_mcp_servers.contains(&server_name) {
+                    self.expanded_mcp_servers.remove(&server_name);
+                } else {
+                    self.expanded_mcp_servers.insert(server_name);
                 }
             }
             Message::ScrollToBottom => {

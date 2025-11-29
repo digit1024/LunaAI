@@ -38,11 +38,18 @@ impl super::transport::MCPTransport for MCPTransportEnum {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ServerStatus {
+    Connected,
+    Failed(String), // error message
+}
+
 pub struct MCPServerRegistry {
     pub servers: HashMap<String, Arc<RwLock<MCPTransportEnum>>>,
     pub tool_index: HashMap<String, String>, // tool_name -> server_name
     pub all_tools: Vec<ToolDefinition>,
     pub enabled_tools: HashMap<String, bool>, // tool_name -> enabled
+    pub failed_servers: HashMap<String, String>, // server_name -> error_message
 }
 
 impl MCPServerRegistry {
@@ -52,6 +59,7 @@ impl MCPServerRegistry {
             tool_index: HashMap::new(),
             all_tools: Vec::new(),
             enabled_tools: HashMap::new(),
+            failed_servers: HashMap::new(),
         }
     }
 
@@ -143,9 +151,13 @@ impl MCPServerRegistry {
             {
                 Ok(_) => {
                     info!("Successfully connected to MCP server {}", server_name);
+                    // Remove from failed_servers if it was there before
+                    self.failed_servers.remove(server_name);
                 }
                 Err(e) => {
-                    error!("Failed to connect to MCP server {}: {}", server_name, e);
+                    let error_msg = e.to_string();
+                    error!("Failed to connect to MCP server {}: {}", server_name, error_msg);
+                    self.failed_servers.insert(server_name.clone(), error_msg);
                 }
             }
         }
@@ -196,5 +208,42 @@ impl MCPServerRegistry {
             }
         }
         Ok(())
+    }
+
+    pub fn get_server_status(&self, server_name: &str) -> ServerStatus {
+        if self.servers.contains_key(server_name) {
+            ServerStatus::Connected
+        } else if let Some(error_msg) = self.failed_servers.get(server_name) {
+            ServerStatus::Failed(error_msg.clone())
+        } else {
+            // Server not found in either map - shouldn't happen, but return Failed
+            ServerStatus::Failed("Server not initialized".to_string())
+        }
+    }
+
+    pub fn get_tools_by_server(&self) -> HashMap<String, Vec<ToolDefinition>> {
+        let mut tools_by_server: HashMap<String, Vec<ToolDefinition>> = HashMap::new();
+
+        for tool in &self.all_tools {
+            if let Some(server_name) = self.tool_index.get(&tool.name) {
+                tools_by_server
+                    .entry(server_name.clone())
+                    .or_insert_with(Vec::new)
+                    .push(tool.clone());
+            }
+        }
+
+        // Sort tools alphabetically by name within each server
+        for tools in tools_by_server.values_mut() {
+            tools.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+
+        tools_by_server
+    }
+
+    pub fn get_all_server_names(&self, config: &MCPConfig) -> Vec<String> {
+        let mut server_names: Vec<String> = config.servers.keys().cloned().collect();
+        server_names.sort();
+        server_names
     }
 }
