@@ -5,6 +5,7 @@ use cosmic::{
     widget::{self, menu, text_editor},
     Application, Element,
 };
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -72,6 +73,7 @@ pub enum Message {
     MCPToolsUpdated(Vec<crate::llm::ToolDefinition>),
     RefreshMCPTools,
     ToggleMCPServer(String), // server_name
+    OpenMCPConfig, // Open MCP config file in default editor
     // Tool toggle actions
     ToggleAllTools(bool),     // true = enable all, false = disable all
     ToggleTool(String, bool), // tool_name, enabled
@@ -1619,6 +1621,46 @@ impl Application for CosmicLlmApp {
                     self.expanded_mcp_servers.remove(&server_name);
                 } else {
                     self.expanded_mcp_servers.insert(server_name);
+                }
+            }
+            Message::OpenMCPConfig => {
+                // Get MCP config file path
+                let mcp_config_path = dirs::data_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join("cosmic_llm")
+                    .join("mcp_config.json");
+                
+                // Open file in default GUI editor
+                let path_str = mcp_config_path.to_string_lossy().to_string();
+                
+                // Use xdg-open on Linux, open on macOS, or start on Windows
+                #[cfg(target_os = "linux")]
+                let command = "xdg-open";
+                #[cfg(target_os = "macos")]
+                let command = "open";
+                #[cfg(target_os = "windows")]
+                let command = "start";
+                #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+                let command = "xdg-open"; // fallback to xdg-open
+                
+                // Spawn the command to open the file
+                match std::process::Command::new(command)
+                    .arg(&path_str)
+                    .spawn()
+                {
+                    Ok(_) => {
+                        println!("Opened MCP config file: {}", path_str);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to open MCP config file: {}", e);
+                        // Show error dialog to user
+                        self.dialog = Some(DialogPage::MessageText(
+                            text_editor::Content::with_text(&format!(
+                                "Failed to open MCP config file:\n{}\n\nError: {}",
+                                path_str, e
+                            )),
+                        ));
+                    }
                 }
             }
             Message::ScrollToBottom => {

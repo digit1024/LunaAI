@@ -120,7 +120,7 @@ pub fn mcp_config_view(app: &CosmicLlmApp) -> Element<Message> {
     cosmic::widget::column::with_capacity(3)
         .push(
             // Header
-            cosmic::widget::row::with_capacity(3)
+            cosmic::widget::row::with_capacity(4)
                 .push(
                     cosmic::widget::row::with_capacity(2)
                         .push(widget::icon::from_name("configure-symbolic").size(20))
@@ -138,6 +138,11 @@ pub fn mcp_config_view(app: &CosmicLlmApp) -> Element<Message> {
                     .class(cosmic::style::Text::Color(
                         cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6),
                     )),
+                )
+                .push(
+                    button::text("Edit Config")
+                        .on_press(Message::OpenMCPConfig)
+                        .class(cosmic::style::Button::Text),
                 )
                 .spacing(12)
                 .align_y(cosmic::iced::Alignment::Center),

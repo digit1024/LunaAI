@@ -347,7 +347,7 @@ impl MCPConfig {
     }
 
     /// Get the path to mcp_config.json
-    fn mcp_config_path() -> PathBuf {
+    pub fn mcp_config_path() -> PathBuf {
         dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("cosmic_llm")
