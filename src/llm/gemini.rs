@@ -93,6 +93,20 @@ impl GeminiClient {
         }
     }
 
+    /// Build the Gemini API endpoint URL for a given method
+    /// Handles endpoints that already include the path or just the base URL
+    fn build_endpoint(&self, method: &str) -> String {
+        let base = self.profile.endpoint.trim_end_matches('/');
+        let model = &self.profile.model;
+
+        // Check if endpoint already includes the models path
+        if base.ends_with("/v1beta/models") || base.ends_with("/v1beta/models/") {
+            format!("{}/{}:{}", base.trim_end_matches('/'), model, method)
+        } else {
+            format!("{}/v1beta/models/{}:{}", base, model, method)
+        }
+    }
+
     /// Sanitize JSON Schema to only include fields supported by Gemini API
     /// Gemini only supports: type, nullable, required, format, description, properties, items, enum
     fn sanitize_schema(&self, schema: serde_json::Value) -> serde_json::Value {
@@ -100,6 +114,7 @@ impl GeminiClient {
             serde_json::Value::Object(mut map) => {
                 // Remove unsupported fields
                 map.remove("additionalProperties");
+                map.remove("$schema"); // JSON Schema draft identifier - not supported by Gemini
                 map.remove("$ref");
                 map.remove("$defs");
                 map.remove("default");
@@ -264,23 +279,32 @@ impl LlmClient for GeminiClient {
         };
 
         // Build endpoint with model
-        let endpoint = format!(
-            "{}:streamGenerateContent?key={}",
-            self.profile.endpoint.trim_end_matches('/'),
-            self.profile.api_key
-        );
+        let endpoint = self.build_endpoint("streamGenerateContent");
 
         let response = self
             .client
             .post(&endpoint)
             .header("Content-Type", "application/json")
+            .header("x-goog-api-key", &self.profile.api_key)
             .json(&request)
             .send()
             .await?;
 
         if !response.status().is_success() {
+            let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::Api(format!("Gemini API error: {}", error_text)));
+            if error_text.is_empty() {
+                return Err(LlmError::Api(format!(
+                    "Gemini API error: HTTP {} {}",
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or("Unknown")
+                )));
+            }
+            return Err(LlmError::Api(format!(
+                "Gemini API error (HTTP {}): {}",
+                status.as_u16(),
+                error_text
+            )));
         }
 
         let stream = response.bytes_stream();
@@ -374,23 +398,32 @@ impl LlmClient for GeminiClient {
         );
 
         // Build endpoint with model
-        let endpoint = format!(
-            "{}:generateContent?key={}",
-            self.profile.endpoint.trim_end_matches('/'),
-            self.profile.api_key
-        );
+        let endpoint = self.build_endpoint("generateContent");
 
         let response = self
             .client
             .post(&endpoint)
             .header("Content-Type", "application/json")
+            .header("x-goog-api-key", &self.profile.api_key)
             .json(&request)
             .send()
             .await?;
 
         if !response.status().is_success() {
+            let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::Api(format!("Gemini API error: {}", error_text)));
+            if error_text.is_empty() {
+                return Err(LlmError::Api(format!(
+                    "Gemini API error: HTTP {} {}",
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or("Unknown")
+                )));
+            }
+            return Err(LlmError::Api(format!(
+                "Gemini API error (HTTP {}): {}",
+                status.as_u16(),
+                error_text
+            )));
         }
 
         let response_data: GeminiResponse = response.json().await?;
