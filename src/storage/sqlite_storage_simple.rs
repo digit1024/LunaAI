@@ -410,6 +410,16 @@ impl SqliteStorage {
 
         Ok(changes > 0)
     }
+    
+    /// Update conversation profile
+    pub fn update_profile(&self, conversation_id: &str, profile_name: Option<&str>) -> SqliteResult<bool> {
+        let changes = self.conn.execute(
+            "UPDATE conversations SET profile_name = ?1 WHERE id = ?2",
+            params![profile_name, conversation_id],
+        )?;
+
+        Ok(changes > 0)
+    }
 
     /// Get conversation by ID
     pub fn get_conversation(&self, conversation_id: &str) -> SqliteResult<Option<Conversation>> {

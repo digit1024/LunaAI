@@ -163,6 +163,12 @@ impl Storage {
         let id_str = id.to_string();
         self.sqlite.update_title(&id_str, &title)
     }
+    
+    /// Update conversation profile
+    pub fn update_conversation_profile(&self, id: &Uuid, profile_name: Option<&str>) -> SqliteResult<bool> {
+        let id_str = id.to_string();
+        self.sqlite.update_profile(&id_str, profile_name)
+    }
 
     /// Add a message to a conversation
     pub fn add_message_to_conversation(

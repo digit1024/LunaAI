@@ -213,7 +213,7 @@ impl AppConfig {
         Self::config_dir().join("config.toml")
     }
 
-    fn config_toml_path() -> PathBuf {
+    pub fn config_toml_path() -> PathBuf {
         Self::config_dir().join("config.toml")
     }
 

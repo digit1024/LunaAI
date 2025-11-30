@@ -37,6 +37,7 @@ pub struct ServerContext {
 pub struct SessionState {
     pub profile_name: String,
     pub llm_client: Arc<dyn crate::llm::LlmClient>,
+    pub active_conversation_id: Option<Uuid>,
     inflight: Vec<JoinHandle<()>>,
 }
 
@@ -49,6 +50,7 @@ impl SessionState {
         Ok(Self {
             profile_name: config.default.clone(),
             llm_client: llm::build_llm_client(&profile),
+            active_conversation_id: None,
             inflight: Vec::new(),
         })
     }
@@ -144,6 +146,8 @@ impl ServerHandler {
         let conversation_id = storage
             .create_conversation_with_profile(title_text, profile_name.as_deref())
             .context("failed to create conversation")?;
+        // Clear active conversation - new conversation will be set when loaded
+        self.session.active_conversation_id = None;
         let _ = self.outbound.send(ServerEvent::ConversationCreated {
             conversation_id: conversation_id.to_string(),
         });
@@ -166,7 +170,17 @@ impl ServerHandler {
                         profile: conv_profile.clone(),
                     });
                 }
+            } else {
+                // Conversation has no profile stored - set it to current session profile
+                // This handles old conversations created before profile support
+                // Do this silently (no ProfileChanged event) since session already has this profile
+                let session_profile = Some(self.session.profile_name.clone());
+                let _ = storage.update_conversation_profile(&uuid, session_profile.as_deref())
+                    .context("failed to update conversation profile");
             }
+            
+            // Track this as the active conversation
+            self.session.active_conversation_id = Some(uuid);
             
             let view = to_conversation_view(&conv);
             let _ = self
@@ -229,7 +243,16 @@ impl ServerHandler {
 
     async fn handle_change_profile(&mut self, profile: String) -> Result<()> {
         self.session.update_profile(&profile, &self.ctx.config)?;
-        let _ = self.outbound.send(ServerEvent::ProfileChanged { profile });
+        let _ = self.outbound.send(ServerEvent::ProfileChanged { profile: profile.clone() });
+        
+        // Update active conversation's profile in database if there is one
+        if let Some(conv_id) = self.session.active_conversation_id {
+            let storage = self.ctx.storage.lock().await;
+            if let Err(e) = storage.update_conversation_profile(&conv_id, Some(&profile)) {
+                eprintln!("Failed to update active conversation profile: {}", e);
+            }
+        }
+        
         Ok(())
     }
 
@@ -265,7 +288,22 @@ impl ServerHandler {
 
         let storage = self.ctx.storage.lock().await;
         let conversation_uuid = if let Some(existing) = conversation_id {
-            Uuid::parse_str(&existing).context("invalid conversation id")?
+            let uuid = Uuid::parse_str(&existing).context("invalid conversation id")?;
+            
+            // Check if conversation's stored profile differs from current session profile
+            // If so, update the conversation's stored profile to match session profile
+            if let Some(conv) = storage.get_conversation(&uuid).context("failed to get conversation")? {
+                let conv_profile = conv.profile_name.as_deref();
+                let session_profile = Some(self.session.profile_name.as_str());
+                
+                // Update conversation's profile if it differs
+                if conv_profile != session_profile {
+                    let _ = storage.update_conversation_profile(&uuid, session_profile)
+                        .context("failed to update conversation profile");
+                }
+            }
+            
+            uuid
         } else {
             // Store current profile when creating new conversation
             let profile_name = Some(self.session.profile_name.clone());
@@ -365,13 +403,17 @@ impl ServerHandler {
         Ok(())
     }
 
-    async fn handle_delete_conversation(&self, conversation_id: String) -> Result<()> {
+    async fn handle_delete_conversation(&mut self, conversation_id: String) -> Result<()> {
         let uuid = Uuid::parse_str(&conversation_id).context("invalid conversation id format")?;
         let storage = self.ctx.storage.lock().await;
         let deleted = storage
             .delete_conversation(&uuid)
             .context("failed to delete conversation")?;
         if deleted {
+            // Clear active conversation if it was deleted
+            if self.session.active_conversation_id == Some(uuid) {
+                self.session.active_conversation_id = None;
+            }
             let _ = self.outbound.send(ServerEvent::ConversationDeleted {
                 conversation_id,
             });
