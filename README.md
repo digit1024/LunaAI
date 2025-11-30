@@ -2,22 +2,19 @@
   <br>
   <h1>🌙 Luna AI</h1>
 
-  <p><strong>Your brilliant AI companion for the COSMIC™ desktop!</strong></p>
+  <p><strong>Your brilliant AI companion for desktop and mobile!</strong></p>
   
-  <p>A modern, native desktop application that brings powerful AI conversations right to your desktop with seamless MCP integration.</p>
-
-  <a href='https://github.com/digit1024/LunaAI/releases'>
-    <img width='200' alt='Download Flatpak Release' src='https://img.shields.io/badge/Download-Flatpak%20Release-blue?style=for-the-badge&logo=flatpak&logoColor=white'/>
-  </a>
+  <p>A modern, native application that brings powerful AI conversations to your desktop, phone, and tablet with seamless MCP integration.</p>
 </div>
 
 ## ✨ What is Luna AI?
 
-Luna AI is your intelligent desktop companion that combines the power of modern AI with the beauty of native desktop integration. Built specifically for the COSMIC desktop environment, Luna brings you:
+Luna AI is your intelligent companion that combines the power of modern AI with the beauty of native integration. Available on desktop and mobile, Luna brings you:
 
 - 🤖 **Smart Conversations** - Real-time streaming responses that feel natural and engaging
+- 📱 **Mobile & Desktop** - Use Luna on your phone, tablet, or desktop - all in sync
 - 🔧 **MCP Superpowers** - Connect to tools and services through Model Context Protocol
-- 🎨 **Beautiful Interface** - Native COSMIC design that feels right at home
+- 🎨 **Beautiful Interface** - Native design that feels right at home
 - 💾 **Memory Management** - Save, organize, and revisit your conversations
 - 🔌 **Flexible Backends** - Support for multiple AI providers and local models
 
@@ -25,9 +22,12 @@ Luna AI is your intelligent desktop companion that combines the power of modern 
 
 ### 🎯 Core Features
 - **Real-time Chat**: Watch responses stream in with smooth, non-blocking UI
+- **Cross-Platform**: Desktop and mobile apps that sync seamlessly
+- **Voice Mode**: Speech recognition and text-to-speech for hands-free conversations
 - **Conversation History**: Never lose a brilliant idea - save and search all your chats
 - **MCP Integration**: Connect to external tools, APIs, and services
-- **Keyboard Shortcuts**: Navigate like a pro with efficient keyboard controls
+- **File Attachments**: Share documents and images directly in conversations
+- **Keyboard Shortcuts**: Navigate like a pro with efficient keyboard controls (desktop)
 
 ### 🔧 MCP Magic
 Luna's MCP integration opens up a world of possibilities:
@@ -78,41 +78,72 @@ Easily switch between backends in the settings or configure multiple providers f
 
 ## 🛠️ Installation
 
-### Building from Source
+### Desktop Application
+
+#### Building from Source
 ```bash
 git clone https://github.com/digit1024/LunaAI.git
 cd LunaAI
 cargo build
 ```
 
-### Running
+#### Running
 ```bash
 cargo run
 ```
 
+#### Running as Server
+Run Luna in server mode to access it from mobile devices and other clients:
+```bash
+cargo run -- --server
+```
+
+### Mobile App
+
+The mobile app is available in the `mobile_app/` directory. Built with Flutter, it connects to the desktop server via WebSocket.
+
+See the [Mobile App README](mobile_app/README.md) for installation instructions.
+
 ## 🏗️ Architecture
 
-Luna AI is built with modern Rust and the COSMIC desktop framework:
+Luna AI is built with modern technologies:
 
-- **libcosmic**: Native desktop integration
+- **Desktop**: Rust with COSMIC desktop framework for native integration
+- **Mobile**: Flutter for cross-platform mobile support (Android, iOS)
+- **Server Mode**: HTTP/WebSocket server for multi-device access
 - **tokio**: Async runtime for smooth performance
 - **MCP Protocol**: Tool calling and external service integration
-- **Real-time Streaming**: Live response updates
+- **Real-time Streaming**: Live response updates across all platforms
 
 ## 📸 Screenshots
 
-<div align="center">
-  <img src="res/screenshots/emails.png" alt="Email Integration" width="800"/>
-  <p><em>Agentic capabilities with MCP!</em></p>
+### 🖥️ Desktop
 
-  <img src="res/screenshots/history.png" alt="Conversation History" width="800"/>
+<div align="center">
+  <img src="res/screenshots/desktop_conversation.png" alt="Desktop Conversation" width="800"/>
+  <p><em>Beautiful conversations on the COSMIC desktop</em></p>
+
+  <img src="res/screenshots/desktop_history.png" alt="Desktop Conversation History" width="800"/>
   <p><em>Manage and revisit your conversation history</em></p>
   
-  <img src="res/screenshots/settings.png" alt="Settings" width="800"/>
+  <img src="res/screenshots/desktop_settings.png" alt="Desktop Settings" width="800"/>
   <p><em>Configure your AI backends and preferences</em></p>
 
-  <img src="res/screenshots/mcp.png" alt="MCP Integration" width="800"/>
+  <img src="res/screenshots/desktop_mcp.png" alt="Desktop MCP Integration" width="800"/>
   <p><em>Powerful MCP tool integration and configuration</em></p>
+</div>
+
+### 📱 Mobile
+
+<div align="center">
+  <img src="res/screenshots/mobile_conversation.png" alt="Mobile Conversation" width="400"/>
+  <p><em>Chat with Luna on the go</em></p>
+
+  <img src="res/screenshots/mobile_conversation_mode.png" alt="Mobile Voice Mode" width="400"/>
+  <p><em>Voice mode for hands-free conversations</em></p>
+  
+  <img src="res/screenshots/mobile_settings.png" alt="Mobile Settings" width="400"/>
+  <p><em>Mobile settings and configuration</em></p>
 </div>
 
 ## 🤝 Contributing
