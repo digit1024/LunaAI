@@ -5,4 +5,4 @@
 // pub mod components;
 pub mod simple_settings;
 
-pub use simple_settings::{SimpleSettingsPage, SimpleSettingsMessage};
+pub use simple_settings::{SimpleSettingsMessage, SimpleSettingsPage};

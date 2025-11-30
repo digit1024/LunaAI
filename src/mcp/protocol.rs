@@ -32,11 +32,11 @@ impl MCPRequest {
             params,
         }
     }
-    
+
     pub fn tools_list(id: u64) -> Self {
         Self::new(id, "tools/list".to_string(), Some(serde_json::json!({})))
     }
-    
+
     pub fn tools_call(id: u64, name: String, arguments: serde_json::Value) -> Self {
         Self::new(
             id,
@@ -44,10 +44,10 @@ impl MCPRequest {
             Some(serde_json::json!({
                 "name": name,
                 "arguments": arguments
-            }))
+            })),
         )
     }
-    
+
     pub fn initialize(id: u64) -> Self {
         Self::new(
             id,
@@ -61,8 +61,7 @@ impl MCPRequest {
                     "name": "cosmic_llm",
                     "version": "1.0.0"
                 }
-            }))
+            })),
         )
     }
 }
-

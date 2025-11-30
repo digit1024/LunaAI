@@ -1,5 +1,5 @@
 /// Context drawer page variants for cosmic_llm
-/// 
+///
 /// Pattern based on msToDO's context.rs implementation
 /// Provides type-safe context page management with dynamic titles
 
@@ -25,4 +25,3 @@ impl Default for ContextPage {
         Self::About
     }
 }
-

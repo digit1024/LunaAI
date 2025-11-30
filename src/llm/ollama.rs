@@ -94,7 +94,6 @@ impl OllamaClient {
 
 #[async_trait]
 impl LlmClient for OllamaClient {
-
     async fn send_message_stream(
         &self,
         messages: Vec<Message>,
@@ -154,16 +153,14 @@ impl LlmClient for OllamaClient {
             .client
             .post(&self.profile.endpoint)
             .header("Content-Type", "application/json");
-        
+
         // Only add authorization header if API key is provided
         if !self.profile.api_key.is_empty() {
-            request_builder = request_builder.header("Authorization", format!("Bearer {}", self.profile.api_key));
+            request_builder =
+                request_builder.header("Authorization", format!("Bearer {}", self.profile.api_key));
         }
 
-        let response = request_builder
-            .json(&request)
-            .send()
-            .await?;
+        let response = request_builder.json(&request).send().await?;
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
@@ -177,20 +174,22 @@ impl LlmClient for OllamaClient {
                 .and_then(|chunk| {
                     let chunk_str = String::from_utf8(chunk.to_vec())
                         .map_err(|e| LlmError::Api(format!("Invalid UTF-8: {}", e)))?;
-                    
+
                     // Parse SSE format
                     let lines: Vec<&str> = chunk_str.lines().collect();
                     let mut content = String::new();
-                    
+
                     for line in lines {
                         if line.starts_with("data: ") {
                             let data = &line[6..]; // Remove "data: " prefix
                             if data == "[DONE]" {
                                 break;
                             }
-                            
+
                             // Parse JSON
-                            if let Ok(stream_response) = serde_json::from_str::<OllamaStreamResponse>(data) {
+                            if let Ok(stream_response) =
+                                serde_json::from_str::<OllamaStreamResponse>(data)
+                            {
                                 if let Some(choice) = stream_response.choices.first() {
                                     if let Some(content_delta) = &choice.delta.content {
                                         content.push_str(content_delta);
@@ -199,7 +198,7 @@ impl LlmClient for OllamaClient {
                             }
                         }
                     }
-                    
+
                     if content.is_empty() {
                         Ok(None)
                     } else {
@@ -217,7 +216,7 @@ impl LlmClient for OllamaClient {
 
         Ok(Box::pin(stream))
     }
-    
+
     async fn send_message_with_tools(
         &self,
         messages: Vec<Message>,
@@ -282,14 +281,19 @@ impl LlmClient for OllamaClient {
         let tools = if !has_tools {
             None
         } else {
-            Some(available_tools.into_iter().map(|tool| OllamaTool {
-                r#type: "function".to_string(),
-                function: OllamaToolFunction {
-                    name: tool.name,
-                    description: tool.description,
-                    parameters: tool.parameters,
-                },
-            }).collect())
+            Some(
+                available_tools
+                    .into_iter()
+                    .map(|tool| OllamaTool {
+                        r#type: "function".to_string(),
+                        function: OllamaToolFunction {
+                            name: tool.name,
+                            description: tool.description,
+                            parameters: tool.parameters,
+                        },
+                    })
+                    .collect(),
+            )
         };
 
         let request = OllamaRequest {
@@ -305,16 +309,14 @@ impl LlmClient for OllamaClient {
             .client
             .post(&self.profile.endpoint)
             .header("Content-Type", "application/json");
-        
+
         // Only add authorization header if API key is provided
         if !self.profile.api_key.is_empty() {
-            request_builder = request_builder.header("Authorization", format!("Bearer {}", self.profile.api_key));
+            request_builder =
+                request_builder.header("Authorization", format!("Bearer {}", self.profile.api_key));
         }
 
-        let response = request_builder
-            .json(&request)
-            .send()
-            .await?;
+        let response = request_builder.json(&request).send().await?;
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
@@ -329,13 +331,16 @@ impl LlmClient for OllamaClient {
             .ok_or_else(|| LlmError::Api("No response from Ollama".to_string()))?;
 
         let content = choice.message.content.clone().unwrap_or_default();
-        
+
         let tool_calls = if let Some(tool_calls) = &choice.message.tool_calls {
-            tool_calls.iter().map(|tc| ToolCall {
-                id: tc.id.clone(),
-                name: tc.function.name.clone(),
-                parameters: serde_json::from_str(&tc.function.arguments).unwrap_or_default(),
-            }).collect()
+            tool_calls
+                .iter()
+                .map(|tc| ToolCall {
+                    id: tc.id.clone(),
+                    name: tc.function.name.clone(),
+                    parameters: serde_json::from_str(&tc.function.arguments).unwrap_or_default(),
+                })
+                .collect()
         } else {
             Vec::new()
         };
@@ -346,4 +351,3 @@ impl LlmClient for OllamaClient {
         })
     }
 }
-

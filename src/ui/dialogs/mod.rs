@@ -30,25 +30,29 @@ impl DialogPage {
                     .title("Message Text")
                     .primary_action(
                         widget::button::suggested("Copy")
-                            .on_press(Message::DialogAction(DialogAction::CopyText))
+                            .on_press(Message::DialogAction(DialogAction::CopyText)),
                     )
                     .secondary_action(
                         widget::button::standard("Close")
-                            .on_press(Message::DialogAction(DialogAction::Close))
+                            .on_press(Message::DialogAction(DialogAction::Close)),
                     )
                     .control(
                         widget::column::with_children(vec![
                             // Instructions
-                            widget::text("Click Copy to copy the message text to clipboard").size(14).into(),
+                            widget::text("Click Copy to copy the message text to clipboard")
+                                .size(14)
+                                .into(),
                             widget::Space::with_height(Length::Fixed(16.0)).into(),
                             // Text editor with the content
                             text_editor(content)
                                 .id(text_editor_id.clone())
                                 .height(Length::Fixed(300.0))
-                                .on_action(|action| Message::DialogAction(DialogAction::TextEditorAction(action)))
-                                .into()
+                                .on_action(|action| {
+                                    Message::DialogAction(DialogAction::TextEditorAction(action))
+                                })
+                                .into(),
                         ])
-                        .spacing(spacing.space_s)
+                        .spacing(spacing.space_s),
                     )
             }
         }

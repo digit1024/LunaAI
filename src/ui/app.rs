@@ -1,26 +1,36 @@
 use cosmic::{
     app::{self, Core},
-    iced::{Length, Subscription, keyboard},
-    widget::{self, scrollable, menu, text_editor, markdown},
-    Application, Element,
     dialog::file_chooser::{self, FileFilter},
+    iced::Subscription,
+    widget::{self, menu, text_editor},
+    Application, Element,
 };
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::{
+    agentic::protocol::AgentUpdate,
     config::{AppConfig, LlmProfile},
-    storage::Storage,
-    llm::LlmClient,
+    ui::pages::settings::simple_settings::{EditingProfileState, ProfileField},
+    llm::{self, LlmClient, ToolCall},
     mcp::MCPServerRegistry,
-    prompts::PromptManager,
+    prompts::{ProfilePromptError, PromptManager},
+    storage::{
+        sqlite_storage_simple::{MessageMetadata, SqliteSettings},
+        Storage,
+    },
     ui::context::ContextPage,
-    ui::pages::settings::{SimpleSettingsPage, SimpleSettingsMessage},
-    ui::widgets::{ToolCallWidget, ToolCallMessage},
     ui::dialogs::{DialogAction, DialogPage},
+    ui::pages::chat,
+    ui::pages::history,
+    ui::pages::mcp_config,
+    ui::pages::settings::{SimpleSettingsMessage, SimpleSettingsPage},
+    ui::pages::tools,
+    ui::widgets::ToolCallMessage,
 };
-use crate::agentic::protocol::AgentUpdate;
+use serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -31,7 +41,7 @@ pub enum Message {
     RetryMessage,
     AttachFile,
     FileSelected(String), // file path
-    RemoveFile(String), // file path
+    RemoveFile(String),   // file path
     FileChooserCancelled,
     FileChooserError(Arc<file_chooser::Error>),
     NavigateTo(NavigationPage),
@@ -39,10 +49,11 @@ pub enum Message {
     DeleteConversation(Uuid),
     NewConversation,
     AgentUpdate(AgentUpdate),
-    ToolCallStarted(String, String), // tool_name, parameters
+    ToolCallStarted(String, String),   // tool_name, parameters
     ToolCallCompleted(String, String), // tool_name, result
-    ToolCallError(String, String), // tool_name, error
+    ToolCallError(String, String),     // tool_name, error
     ToolCallWidgetMessage(usize, ToolCallMessage), // index, message
+    ToggleToolSummary(usize, String),  // message idx, summary id
     ScrollToBottom,
     // Menu actions
     ShowAbout,
@@ -62,8 +73,13 @@ pub enum Message {
     // MCP actions
     MCPToolsUpdated(Vec<crate::llm::ToolDefinition>),
     RefreshMCPTools,
+    ToggleMCPServer(String), // server_name
+    OpenMCPConfig, // Open MCP config file in cosmic-edit
+    // Settings actions
+    OpenConfigFile, // Open main config file in cosmic-edit
+    OpenProfilePrompt(String), // Open prompt file for profile in cosmic-edit
     // Tool toggle actions
-    ToggleAllTools(bool), // true = enable all, false = disable all
+    ToggleAllTools(bool),     // true = enable all, false = disable all
     ToggleTool(String, bool), // tool_name, enabled
     ShowToolsContext,
     HideToolsContext,
@@ -72,6 +88,13 @@ pub enum Message {
     // Search functionality
     SearchChanged(String),
     SearchResults(Vec<crate::storage::sqlite_storage_simple::Snippet>),
+    // Inline error handling
+    InlineError(String),
+    DismissError,
+    // Typing indicator animation tick
+    TypingIndicatorTick(cosmic::iced::time::Instant),
+    // Refresh conversation list for nav bar
+    RefreshConversationList,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +103,13 @@ pub enum NavigationPage {
     History,
     MCPConfig,
     Settings,
+}
+
+// NavItem represents either a navigation page or a conversation in the nav bar
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NavItem {
+    Page(NavigationPage),
+    Conversation(Uuid),
 }
 
 // ContextPage moved to ui::context module for better organization
@@ -129,68 +159,67 @@ impl menu::Action for NavMenuAction {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Turn {
-    pub id: Uuid,
-    pub iteration: u32,
-    pub text: String,
-    pub complete: bool,
-    pub tools: Vec<ToolCallInfo>,
-}
-
 pub struct CosmicLlmApp {
-    core: Core,
-    config: AppConfig,
-    storage: Storage,
-    prompt_manager: PromptManager,
-    input: String,
-    input_content: text_editor::Content,
-    messages: Vec<ChatMessage>,
-    input_id: cosmic::widget::Id,
-    current_page: NavigationPage,
-    current_conversation_id: Option<Uuid>,
-    mcp_registry: Arc<RwLock<MCPServerRegistry>>,
-    llm_client: Arc<dyn LlmClient>,
-    is_streaming: bool,
-    current_streaming_id: Option<Uuid>,
-    active_tool_calls: Vec<ToolCallInfo>,
+    pub core: Core,
+    pub config: AppConfig,
+    pub storage: Storage,
+    pub prompt_manager: PromptManager,
+    pub input: String,
+    pub input_content: text_editor::Content,
+    pub messages: Vec<ChatMessage>,
+    pub input_id: cosmic::widget::Id,
+    pub current_page: NavigationPage,
+    pub current_conversation_id: Option<Uuid>,
+    pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
+    pub llm_client: Arc<dyn LlmClient>,
+    pub is_streaming: bool,
+    pub current_streaming_id: Option<Uuid>,
+    pub active_tool_calls: Vec<ToolCallInfo>,
     // Anchors tool calls under the AI message that executed them
-    current_ai_message_index: Option<usize>,
-    archived_tool_calls: Vec<AnchoredToolCall>,
-    expanded_tool_calls: std::collections::HashSet<usize>,
-    scrollable_id: cosmic::widget::Id,
-    key_binds: std::collections::HashMap<menu::KeyBind, MenuAction>,
-    settings_changed: bool,
-    title_sender: Option<tokio::sync::mpsc::UnboundedSender<(Uuid, String)>>,
-    settings_page: SimpleSettingsPage,
-    context_page: ContextPage,
-    about: widget::about::About,
+    pub current_ai_message_index: Option<usize>,
+    pub archived_tool_calls: Vec<AnchoredToolCall>,
+    pub expanded_tool_calls: std::collections::HashSet<usize>,
+    pub expanded_tool_summaries: std::collections::HashSet<(usize, String)>,
+    pub expanded_mcp_servers: std::collections::HashSet<String>,
+    pub scrollable_id: cosmic::widget::Id,
+    pub key_binds: std::collections::HashMap<menu::KeyBind, MenuAction>,
+    pub settings_changed: bool,
+    pub title_sender: Option<tokio::sync::mpsc::UnboundedSender<(Uuid, String)>>,
+    pub settings_page: SimpleSettingsPage,
+    pub context_page: ContextPage,
+    pub about: widget::about::About,
     // Navigation model to integrate with COSMIC shell nav bar (pattern from msToDO)
-    nav_model: widget::segmented_button::SingleSelectModel,
-    // New agent protocol view model
-    turns: Vec<Turn>,
+    pub nav_model: widget::segmented_button::SingleSelectModel,
     // When true, ignore legacy StreamingUpdate to avoid duplicate UI events
-    agent_mode_active: bool,
+    pub agent_mode_active: bool,
     // Dialog state
-    dialog: Option<DialogPage>,
-    dialog_text_input_id: widget::Id,
+    pub dialog: Option<DialogPage>,
+    pub dialog_text_input_id: widget::Id,
     // MCP tools cache
-    available_mcp_tools: Vec<crate::llm::ToolDefinition>,
+    pub available_mcp_tools: Vec<crate::llm::ToolDefinition>,
     // Tool enable/disable state (tool_name -> enabled)
-    tool_states: std::collections::HashMap<String, bool>,
+    pub tool_states: std::collections::HashMap<String, bool>,
+    // Pending tool calls for persistence
+    pub pending_tool_calls_for_history: Vec<ToolCall>,
+    pub tool_runtime_context: std::collections::HashMap<String, ToolRuntimeContext>,
     // Show tools context panel
-    show_tools_context: bool,
+    pub show_tools_context: bool,
     // Store last user message for retry functionality
-    last_user_message: Option<String>,
+    pub last_user_message: Option<String>,
     // Store attached files
-    attached_files: Vec<String>,
+    pub attached_files: Vec<String>,
     // Store current error message
-    current_error: Option<String>,
+    pub current_error: Option<String>,
     // Store prepared LLM messages with attachments for the current request
-    pending_llm_messages: Option<Vec<crate::llm::Message>>,
+    pub pending_llm_messages: Option<Vec<crate::llm::Message>>,
     // Search functionality
-    search_query: String,
-    search_results: Vec<crate::storage::sqlite_storage_simple::Snippet>,
+    pub search_query: String,
+    pub search_results: Vec<crate::storage::sqlite_storage_simple::Snippet>,
+    // Typing indicator animation state
+    pub typing_indicator_progress: f32,
+    pub typing_indicator_start_time: Option<cosmic::iced::time::Instant>,
+    // Recent conversations for nav bar (last 10)
+    pub recent_conversations: Vec<(Uuid, String)>, // (id, title)
 }
 
 #[derive(Debug, Clone)]
@@ -223,15 +252,28 @@ pub struct AnchoredToolCall {
     pub tool_call: ToolCallInfo,
 }
 
+#[derive(Debug, Clone)]
+pub struct ToolRuntimeContext {
+    pub anchor_index: usize,
+    pub params: Option<Value>,
+}
+
 impl CosmicLlmApp {
-    pub fn new(core: Core, config: AppConfig, storage: Storage, prompt_manager: PromptManager, mcp_registry: Arc<RwLock<MCPServerRegistry>>, llm_client: Arc<dyn LlmClient>) -> Self {
+    pub fn new(
+        core: Core,
+        config: AppConfig,
+        storage: Storage,
+        prompt_manager: PromptManager,
+        mcp_registry: Arc<RwLock<MCPServerRegistry>>,
+        llm_client: Arc<dyn LlmClient>,
+    ) -> Self {
         // Create title sender channel
-        let (title_sender, _title_receiver) = tokio::sync::mpsc::unbounded_channel::<(Uuid, String)>();
-        
+        let (title_sender, _title_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<(Uuid, String)>();
+
         // Note: Title updates will be handled synchronously in the main thread
         // since Storage is not cloneable for async tasks
-        
-        
+
         let about = widget::about::About::default()
             .name("Cosmic LLM")
             .icon(cosmic::widget::icon::Named::new(Self::APP_ID))
@@ -249,8 +291,13 @@ impl CosmicLlmApp {
             .comments("A COSMIC desktop application for AI chat with MCP tool integration. Built with Rust and libcosmic.");
 
         // Initialize icon cache
-        crate::ui::icons::ICON_CACHE.set(Mutex::new(crate::ui::icons::IconCache::new())).unwrap();
+        crate::ui::icons::ICON_CACHE
+            .set(Mutex::new(crate::ui::icons::IconCache::new()))
+            .unwrap();
 
+        let mut settings_page = SimpleSettingsPage::new();
+        settings_page.load_from_config(&config);
+        
         Self {
             core,
             config: config.clone(),
@@ -270,37 +317,39 @@ impl CosmicLlmApp {
             current_ai_message_index: None,
             archived_tool_calls: Vec::new(),
             expanded_tool_calls: std::collections::HashSet::new(),
+            expanded_tool_summaries: std::collections::HashSet::new(),
+            expanded_mcp_servers: std::collections::HashSet::new(),
             scrollable_id: cosmic::widget::Id::unique(),
             key_binds: Self::create_key_binds(),
             settings_changed: false,
             title_sender: Some(title_sender),
-            settings_page: SimpleSettingsPage::new(),
+            settings_page,
             context_page: ContextPage::About,
             about,
             nav_model: {
-                // Build and populate a segmented nav model mirroring app sections
+                // Build initial nav model - will be updated after loading conversations
                 let mut model = widget::segmented_button::ModelBuilder::default().build();
                 model
                     .insert()
-                    .text("Chat")
+                    .text("New Chat")
                     .icon(crate::ui::icons::get_icon("chat-symbolic", 16))
-                    .data(NavigationPage::Chat);
+                    .data(NavItem::Page(NavigationPage::Chat));
                 model
                     .insert()
-                    .text("History")
+                    .text("More history")
                     .icon(crate::ui::icons::get_icon("list-large-symbolic", 16))
-                    .data(NavigationPage::History)
+                    .data(NavItem::Page(NavigationPage::History))
                     .divider_above(true);
                 model
                     .insert()
                     .text("MCP Config")
                     .icon(crate::ui::icons::get_icon("configure-symbolic", 16))
-                    .data(NavigationPage::MCPConfig);
+                    .data(NavItem::Page(NavigationPage::MCPConfig));
                 model
                     .insert()
                     .text("Settings")
                     .icon(crate::ui::icons::get_icon("settings-symbolic", 16))
-                    .data(NavigationPage::Settings)
+                    .data(NavItem::Page(NavigationPage::Settings))
                     .divider_above(true);
                 // Activate first item - collect entity first to avoid borrow issues
                 let first_entity = model.iter().next();
@@ -309,12 +358,13 @@ impl CosmicLlmApp {
                 }
                 model
             },
-            turns: Vec::new(),
             agent_mode_active: true,
             dialog: None,
             dialog_text_input_id: widget::Id::unique(),
             available_mcp_tools: Vec::new(),
             tool_states: std::collections::HashMap::new(),
+            pending_tool_calls_for_history: Vec::new(),
+            tool_runtime_context: std::collections::HashMap::new(),
             show_tools_context: false,
             last_user_message: None,
             attached_files: Vec::new(),
@@ -322,16 +372,18 @@ impl CosmicLlmApp {
             pending_llm_messages: None,
             search_query: String::new(),
             search_results: Vec::new(),
+            typing_indicator_progress: 0.0,
+            typing_indicator_start_time: None,
+            recent_conversations: Vec::new(),
         }
     }
-    
 
     fn create_key_binds() -> std::collections::HashMap<menu::KeyBind, MenuAction> {
         use cosmic::iced::keyboard::Key;
         use cosmic::widget::menu::key_bind::{KeyBind, Modifier};
-        
+
         let mut key_binds = std::collections::HashMap::new();
-        
+
         // File menu shortcuts
         key_binds.insert(
             KeyBind {
@@ -347,7 +399,7 @@ impl CosmicLlmApp {
             },
             MenuAction::Quit,
         );
-        
+
         // View menu shortcuts
         key_binds.insert(
             KeyBind {
@@ -356,7 +408,7 @@ impl CosmicLlmApp {
             },
             MenuAction::Settings,
         );
-        
+
         // Send message shortcut
         key_binds.insert(
             KeyBind {
@@ -365,15 +417,15 @@ impl CosmicLlmApp {
             },
             MenuAction::SendMessage,
         );
-        
+
         key_binds
     }
-    
+
     fn create_streaming_subscription(&self, streaming_id: Option<Uuid>) -> Subscription<Message> {
-        use cosmic::iced_futures::stream;
         use cosmic::iced_futures::futures::SinkExt;
+        use cosmic::iced_futures::stream;
         use tokio::sync::mpsc;
-        
+
         // Create a streaming subscription using the channel pattern
         let id = streaming_id.unwrap_or_else(|| uuid::Uuid::new_v4());
         let llm_client = self.llm_client.clone();
@@ -381,76 +433,203 @@ impl CosmicLlmApp {
         let messages = self.messages.clone();
         let mcp_registry = self.mcp_registry.clone();
         let pending_messages = self.pending_llm_messages.clone();
-        
-        Subscription::run_with_id(id, stream::channel(100, move |mut output| async move {
-            // Use prepared messages if available (which includes attachments), otherwise rebuild
-            let llm_messages = if let Some(prepared_messages) = pending_messages {
-                println!("🔍 DEBUG: Using prepared messages with attachments");
-                prepared_messages
-            } else {
-                println!("🔍 DEBUG: Rebuilding messages from history");
-                // Build LLM messages with system prompt
-                let mut llm_messages = Vec::new();
-                
-                // Add system prompt if available
-                if let Some(system_prompt) = prompt_manager.get_system_prompt() {
-                    llm_messages.push(crate::llm::Message::new(
-                        crate::llm::Role::System,
-                        system_prompt.to_string()
-                    ));
-                }
-                
-                // Add conversation history, filtering out placeholder assistant messages
-                for msg in &messages {
-                    let content_trimmed = msg.content.trim();
-                    if !msg.is_user {
-                        // Skip placeholder or empty assistant messages
-                        if content_trimmed.is_empty() || content_trimmed == "🤔 Thinking..." {
-                            continue;
+        let profile_prompt_path = self.config.get_default_profile().and_then(|profile| {
+            profile
+                .profile_prompt_file
+                .as_ref()
+                .map(|path| crate::config::AppConfig::resolve_config_path(path))
+        });
+
+        Subscription::run_with_id(
+            id,
+            stream::channel(100, move |mut output| async move {
+                // Use prepared messages if available (which includes attachments), otherwise rebuild
+                let llm_messages = if let Some(prepared_messages) = pending_messages {
+                    println!("🔍 DEBUG: Using prepared messages with attachments");
+                    prepared_messages
+                } else {
+                    println!("🔍 DEBUG: Rebuilding messages from history");
+                    // Build LLM messages with system prompt
+                    let mut llm_messages = Vec::new();
+
+                    // Add system prompt if available
+                    if let Some(system_prompt) = prompt_manager.get_system_prompt() {
+                        llm_messages.push(crate::llm::Message::new(
+                            crate::llm::Role::System,
+                            system_prompt.to_string(),
+                        ));
+                    }
+
+                    // Add profile prompt if configured
+                    if let Some(profile_prompt_path) = profile_prompt_path.clone() {
+                        let resolved = profile_prompt_path.to_string_lossy().to_string();
+                        match prompt_manager.load_profile_prompt(&resolved) {
+                            Ok(prompt) => {
+                                llm_messages.push(crate::llm::Message::new(
+                                    crate::llm::Role::System,
+                                    prompt,
+                                ));
+                            }
+                            Err(err) => {
+                                let message = match &err {
+                                    ProfilePromptError::NotFound(_) => {
+                                        format!("Profile prompt not found: {}", err.path())
+                                    }
+                                    _ => err.to_string(),
+                                };
+                                let _ = output.send(Message::InlineError(message)).await;
+                            }
                         }
                     }
 
-                    let role = if msg.is_user {
-                        crate::llm::Role::User
-                    } else {
-                        crate::llm::Role::Assistant
-                    };
-                    llm_messages.push(crate::llm::Message::new(role, msg.content.clone()));
-                }
-                
-                llm_messages
-            };
-            
-            // Create channel for agent updates
-            let (tx_agent, mut rx_agent) = mpsc::unbounded_channel::<AgentUpdate>();
-            
-            // Start agentic processing in background
-            let llm_client_clone = llm_client.clone();
-            let mcp_registry_clone = mcp_registry.clone();
-            let llm_messages_clone = llm_messages.clone();
-            
-            tokio::spawn(async move {
-                let mut agentic_loop = crate::agentic::loop_engine::AgenticLoop::new(mcp_registry_clone, llm_client_clone);
-                
-                match agentic_loop.process_message(llm_messages_clone, Some(tx_agent.clone()), Some(id)).await {
-                    Ok(_final_response) => {
-                        // Final response is sent via AgentUpdate::EndConversation
+                    // Add conversation history, filtering out placeholder assistant messages
+                    for msg in &messages {
+                        let content_trimmed = msg.content.trim();
+                        if !msg.is_user {
+                            // Skip placeholder or empty assistant messages
+                            if content_trimmed.is_empty() || content_trimmed == "🤔 Thinking..." {
+                                continue;
+                            }
+                        }
+
+                        let role = if msg.is_user {
+                            crate::llm::Role::User
+                        } else {
+                            crate::llm::Role::Assistant
+                        };
+                        llm_messages.push(crate::llm::Message::new(role, msg.content.clone()));
                     }
-                    Err(e) => {
-                        // Send error via AgentUpdate - this handles cases where the loop fails completely
-                        let _ = tx_agent.send(AgentUpdate::ModelError { 
-                            turn_id: uuid::Uuid::new_v4(), // Generate a turn ID for the error
-                            error: format!("Agent processing failed: {}", e)
-                        });
+
+                    llm_messages
+                };
+
+                // Create channel for agent updates
+                let (tx_agent, mut rx_agent) = mpsc::unbounded_channel::<AgentUpdate>();
+
+                // Start agentic processing in background
+                let llm_client_clone = llm_client.clone();
+                let mcp_registry_clone = mcp_registry.clone();
+                let llm_messages_clone = llm_messages.clone();
+
+                tokio::spawn(async move {
+                    let mut agentic_loop = crate::agentic::loop_engine::AgenticLoop::new(
+                        mcp_registry_clone,
+                        llm_client_clone,
+                    );
+
+                    match agentic_loop
+                        .process_message(llm_messages_clone, Some(tx_agent.clone()), Some(id))
+                        .await
+                    {
+                        Ok(_final_response) => {
+                            // Final response is sent via AgentUpdate::EndConversation
+                        }
+                        Err(e) => {
+                            // Send error via AgentUpdate - this handles cases where the loop fails completely
+                            let _ = tx_agent.send(AgentUpdate::ModelError {
+                                error: format!("Agent processing failed: {}", e),
+                            });
+                        }
+                    }
+                });
+
+                // Process AgentUpdate stream
+                while let Some(update) = rx_agent.recv().await {
+                    let _ = output.send(Message::AgentUpdate(update)).await;
+                }
+            }),
+        )
+    }
+
+    fn rebuild_conversation_view(
+        &mut self,
+        conversation: crate::storage::conversation_storage::Conversation,
+    ) {
+        self.messages.clear();
+        self.archived_tool_calls.clear();
+        self.active_tool_calls.clear();
+        self.current_ai_message_index = None;
+        self.pending_tool_calls_for_history.clear();
+        self.tool_runtime_context.clear();
+        self.expanded_tool_summaries.clear();
+        self.expanded_tool_summaries.clear();
+
+        let mut archived_indices: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+
+        for stored in conversation.messages {
+            // Tool role messages should NOT be added as regular chat messages -
+            // they only update the archived tool calls with results
+            if stored.role == "tool" {
+                if let Some(tool_call_id) = stored.tool_call_id.as_ref() {
+                    if let Some(idx) = archived_indices.get(tool_call_id) {
+                        if let Some(entry) = self.archived_tool_calls.get_mut(*idx) {
+                            entry.tool_call.status =
+                                if stored.tool_status.as_deref() == Some("error") {
+                                    ToolCallStatus::Error
+                                } else {
+                                    ToolCallStatus::Completed
+                                };
+
+                            // Prefer tool_result_json over content (content is legacy/redundant)
+                            let result_text = stored
+                                .tool_result_json
+                                .as_ref()
+                                .map(|value| {
+                                    serde_json::to_string_pretty(value)
+                                        .unwrap_or_else(|_| value.to_string())
+                                })
+                                .unwrap_or_else(|| stored.content.clone());
+                            if entry.tool_call.status == ToolCallStatus::Error {
+                                entry.tool_call.error = Some(result_text);
+                            } else {
+                                entry.tool_call.result = Some(result_text);
+                            }
+                        }
                     }
                 }
-            });
-            
-            // Process AgentUpdate stream
-            while let Some(update) = rx_agent.recv().await {
-                let _ = output.send(Message::AgentUpdate(update)).await;
+                continue; // Skip adding tool messages to self.messages
             }
-        }))
+
+            let is_user = stored.role == "user";
+            self.messages.push(ChatMessage {
+                content: stored.content.clone(),
+                is_user,
+                is_error: false,
+            });
+            let anchor_index = self.messages.len().saturating_sub(1);
+
+            if let Some(tool_calls) = stored.tool_calls {
+                for call in tool_calls {
+                    let params_pretty = serde_json::to_string_pretty(&call.parameters)
+                        .unwrap_or_else(|_| call.parameters.to_string());
+                    let info = ToolCallInfo {
+                        id: Some(call.id.clone()),
+                        tool_name: call.name.clone(),
+                        parameters: params_pretty,
+                        status: ToolCallStatus::Started,
+                        result: None,
+                        error: None,
+                    };
+                    self.archived_tool_calls.push(AnchoredToolCall {
+                        anchor_index,
+                        tool_call: info,
+                    });
+                    archived_indices.insert(call.id.clone(), self.archived_tool_calls.len() - 1);
+                }
+            }
+        }
+    }
+
+    fn format_json_string(raw: &str) -> String {
+        match serde_json::from_str::<Value>(raw) {
+            Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| raw.to_string()),
+            Err(_) => raw.to_string(),
+        }
+    }
+
+    fn coerce_value(raw: &str) -> Value {
+        serde_json::from_str::<Value>(raw).unwrap_or(Value::String(raw.to_string()))
     }
 }
 
@@ -476,64 +655,92 @@ impl Application for CosmicLlmApp {
         }
         println!("⚙️ Loaded default profile key: '{}'", config.default);
         if let Some(p) = config.get_default_profile() {
-            let masked = if p.api_key.len() > 6 { format!("{}...{}", &p.api_key[..3], &p.api_key[p.api_key.len().saturating_sub(3)..]) } else { "***".to_string() };
-            println!("🔧 Default profile details → model='{}' endpoint='{}' api_key='{}'", p.model, p.endpoint, masked);
+            let masked = if p.api_key.len() > 6 {
+                format!(
+                    "{}...{}",
+                    &p.api_key[..3],
+                    &p.api_key[p.api_key.len().saturating_sub(3)..]
+                )
+            } else {
+                "***".to_string()
+            };
+            println!(
+                "🔧 Default profile details → model='{}' endpoint='{}' api_key='{}'",
+                p.model, p.endpoint, masked
+            );
         } else {
             println!("❗ No default profile found; using fallback defaults");
         }
-        let storage = Storage::new_default().unwrap_or_else(|e| {
-            eprintln!("Failed to initialize SQLite storage: {}", e);
-            // Fallback to a temporary database
-            Storage::new(std::env::temp_dir().join("cosmic_llm_temp.db"))
+        let initial_profile_mcp_servers = config
+            .get_default_profile()
+            .map(|profile| profile.enabled_mcp.clone())
+            .unwrap_or_default();
+        let sqlite_settings = SqliteSettings::from(&config.server);
+        let storage =
+            Storage::new_default_with_settings(sqlite_settings.clone()).unwrap_or_else(|e| {
+                eprintln!("Failed to initialize SQLite storage: {}", e);
+                // Fallback to a temporary database
+                Storage::new_with_settings(
+                    std::env::temp_dir().join("cosmic_llm_temp.db"),
+                    sqlite_settings,
+                )
                 .expect("Failed to create temporary database")
-        });
-        
+            });
+
         // Initialize prompt manager
         let prompt_manager = crate::prompts::PromptManager::load_from_config(&config.prompts)
             .unwrap_or_else(|e| {
                 eprintln!("Failed to load prompts: {}", e);
-                crate::prompts::PromptManager::load_from_config(&crate::prompts::PromptConfig::default()).unwrap()
+                crate::prompts::PromptManager::load_from_config(
+                    &crate::prompts::PromptConfig::default(),
+                )
+                .unwrap()
             });
-        
+
         // Initialize MCP registry (non-blocking)
         let mcp_registry = Arc::new(RwLock::new(MCPServerRegistry::new()));
         let mcp_registry_clone = mcp_registry.clone();
-        
+
         // Try to load MCP config from JSON file (new Claude Desktop format)
         // Falls back to embedded TOML format if JSON doesn't exist
-        let mcp_config = crate::config::MCPConfig::load_from_json()
-            .unwrap_or_else(|e| {
-                println!("📝 No mcp_config.json found (or error loading): {}", e);
-                println!("📝 Falling back to embedded TOML config");
-                config.mcp.clone()
-            });
-        
+        let mcp_config = crate::config::MCPConfig::load_from_json().unwrap_or_else(|e| {
+            println!("📝 No mcp_config.json found (or error loading): {}", e);
+            println!("📝 Falling back to embedded TOML config");
+            config.mcp.clone()
+        });
+
         println!("🔧 MCP Servers configured: {}", mcp_config.servers.len());
         for (name, _) in &mcp_config.servers {
             println!("  • {}", name);
         }
-        
+
         tokio::spawn(async move {
             let mut registry = mcp_registry_clone.write().await;
             if let Err(e) = registry.initialize_from_config(&mcp_config).await {
                 eprintln!("Failed to initialize MCP registry: {}", e);
+            } else if !initial_profile_mcp_servers.is_empty() {
+                registry.apply_profile_tool_defaults(&initial_profile_mcp_servers);
             }
         });
-        
+
         // Initialize LLM client based on default profile's backend
         let llm_client: Arc<dyn LlmClient> = {
-            let profile = config.get_default_profile().unwrap_or(&crate::config::LlmProfile::default()).clone();
-            match profile.backend.as_str() {
-                "anthropic" => Arc::new(crate::llm::anthropic::AnthropicClient::new(profile)),
-                "deepseek" | "openai" => Arc::new(crate::llm::openai::OpenAIClient::new(profile)),
-                "ollama" => Arc::new(crate::llm::ollama::OllamaClient::new(profile)),
-                "gemini" => Arc::new(crate::llm::gemini::GeminiClient::new(profile)),
-                _ => Arc::new(crate::llm::openai::OpenAIClient::new(profile)),
-            }
+            let profile = config
+                .get_default_profile()
+                .unwrap_or(&crate::config::LlmProfile::default())
+                .clone();
+            llm::build_llm_client(&profile)
         };
-        
-        let mut app = Self::new(core, config, storage, prompt_manager, mcp_registry, llm_client);
-        
+
+        let mut app = Self::new(
+            core,
+            config,
+            storage,
+            prompt_manager,
+            mcp_registry,
+            llm_client,
+        );
+
         // Check for conversations with "Generating title..." and retry title generation
         // Note: We'll handle this in the main thread instead of async task
         // since Storage is not cloneable
@@ -542,28 +749,37 @@ impl Application for CosmicLlmApp {
             eprintln!("Failed to list conversations: {}", e);
             Vec::new()
         });
-        let conversation_ids: Vec<_> = conversations.into_iter()
+        let conversation_ids: Vec<_> = conversations
+            .into_iter()
             .filter(|conv| conv.title == "Generating title...")
             .map(|conv| conv.id)
             .collect();
-        
+
         for conv_id in conversation_ids {
-            println!("🔄 Found conversation {} with 'Generating title...', retrying...", conv_id);
-            
+            println!(
+                "🔄 Found conversation {} with 'Generating title...', retrying...",
+                conv_id
+            );
+
             // Get the first user message to generate title from
             if let Ok(Some(conversation)) = app.storage.get_conversation(&conv_id) {
-                if let Some(first_user_msg) = conversation.messages.iter().find(|msg| msg.role == "user") {
+                if let Some(first_user_msg) =
+                    conversation.messages.iter().find(|msg| msg.role == "user")
+                {
                     let message_text = &first_user_msg.content;
                     println!("📝 Retrying title generation for: '{}'", message_text);
-                    
+
                     // Create a simple title based on first few words
                     let fallback_title = if message_text.len() > 50 {
                         format!("{}...", &message_text[..47])
                     } else {
                         message_text.clone()
                     };
-                    
-                    if let Err(e) = app.storage.update_conversation_title(&conv_id, fallback_title.clone()) {
+
+                    if let Err(e) = app
+                        .storage
+                        .update_conversation_title(&conv_id, fallback_title.clone())
+                    {
                         eprintln!("Failed to update conversation title: {}", e);
                     }
                     println!("💾 Updated title to: {}", fallback_title);
@@ -571,14 +787,18 @@ impl Application for CosmicLlmApp {
             }
         }
         println!("✅ Finished checking for conversations with 'Generating title...'");
-        
+
         // Add welcome message
         app.messages.push(ChatMessage {
             content: "Welcome to Cosmic AI".to_string(),
             is_user: false,
             is_error: false,
         });
-        
+
+        // Load recent conversations and update nav model
+        app.load_recent_conversations();
+        app.update_nav_model();
+
         // Load MCP tools on startup (same as refresh button)
         let load_tools_task = cosmic::Task::perform(
             async move {
@@ -589,19 +809,39 @@ impl Application for CosmicLlmApp {
             },
             |msg| msg,
         );
-        
-        let tasks = vec![load_tools_task];
+
+        let mut tasks = vec![load_tools_task];
+        if let Some(task) = app.profile_tool_defaults_task() {
+            tasks.push(task);
+        }
 
         (app, app::Task::batch(tasks))
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
+        use cosmic::iced::time;
+        use cosmic::iced_futures::Subscription;
+        
         // Create a subscription for streaming LLM responses
-        if self.is_streaming {
+        let streaming_sub = if self.is_streaming {
             self.create_streaming_subscription(self.current_streaming_id)
         } else {
             Subscription::none()
-        }
+        };
+        
+        // Create a timer subscription for typing indicator animation
+        let animation_sub = if self.is_streaming {
+            time::every(time::Duration::from_millis(50))
+                .map(|instant| Message::TypingIndicatorTick(instant))
+        } else {
+            Subscription::none()
+        };
+        
+        // Create a periodic subscription to refresh conversation list every 15 seconds
+        let conversation_refresh_sub = time::every(time::Duration::from_secs(15))
+            .map(|_| Message::RefreshConversationList);
+        
+        Subscription::batch(vec![streaming_sub, animation_sub, conversation_refresh_sub])
     }
 
     fn update(&mut self, message: Self::Message) -> app::Task<Self::Message> {
@@ -614,40 +854,54 @@ impl Application for CosmicLlmApp {
                 self.input = self.input_content.text();
             }
             Message::SendMessage => {
-                println!("🔍 DEBUG: SendMessage received. Input: '{}', Attachments: {}", 
-                    self.input, self.attached_files.len());
+                println!(
+                    "🔍 DEBUG: SendMessage received. Input: '{}', Attachments: {}",
+                    self.input,
+                    self.attached_files.len()
+                );
                 // Allow sending if there's text OR if there are attachments
                 if !self.input.trim().is_empty() || !self.attached_files.is_empty() {
                     // Create new conversation if none exists
                     if self.current_conversation_id.is_none() {
-                        let conv_id = self.storage.create_conversation("Generating title...".to_string())
+                        let conv_id = self
+                            .storage
+                            .create_conversation("Generating title...".to_string())
                             .unwrap_or_else(|e| {
                                 eprintln!("Failed to create conversation: {}", e);
                                 Uuid::new_v4()
                             });
                         self.current_conversation_id = Some(conv_id);
-                        
+                        // Update nav model to reflect new conversation
+                        self.load_recent_conversations();
+                        self.update_nav_model();
+
                         // Generate title synchronously
                         println!("🚀 Starting title generation for conversation {}", conv_id);
                         let message_text = self.input.clone();
-                        
+
                         // Create a simple title based on first few words
                         let fallback_title = if message_text.len() > 50 {
                             format!("{}...", &message_text[..47])
                         } else {
                             message_text
                         };
-                        
+
                         println!("🎯 Generated title: '{}'", fallback_title);
-                        if let Err(e) = self.storage.update_conversation_title(&conv_id, fallback_title.clone()) {
+                        if let Err(e) = self
+                            .storage
+                            .update_conversation_title(&conv_id, fallback_title.clone())
+                        {
                             eprintln!("Failed to update conversation title: {}", e);
                         }
-                        println!("💾 Saved title to storage for conversation {}: {}", conv_id, fallback_title);
+                        println!(
+                            "💾 Saved title to storage for conversation {}: {}",
+                            conv_id, fallback_title
+                        );
                     }
-                    
+
                     // Create user message content
                     let message_content = self.input.clone();
-                    
+
                     // Add user message
                     let user_msg = ChatMessage {
                         content: message_content,
@@ -655,34 +909,53 @@ impl Application for CosmicLlmApp {
                         is_error: false,
                     };
                     self.messages.push(user_msg.clone());
+
+                    // Play sent sound
+                    crate::ui::audio::AudioService::play_sound("sent.mp3");
                     
+                    // Trigger scroll to bottom for new user message
+                    // The scroll will be handled by anchor_bottom() and widget operations
+
                     // Add to storage
                     if let Some(conv_id) = self.current_conversation_id {
-                        if let Err(e) = self.storage.add_message_to_conversation(&conv_id, "user".to_string(), self.input.clone()) {
+                        if let Err(e) = self.storage.add_message_to_conversation(
+                            &conv_id,
+                            "user".to_string(),
+                            self.input.clone(),
+                        ) {
                             eprintln!("Failed to add message to conversation: {}", e);
                         }
                     }
-                    
+
                     // Send to LLM and get response
                     let input_text = self.input.clone();
                     self.input.clear();
                     self.input_content = text_editor::Content::new();
-                    
-                    // Do not create a placeholder bubble; BeginTurn will create the assistant bubble
+
+                    // Assistant bubble will be created when streaming starts
                     self.current_ai_message_index = None;
-                    
+
                     // Create attachments for the current message FIRST
                     let mut attachments = Vec::new();
-                    println!("🔍 DEBUG: Processing {} attached files: {:?}", self.attached_files.len(), self.attached_files);
+                    println!(
+                        "🔍 DEBUG: Processing {} attached files: {:?}",
+                        self.attached_files.len(),
+                        self.attached_files
+                    );
                     for file_path in &self.attached_files {
                         println!("🔍 DEBUG: Processing file: {}", file_path);
                         match crate::llm::file_utils::create_attachment(file_path) {
                             Ok(attachment) => {
                                 println!("🔍 DEBUG: Created attachment: {:?}", attachment);
                                 // Validate file for LLM
-                                if let Err(e) = crate::llm::file_utils::validate_file_for_llm(&attachment) {
+                                if let Err(e) =
+                                    crate::llm::file_utils::validate_file_for_llm(&attachment)
+                                {
                                     println!("❌ DEBUG: File validation failed: {}", e);
-                                    self.current_error = Some(format!("File validation error for {}: {}", file_path, e));
+                                    self.current_error = Some(format!(
+                                        "File validation error for {}: {}",
+                                        file_path, e
+                                    ));
                                     return app::Task::none();
                                 }
                                 println!("✅ DEBUG: File validation passed");
@@ -690,66 +963,90 @@ impl Application for CosmicLlmApp {
                             }
                             Err(e) => {
                                 println!("❌ DEBUG: Failed to create attachment: {}", e);
-                                self.current_error = Some(format!("Failed to process file {}: {}", file_path, e));
+                                self.current_error =
+                                    Some(format!("Failed to process file {}: {}", file_path, e));
                                 return app::Task::none();
                             }
                         }
                     }
                     println!("🔍 DEBUG: Final attachments count: {}", attachments.len());
-                    
+
                     // Convert messages to LLM format
+                    let profile_prompt = self.load_active_profile_prompt();
                     let mut llm_messages = Vec::new();
-                    
+
                     // Add system prompt if available
                     if let Some(system_prompt) = self.prompt_manager.get_system_prompt() {
                         llm_messages.push(crate::llm::Message::new(
                             crate::llm::Role::System,
-                            system_prompt.to_string()
+                            system_prompt.to_string(),
                         ));
                     }
-                    
+
+                    if let Some(profile_prompt) = profile_prompt {
+                        llm_messages.push(crate::llm::Message::new(
+                            crate::llm::Role::System,
+                            profile_prompt,
+                        ));
+                    }
+
                     for msg in &self.messages {
-                        let role = if msg.is_user { 
-                            crate::llm::Role::User 
-                        } else { 
-                            crate::llm::Role::Assistant 
+                        let role = if msg.is_user {
+                            crate::llm::Role::User
+                        } else {
+                            crate::llm::Role::Assistant
                         };
                         llm_messages.push(crate::llm::Message::new(role, msg.content.clone()));
                     }
-                    
+
                     // Create the current user message with attachments
                     let current_user_message = if attachments.is_empty() {
                         crate::llm::Message::new(crate::llm::Role::User, input_text.clone())
                     } else {
-                        crate::llm::Message::new_with_attachments(crate::llm::Role::User, input_text.clone(), attachments)
+                        crate::llm::Message::new_with_attachments(
+                            crate::llm::Role::User,
+                            input_text.clone(),
+                            attachments,
+                        )
                     };
-                    
+
                     // Debug: Print the final message that will be sent to LLM
-                    println!("🔍 DEBUG: Final LLM message with attachments: {:?}", current_user_message);
-                    
+                    println!(
+                        "🔍 DEBUG: Final LLM message with attachments: {:?}",
+                        current_user_message
+                    );
+
                     llm_messages.push(current_user_message);
-                    
+
                     // Clear attached files after processing
                     self.attached_files.clear();
-                    
+
                     // Debug: Print all messages being sent to LLM
                     println!("🔍 DEBUG: All LLM messages being sent:");
                     for (i, msg) in llm_messages.iter().enumerate() {
-                        println!("  Message {}: role={:?}, content={}, attachments={:?}", 
-                            i, msg.role, msg.content, msg.attachments);
+                        println!(
+                            "  Message {}: role={:?}, content={}, attachments={:?}",
+                            i, msg.role, msg.content, msg.attachments
+                        );
                     }
-                    
+
                     // Store the prepared messages for the subscription to use
                     self.pending_llm_messages = Some(llm_messages);
-                    
+
                     // Start streaming LLM response
                     let streaming_id = uuid::Uuid::new_v4();
                     self.current_streaming_id = Some(streaming_id);
                     self.is_streaming = true;
+                    // Initialize typing indicator animation
+                    self.typing_indicator_start_time = Some(cosmic::iced::time::Instant::now());
+                    self.typing_indicator_progress = 0.0;
                     
+                    // Play typing sound
+                    crate::ui::audio::AudioService::play_sound("typing.mp3");
+
                     // Store the last user message for retry functionality
                     self.last_user_message = Some(input_text.clone());
-                    
+
                     // The scrollable widget will automatically scroll to show new content
                     // due to the spacer at the bottom
                 }
@@ -760,7 +1057,9 @@ impl Application for CosmicLlmApp {
                     self.is_streaming = false;
                     self.current_streaming_id = None;
                     self.pending_llm_messages = None; // Clear prepared messages
-                    
+                    self.typing_indicator_start_time = None;
+                    self.typing_indicator_progress = 0.0;
+
                     // Remove any incomplete assistant message
                     if let Some(index) = self.current_ai_message_index {
                         if index < self.messages.len() && !self.messages[index].is_user {
@@ -776,15 +1075,17 @@ impl Application for CosmicLlmApp {
                     if self.is_streaming {
                         self.is_streaming = false;
                         self.current_streaming_id = None;
+                        self.typing_indicator_start_time = None;
+                        self.typing_indicator_progress = 0.0;
                     }
-                    
+
                     // Remove the last assistant message if it exists
                     if let Some(index) = self.current_ai_message_index {
                         if index < self.messages.len() && !self.messages[index].is_user {
                             self.messages.remove(index);
                         }
                     }
-                    
+
                     // Resend the last user message
                     self.input = last_msg.clone();
                     // Trigger SendMessage with the retried message
@@ -811,7 +1112,7 @@ impl Application for CosmicLlmApp {
                         .extension("ts")
                         .extension("html")
                         .extension("css");
-                    
+
                     let image_filter = FileFilter::new("Image files")
                         .extension("jpg")
                         .extension("jpeg")
@@ -820,7 +1121,7 @@ impl Application for CosmicLlmApp {
                         .extension("bmp")
                         .extension("webp")
                         .extension("svg");
-                    
+
                     let document_filter = FileFilter::new("Document files")
                         .extension("pdf")
                         .extension("doc")
@@ -829,20 +1130,22 @@ impl Application for CosmicLlmApp {
                         .extension("xlsx")
                         .extension("ppt")
                         .extension("pptx");
-                    
+
                     let dialog = file_chooser::open::Dialog::new()
                         .title("Select File to Attach")
                         .filter(text_filter)
                         .filter(image_filter)
                         .filter(document_filter);
-                    
+
                     match dialog.open_file().await {
                         Ok(response) => {
                             let url = response.url();
                             if let Ok(path) = url.to_file_path() {
                                 Message::FileSelected(path.to_string_lossy().to_string())
                             } else {
-                                Message::FileChooserError(Arc::new(file_chooser::Error::UrlAbsolute))
+                                Message::FileChooserError(Arc::new(
+                                    file_chooser::Error::UrlAbsolute,
+                                ))
                             }
                         }
                         Err(file_chooser::Error::Cancelled) => Message::FileChooserCancelled,
@@ -854,7 +1157,10 @@ impl Application for CosmicLlmApp {
                 println!("🔍 DEBUG: File selected: {}", file_path);
                 if !self.attached_files.contains(&file_path) {
                     self.attached_files.push(file_path);
-                    println!("🔍 DEBUG: File added to attached_files. Current count: {}", self.attached_files.len());
+                    println!(
+                        "🔍 DEBUG: File added to attached_files. Current count: {}",
+                        self.attached_files.len()
+                    );
                 } else {
                     println!("🔍 DEBUG: File already in attached_files");
                 }
@@ -872,7 +1178,7 @@ impl Application for CosmicLlmApp {
             }
             Message::NavigateTo(page) => {
                 self.current_page = page;
-                
+
                 // Refresh MCP tools when navigating to MCP config page or Chat page
                 if page == NavigationPage::MCPConfig || page == NavigationPage::Chat {
                     // Immediately try to get cached tools
@@ -885,16 +1191,12 @@ impl Application for CosmicLlmApp {
             Message::SelectConversation(id) => {
                 self.current_conversation_id = Some(id);
                 self.current_page = NavigationPage::Chat;
-                // Load conversation messages
                 if let Ok(Some(conv)) = self.storage.get_conversation(&id) {
-                    self.messages = conv.messages.iter().map(|msg| {
-                        ChatMessage {
-                            content: msg.content.clone(),
-                            is_user: msg.role == "user",
-                            is_error: false,
-                        }
-                    }).collect();
+                    self.rebuild_conversation_view(conv);
                 }
+                // Update nav model to reflect current conversation
+                self.load_recent_conversations();
+                self.update_nav_model();
             }
             Message::DeleteConversation(id) => {
                 // If deleting the active conversation, clear the chat
@@ -906,6 +1208,9 @@ impl Application for CosmicLlmApp {
                 let _ = self.storage.delete_conversation(&id);
                 // Stay on History page to reflect changes
                 self.current_page = NavigationPage::History;
+                // Update nav model to reflect deleted conversation
+                self.load_recent_conversations();
+                self.update_nav_model();
             }
             Message::NewConversation => {
                 self.current_conversation_id = None;
@@ -915,153 +1220,354 @@ impl Application for CosmicLlmApp {
                 self.active_tool_calls.clear();
                 self.archived_tool_calls.clear();
                 self.current_ai_message_index = None;
+                self.pending_tool_calls_for_history.clear();
+                self.tool_runtime_context.clear();
+                self.expanded_tool_summaries.clear();
+                // Update nav model to reflect new conversation
+                self.load_recent_conversations();
+                self.update_nav_model();
             }
             Message::AgentUpdate(u) => {
                 match u {
-                    AgentUpdate::BeginTurn { conversation_id: _, turn_id, iteration, plan_summary } => {
-                        // Start a new turn bubble
-                        self.turns.push(Turn { id: turn_id, iteration, text: plan_summary.unwrap_or_default(), complete: false, tools: Vec::new() });
-                        // Always create a fresh assistant message bubble for this turn
-                        self.messages.push(ChatMessage { content: String::from(""), is_user: false, is_error: false });
+                    AgentUpdate::AssistantStreamingStarted => {
+                        self.pending_tool_calls_for_history.clear();
+                        self.tool_runtime_context.clear();
+                        self.active_tool_calls.clear();
+                        self.messages.push(ChatMessage {
+                            content: String::new(),
+                            is_user: false,
+                            is_error: false,
+                        });
                         self.current_ai_message_index = Some(self.messages.len() - 1);
                     }
-                    AgentUpdate::AssistantDelta { turn_id: _, text_chunk, seq: _ } => {
-                        if let Some(turn) = self.turns.last_mut() {
-                            turn.text.push_str(&text_chunk);
-                        }
+                    AgentUpdate::AssistantDelta { text_chunk, .. } => {
                         if let Some(idx) = self.current_ai_message_index {
                             if let Some(msg) = self.messages.get_mut(idx) {
                                 msg.content.push_str(&text_chunk);
                             }
                         }
+                        // Trigger scroll to bottom during streaming
+                        // The scroll will be handled by anchor_bottom() and widget operations
                     }
-                    AgentUpdate::AssistantComplete { turn_id: _, full_text } => {
-                        if let Some(turn) = self.turns.last_mut() {
-                            turn.text = full_text.clone();
-                        }
-                        // Mirror to legacy bubble
-                        let mut wrote = false;
-                        if let Some(last_msg) = self.messages.last_mut() {
-                            if !last_msg.is_user {
-                                last_msg.content = full_text.clone();
-                                wrote = true;
+                    AgentUpdate::AssistantComplete { full_text } => {
+                        if let Some(idx) = self.current_ai_message_index {
+                            if let Some(msg) = self.messages.get_mut(idx) {
+                                msg.content = full_text.clone();
                             }
-                        }
-                        if !wrote {
-                            self.messages.push(ChatMessage { content: full_text.clone(), is_user: false, is_error: false });
+                        } else {
+                            self.messages.push(ChatMessage {
+                                content: full_text.clone(),
+                                is_user: false,
+                                is_error: false,
+                            });
                             self.current_ai_message_index = Some(self.messages.len() - 1);
                         }
-                        if !full_text.trim().is_empty() {
-                            if let Some(conv_id) = self.current_conversation_id {
-                                if let Err(e) = self.storage.add_message_to_conversation(&conv_id, "assistant".to_string(), full_text) {
-                                    eprintln!("Failed to add message to conversation: {}", e);
-                                }
+                        if let Some(conv_id) = self.current_conversation_id {
+                            let tool_calls_slice = if self.pending_tool_calls_for_history.is_empty()
+                            {
+                                None
+                            } else {
+                                Some(self.pending_tool_calls_for_history.as_slice())
+                            };
+                            let metadata = MessageMetadata {
+                                tool_calls: tool_calls_slice,
+                                tool_call_id: None,
+                                tool_name: None,
+                                tool_status: None,
+                                tool_params_json: None,
+                                tool_result_json: None,
+                            };
+                            if let Err(e) = self.storage.add_message_with_metadata(
+                                &conv_id,
+                                "assistant".to_string(),
+                                full_text,
+                                None,
+                                metadata,
+                            ) {
+                                eprintln!("Failed to add assistant message: {}", e);
                             }
                         }
+                        self.pending_tool_calls_for_history.clear();
                     }
-                    AgentUpdate::ToolPlanned { turn_id: _, plan_items: _ } => {
-                        // Do not create placeholder rows; spinner covers planned state
+                    AgentUpdate::ToolPlanned { plan_items } => {
+                        let anchor = self
+                            .current_ai_message_index
+                            .unwrap_or_else(|| self.messages.len().saturating_sub(1));
+                        for plan in plan_items {
+                            let params_value: Value = serde_json::from_str(&plan.params_json)
+                                .unwrap_or(Value::String(plan.params_json.clone()));
+                            let params_pretty = serde_json::to_string_pretty(&params_value)
+                                .unwrap_or(plan.params_json.clone());
+                            let tool_call = ToolCall {
+                                id: plan.id.clone(),
+                                name: plan.name.clone(),
+                                parameters: params_value.clone(),
+                            };
+                            self.pending_tool_calls_for_history.push(tool_call.clone());
+                            self.tool_runtime_context.insert(
+                                plan.id.clone(),
+                                ToolRuntimeContext {
+                                    anchor_index: anchor,
+                                    params: Some(params_value.clone()),
+                                },
+                            );
+                            self.active_tool_calls.push(ToolCallInfo {
+                                id: Some(plan.id),
+                                tool_name: plan.name,
+                                parameters: params_pretty,
+                                status: ToolCallStatus::Started,
+                                result: None,
+                                error: None,
+                            });
+                        }
                     }
-                    AgentUpdate::ToolStarted { turn_id: _, tool_call_id, name, params_json } => {
-                        // De-duplicate by id if already present (from previous start events)
-                        if let Some(existing) = self.active_tool_calls.iter_mut().find(|tc| tc.id.as_ref().map(|s| s == &tool_call_id).unwrap_or(false)) {
-                            existing.tool_name = name;
-                            existing.parameters = params_json;
+                    AgentUpdate::ToolStarted {
+                        tool_call_id,
+                        name,
+                        params_json,
+                    } => {
+                        let params_value: Value = serde_json::from_str(&params_json)
+                            .unwrap_or(Value::String(params_json.clone()));
+                        let params_pretty = serde_json::to_string_pretty(&params_value)
+                            .unwrap_or(params_json.clone());
+                        let anchor = self
+                            .current_ai_message_index
+                            .unwrap_or_else(|| self.messages.len().saturating_sub(1));
+
+                        self.tool_runtime_context
+                            .entry(tool_call_id.clone())
+                            .and_modify(|ctx| {
+                                if ctx.params.is_none() {
+                                    ctx.params = Some(params_value.clone());
+                                }
+                            })
+                            .or_insert(ToolRuntimeContext {
+                                anchor_index: anchor,
+                                params: Some(params_value.clone()),
+                            });
+
+                        if let Some(existing) = self
+                            .active_tool_calls
+                            .iter_mut()
+                            .find(|tc| tc.id.as_ref().map(|s| s == &tool_call_id).unwrap_or(false))
+                        {
+                            existing.tool_name = name.clone();
+                            existing.parameters = params_pretty;
                             existing.status = ToolCallStatus::Started;
                             existing.result = None;
                             existing.error = None;
                         } else {
-                            self.active_tool_calls.push(ToolCallInfo { id: Some(tool_call_id), tool_name: name, parameters: params_json, status: ToolCallStatus::Started, result: None, error: None });
+                            self.active_tool_calls.push(ToolCallInfo {
+                                id: Some(tool_call_id),
+                                tool_name: name,
+                                parameters: params_pretty,
+                                status: ToolCallStatus::Started,
+                                result: None,
+                                error: None,
+                            });
                         }
                     }
-                    AgentUpdate::ToolResult { turn_id: _, tool_call_id, name, result_json } => {
-                        if let Some(tc) = self.active_tool_calls.iter_mut().find(|tc| tc.id.as_ref().map(|s| s == &tool_call_id).unwrap_or(false) || tc.tool_name == name) {
-                            tc.status = ToolCallStatus::Completed;
-                            tc.result = Some(result_json);
+                    AgentUpdate::ToolResult {
+                        tool_call_id,
+                        name,
+                        result_json,
+                    } => {
+                        let context = self.tool_runtime_context.get(&tool_call_id).cloned();
+                        let result_display = Self::format_json_string(&result_json);
+                        let anchor = context
+                            .as_ref()
+                            .map(|ctx| ctx.anchor_index)
+                            .or(self.current_ai_message_index)
+                            .unwrap_or_else(|| self.messages.len().saturating_sub(1));
+
+                        let mut archived_entry = None;
+                        if let Some(pos) = self.active_tool_calls.iter().position(|tc| {
+                            tc.id.as_ref().map(|s| s == &tool_call_id).unwrap_or(false)
+                        }) {
+                            let mut info = self.active_tool_calls.remove(pos);
+                            info.status = ToolCallStatus::Completed;
+                            info.result = Some(result_display.clone());
+                            archived_entry = Some(info);
                         }
-                    }
-                    AgentUpdate::ToolError { turn_id: _, tool_call_id, name, error, retryable: _ } => {
-                        if let Some(tc) = self.active_tool_calls.iter_mut().find(|tc| tc.id.as_ref().map(|s| s == &tool_call_id).unwrap_or(false) || tc.tool_name == name) {
-                            tc.status = ToolCallStatus::Error;
-                            tc.error = Some(error);
+                        if archived_entry.is_none() {
+                            let params_pretty = context
+                                .as_ref()
+                                .and_then(|ctx| ctx.params.as_ref())
+                                .map(|value| {
+                                    serde_json::to_string_pretty(value)
+                                        .unwrap_or_else(|_| value.to_string())
+                                })
+                                .unwrap_or_else(|| "{}".to_string());
+                            archived_entry = Some(ToolCallInfo {
+                                id: Some(tool_call_id.clone()),
+                                tool_name: name.clone(),
+                                parameters: params_pretty,
+                                status: ToolCallStatus::Completed,
+                                result: Some(result_display.clone()),
+                                error: None,
+                            });
                         }
-                    }
-                    AgentUpdate::EndTurn { turn_id: _ } => {
-                        // Archive active tools under current AI bubble
-                        if let Some(anchor) = self.current_ai_message_index {
-                            for tc in self.active_tool_calls.drain(..) {
-                                self.archived_tool_calls.push(AnchoredToolCall { anchor_index: anchor, tool_call: tc });
+
+                        if let Some(entry) = archived_entry {
+                            self.archived_tool_calls.push(AnchoredToolCall {
+                                anchor_index: anchor,
+                                tool_call: entry,
+                            });
+                            
+                            // Play tool completion sound
+                            crate::ui::audio::AudioService::play_sound("tool.mp3");
+                        }
+
+                        if let Some(conv_id) = self.current_conversation_id {
+                            let params_owned = context.as_ref().and_then(|ctx| ctx.params.clone());
+                            let params_ref = params_owned.as_ref();
+                            let result_value = Self::coerce_value(&result_json);
+                            let metadata = MessageMetadata {
+                                tool_calls: None,
+                                tool_call_id: Some(tool_call_id.as_str()),
+                                tool_name: Some(name.as_str()),
+                                tool_status: Some("success"),
+                                tool_params_json: params_ref,
+                                tool_result_json: Some(&result_value),
+                            };
+                            // Use empty content - tool_result_json holds the actual data
+                            if let Err(e) = self.storage.add_message_with_metadata(
+                                &conv_id,
+                                "tool".to_string(),
+                                String::new(),
+                                None,
+                                metadata,
+                            ) {
+                                eprintln!("Failed to add tool result: {}", e);
                             }
-                            // If the assistant bubble has no text, remove it and shift anchors
-                            let should_remove = self.messages.get(anchor).map(|m| !m.is_user && m.content.trim().is_empty()).unwrap_or(false);
+                        }
+
+                        self.tool_runtime_context.remove(&tool_call_id);
+                    }
+                    AgentUpdate::ToolError {
+                        tool_call_id,
+                        name,
+                        error,
+                        retryable: _,
+                    } => {
+                        let context = self.tool_runtime_context.get(&tool_call_id).cloned();
+                        let anchor = context
+                            .as_ref()
+                            .map(|ctx| ctx.anchor_index)
+                            .or(self.current_ai_message_index)
+                            .unwrap_or_else(|| self.messages.len().saturating_sub(1));
+
+                        let mut archived_entry = None;
+                        if let Some(pos) = self.active_tool_calls.iter().position(|tc| {
+                            tc.id.as_ref().map(|s| s == &tool_call_id).unwrap_or(false)
+                        }) {
+                            let mut info = self.active_tool_calls.remove(pos);
+                            info.status = ToolCallStatus::Error;
+                            info.error = Some(error.clone());
+                            archived_entry = Some(info);
+                        }
+                        if archived_entry.is_none() {
+                            let params_pretty = context
+                                .as_ref()
+                                .and_then(|ctx| ctx.params.as_ref())
+                                .map(|value| {
+                                    serde_json::to_string_pretty(value)
+                                        .unwrap_or_else(|_| value.to_string())
+                                })
+                                .unwrap_or_else(|| "{}".to_string());
+                            archived_entry = Some(ToolCallInfo {
+                                id: Some(tool_call_id.clone()),
+                                tool_name: name.clone(),
+                                parameters: params_pretty,
+                                status: ToolCallStatus::Error,
+                                result: None,
+                                error: Some(error.clone()),
+                            });
+                        }
+
+                        if let Some(entry) = archived_entry {
+                            self.archived_tool_calls.push(AnchoredToolCall {
+                                anchor_index: anchor,
+                                tool_call: entry,
+                            });
+                        }
+
+                        if let Some(conv_id) = self.current_conversation_id {
+                            let params_owned = context.as_ref().and_then(|ctx| ctx.params.clone());
+                            let params_ref = params_owned.as_ref();
+                            let error_value = Value::String(error.clone());
+                            let metadata = MessageMetadata {
+                                tool_calls: None,
+                                tool_call_id: Some(tool_call_id.as_str()),
+                                tool_name: Some(name.as_str()),
+                                tool_status: Some("error"),
+                                tool_params_json: params_ref,
+                                tool_result_json: Some(&error_value),
+                            };
+                            // Use empty content - tool_result_json holds the error
+                            if let Err(e) = self.storage.add_message_with_metadata(
+                                &conv_id,
+                                "tool".to_string(),
+                                String::new(),
+                                None,
+                                metadata,
+                            ) {
+                                eprintln!("Failed to add tool error: {}", e);
+                            }
+                        }
+
+                        self.tool_runtime_context.remove(&tool_call_id);
+                    }
+                    AgentUpdate::ConversationComplete { final_text: _ } => {
+                        if let Some(idx) = self.current_ai_message_index {
+                            let should_remove = self
+                                .messages
+                                .get(idx)
+                                .map(|m| !m.is_user && m.content.trim().is_empty())
+                                .unwrap_or(false);
                             if should_remove {
-                                self.messages.remove(anchor);
+                                self.messages.remove(idx);
                                 for anchored in &mut self.archived_tool_calls {
-                                    if anchored.anchor_index > anchor {
+                                    if anchored.anchor_index > idx {
                                         anchored.anchor_index -= 1;
-                                    } else if anchored.anchor_index == anchor {
-                                        anchored.anchor_index = anchor.saturating_sub(1);
+                                    } else if anchored.anchor_index == idx {
+                                        anchored.anchor_index = idx.saturating_sub(1);
                                     }
                                 }
                             }
-                        } else {
-                            self.active_tool_calls.clear();
                         }
-                        if let Some(turn) = self.turns.last_mut() { 
-                            turn.complete = true;
-                            // Persist turn to storage
-                            if let Some(conv_id) = self.current_conversation_id {
-                                let storage_tools: Vec<crate::storage::conversation_storage::ToolCallInfo> = turn.tools.iter().map(|tc| {
-                                    crate::storage::conversation_storage::ToolCallInfo {
-                                        id: tc.id.clone(),
-                                        tool_name: tc.tool_name.clone(),
-                                        parameters: tc.parameters.clone(),
-                                        status: match tc.status {
-                                            ToolCallStatus::Started => crate::storage::conversation_storage::ToolCallStatus::Started,
-                                            ToolCallStatus::Completed => crate::storage::conversation_storage::ToolCallStatus::Completed,
-                                            ToolCallStatus::Error => crate::storage::conversation_storage::ToolCallStatus::Error,
-                                        },
-                                        result: tc.result.clone(),
-                                        error: tc.error.clone(),
-                                    }
-                                }).collect();
-                                
-                                let storage_turn = crate::storage::conversation_storage::Turn {
-                                    id: turn.id,
-                                    iteration: turn.iteration,
-                                    text: turn.text.clone(),
-                                    complete: turn.complete,
-                                    tools: storage_tools,
-                                };
-                                let _ = self.storage.add_turn_to_conversation(&conv_id, storage_turn);
-                            }
-                        }
-                        self.current_ai_message_index = None;
-                    }
-                    AgentUpdate::EndConversation { final_text: _ } => {
                         self.is_streaming = false;
                         self.current_streaming_id = None;
                         self.current_ai_message_index = None;
-                        self.pending_llm_messages = None; // Clear prepared messages
-                        // Clear any leftover active tool rows (e.g., from placeholders)
+                        self.pending_llm_messages = None;
+                        self.typing_indicator_start_time = None;
+                        self.typing_indicator_progress = 0.0;
                         self.active_tool_calls.clear();
+                        self.pending_tool_calls_for_history.clear();
+                        self.tool_runtime_context.clear();
+                        
+                        // Play completion sound
+                        crate::ui::audio::AudioService::play_sound("done.mp3");
                     }
-                    AgentUpdate::ModelError { turn_id: _, error } => {
+                    AgentUpdate::ModelError { error } => {
                         // Stop streaming and show error message
                         self.is_streaming = false;
                         self.current_streaming_id = None;
                         self.current_ai_message_index = None;
                         self.pending_llm_messages = None;
+                        self.typing_indicator_start_time = None;
+                        self.typing_indicator_progress = 0.0;
                         self.active_tool_calls.clear();
-                        
+                        self.pending_tool_calls_for_history.clear();
+                        self.tool_runtime_context.clear();
+
                         // Add error message as a separate chat bubble
-                        self.messages.push(ChatMessage { 
-                            content: format!("❌ **Model Communication Error**\n\n{}", error), 
+                        self.messages.push(ChatMessage {
+                            content: format!("❌ **Model Communication Error**\n\n{}", error),
                             is_user: false,
-                            is_error: true
+                            is_error: true,
                         });
                     }
-                    AgentUpdate::Heartbeat { turn_id: _, ts_ms: _ } => {}
                 }
             }
             Message::ToolCallStarted(tool_name, parameters) => {
@@ -1077,14 +1583,22 @@ impl Application for CosmicLlmApp {
             }
             Message::ToolCallCompleted(tool_name, result) => {
                 // Update tool call status
-                if let Some(tool_call) = self.active_tool_calls.iter_mut().find(|tc| tc.tool_name == tool_name) {
+                if let Some(tool_call) = self
+                    .active_tool_calls
+                    .iter_mut()
+                    .find(|tc| tc.tool_name == tool_name)
+                {
                     tool_call.status = ToolCallStatus::Completed;
                     tool_call.result = Some(result);
                 }
             }
             Message::ToolCallError(tool_name, error) => {
                 // Update tool call status
-                if let Some(tool_call) = self.active_tool_calls.iter_mut().find(|tc| tc.tool_name == tool_name) {
+                if let Some(tool_call) = self
+                    .active_tool_calls
+                    .iter_mut()
+                    .find(|tc| tc.tool_name == tool_name)
+                {
                     tool_call.status = ToolCallStatus::Error;
                     tool_call.error = Some(error);
                 }
@@ -1101,19 +1615,119 @@ impl Application for CosmicLlmApp {
                     }
                 }
             }
+            Message::ToggleToolSummary(message_idx, summary_id) => {
+                let key = (message_idx, summary_id);
+                if self.expanded_tool_summaries.contains(&key) {
+                    self.expanded_tool_summaries.remove(&key);
+                } else {
+                    self.expanded_tool_summaries.insert(key);
+                }
+            }
+            Message::ToggleMCPServer(server_name) => {
+                if self.expanded_mcp_servers.contains(&server_name) {
+                    self.expanded_mcp_servers.remove(&server_name);
+                } else {
+                    self.expanded_mcp_servers.insert(server_name);
+                }
+            }
+            Message::OpenMCPConfig => {
+                // Get MCP config file path
+                let mcp_config_path = dirs::data_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join("cosmic_llm")
+                    .join("mcp_config.json");
+                
+                // Open file in cosmic-edit
+                let path_str = mcp_config_path.to_string_lossy().to_string();
+                
+                match std::process::Command::new("cosmic-edit")
+                    .arg(&path_str)
+                    .spawn()
+                {
+                    Ok(_) => {
+                        println!("Opened MCP config file in cosmic-edit: {}", path_str);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to open MCP config file in cosmic-edit: {}", e);
+                        // Show error dialog to user
+                        self.dialog = Some(DialogPage::MessageText(
+                            text_editor::Content::with_text(&format!(
+                                "Failed to open MCP config file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
+                                path_str, e
+                            )),
+                        ));
+                    }
+                }
+            }
+            Message::OpenConfigFile => {
+                // Get config file path
+                let config_path = AppConfig::config_toml_path();
+                let path_str = config_path.to_string_lossy().to_string();
+                
+                match std::process::Command::new("cosmic-edit")
+                    .arg(&path_str)
+                    .spawn()
+                {
+                    Ok(_) => {
+                        println!("Opened config file in cosmic-edit: {}", path_str);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to open config file in cosmic-edit: {}", e);
+                        self.dialog = Some(DialogPage::MessageText(
+                            text_editor::Content::with_text(&format!(
+                                "Failed to open config file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
+                                path_str, e
+                            )),
+                        ));
+                    }
+                }
+            }
+            Message::OpenProfilePrompt(profile_name) => {
+                // Get prompt file path for the profile
+                if let Some(profile) = self.config.profiles.get(&profile_name) {
+                    if let Some(prompt_file) = &profile.profile_prompt_file {
+                        let prompt_path = AppConfig::resolve_config_path(prompt_file);
+                        let path_str = prompt_path.to_string_lossy().to_string();
+                        
+                        match std::process::Command::new("cosmic-edit")
+                            .arg(&path_str)
+                            .spawn()
+                        {
+                            Ok(_) => {
+                                println!("Opened prompt file in cosmic-edit: {}", path_str);
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to open prompt file in cosmic-edit: {}", e);
+                                self.dialog = Some(DialogPage::MessageText(
+                                    text_editor::Content::with_text(&format!(
+                                        "Failed to open prompt file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
+                                        path_str, e
+                                    )),
+                                ));
+                            }
+                        }
+                    } else {
+                        self.dialog = Some(DialogPage::MessageText(
+                            text_editor::Content::with_text(&format!(
+                                "Profile '{}' does not have a prompt file configured.",
+                                profile_name
+                            )),
+                        ));
+                    }
+                }
+            }
             Message::ScrollToBottom => {
-                // For now, we'll rely on the spacer at the bottom to force scroll
-                // The scrollable widget should automatically scroll to show new content
-                // This is a placeholder for future scroll-to-bottom implementation
+                // Trigger scroll operation to bottom
+                // The actual scrolling will be handled in the view method using widget operations
             }
             Message::ShowAbout => {
                 // Toggle behavior: if About is already shown, hide it; otherwise show it
                 // Pattern from msToDO for consistent UX
                 if self.context_page == ContextPage::About && self.core.window.show_context {
-                    self.core.window.show_context = false;  // Toggle off
+                    self.core.window.show_context = false; // Toggle off
                 } else {
                     self.context_page = ContextPage::About;
-                    self.core.window.show_context = true;   // Show
+                    self.core.window.show_context = true; // Show
                 }
             }
             Message::CloseAbout => {
@@ -1124,6 +1738,12 @@ impl Application for CosmicLlmApp {
             }
             Message::OpenSettings => {
                 self.current_page = NavigationPage::Settings;
+                // Reload config from file to ensure we have the latest values
+                if let Ok(fresh_config) = AppConfig::load() {
+                    self.config = fresh_config;
+                }
+                // Load current config values into settings page (this also initializes staged config)
+                self.settings_page.load_from_config(&self.config);
             }
             Message::Quit => {
                 // TODO: Implement proper quit
@@ -1134,19 +1754,34 @@ impl Application for CosmicLlmApp {
                 let mut profile_names: Vec<String> = self.config.profiles.keys().cloned().collect();
                 profile_names.sort();
                 if let Some(profile_name) = profile_names.get(profile_index) {
-                    self.config.default = profile_name.clone();
+                    let new_profile = profile_name.clone();
+                    self.config.default = new_profile.clone();
                     self.settings_changed = true;
                     // Recreate LLM client for new default provider
                     if let Some(profile) = self.config.get_default_profile().cloned() {
-                        let masked = if profile.api_key.len() > 6 { format!("{}...{}", &profile.api_key[..3], &profile.api_key[profile.api_key.len().saturating_sub(3)..]) } else { "***".to_string() };
-                        println!("🔄 Switching default profile to '{}' model='{}' endpoint='{}' api_key='{}'", self.config.default, profile.model, profile.endpoint, masked);
-                        self.llm_client = match profile.backend.as_str() {
-                            "anthropic" => Arc::new(crate::llm::anthropic::AnthropicClient::new(profile)),
-                            "deepseek" | "openai" => Arc::new(crate::llm::openai::OpenAIClient::new(profile)),
-                            "ollama" => Arc::new(crate::llm::ollama::OllamaClient::new(profile)),
-                            "gemini" => Arc::new(crate::llm::gemini::GeminiClient::new(profile)),
-                            _ => Arc::new(crate::llm::openai::OpenAIClient::new(profile)),
+                        let masked = if profile.api_key.len() > 6 {
+                            format!(
+                                "{}...{}",
+                                &profile.api_key[..3],
+                                &profile.api_key[profile.api_key.len().saturating_sub(3)..]
+                            )
+                        } else {
+                            "***".to_string()
                         };
+                        println!("🔄 Switching default profile to '{}' model='{}' endpoint='{}' api_key='{}'", self.config.default, profile.model, profile.endpoint, masked);
+                        self.llm_client = llm::build_llm_client(&profile);
+                        
+                        // Update active conversation's profile in database if there is one
+                        if let Some(conv_id) = self.current_conversation_id {
+                            if let Err(e) = self.storage.update_conversation_profile(&conv_id, Some(&new_profile)) {
+                                eprintln!("Failed to update conversation profile: {}", e);
+                            } else {
+                                println!("✅ Updated conversation {} profile to '{}'", conv_id, new_profile);
+                            }
+                        }
+                    }
+                    if let Some(task) = self.profile_tool_defaults_task() {
+                        return task;
                     }
                 }
             }
@@ -1168,18 +1803,9 @@ impl Application for CosmicLlmApp {
                         self.current_page = NavigationPage::Chat;
                     }
                     SimpleSettingsMessage::SetDefaultProfile(name) => {
-                        if self.config.profiles.contains_key(&name) {
-                            self.config.default = name;
-                            self.settings_changed = true;
-                            if let Some(profile) = self.config.get_default_profile().cloned() {
-                                self.llm_client = match profile.backend.as_str() {
-                                    "anthropic" => Arc::new(crate::llm::anthropic::AnthropicClient::new(profile)),
-                                    "deepseek" | "openai" => Arc::new(crate::llm::openai::OpenAIClient::new(profile)),
-                                    "ollama" => Arc::new(crate::llm::ollama::OllamaClient::new(profile)),
-                                    "gemini" => Arc::new(crate::llm::gemini::GeminiClient::new(profile)),
-                                    _ => Arc::new(crate::llm::openai::OpenAIClient::new(profile)),
-                                };
-                            }
+                        if self.settings_page.staged_profiles.contains_key(&name) {
+                            self.settings_page.staged_default = name;
+                            self.settings_page.has_changes = true;
                         }
                     }
                     SimpleSettingsMessage::NewProfileNameChanged(val) => {
@@ -1191,29 +1817,253 @@ impl Application for CosmicLlmApp {
                     SimpleSettingsMessage::NewProfileEndpointChanged(val) => {
                         self.settings_page.new_profile_endpoint = val;
                     }
+                    SimpleSettingsMessage::NewProfileApiKeyChanged(val) => {
+                        self.settings_page.new_profile_api_key = val;
+                    }
+                    SimpleSettingsMessage::NewProfileBackendChanged(val) => {
+                        self.settings_page.new_profile_backend = val;
+                    }
                     SimpleSettingsMessage::AddNewProfile => {
                         let name = self.settings_page.new_profile_name.trim().to_string();
                         let model = self.settings_page.new_profile_model.trim().to_string();
                         let endpoint = self.settings_page.new_profile_endpoint.trim().to_string();
+                        let api_key = self.settings_page.new_profile_api_key.trim().to_string();
+                        let backend = self.settings_page.new_profile_backend.trim().to_string();
                         if !name.is_empty() && !model.is_empty() {
-                            let profile = LlmProfile {
-                                backend: "openai".to_string(), // Default backend
-                                api_key: String::new(),
-                                model,
-                                endpoint,
-                                temperature: Some(0.7),
-                                max_tokens: Some(1000),
-                            };
-                            self.config.profiles.insert(name.clone(), profile);
-                            if self.config.default.is_empty() {
-                                self.config.default = name.clone();
+                            let mut profile = LlmProfile::default();
+                            profile.backend = if backend.is_empty() { "openai".to_string() } else { backend };
+                            profile.model = model;
+                            profile.endpoint = endpoint;
+                            profile.api_key = api_key;
+                            profile.temperature = Some(0.7);
+                            profile.max_tokens = Some(1000);
+                            self.settings_page.staged_profiles.insert(name.clone(), profile);
+                            if self.settings_page.staged_default.is_empty() {
+                                self.settings_page.staged_default = name.clone();
                             }
-                            self.settings_changed = true;
+                            self.settings_page.has_changes = true;
                             // Clear inputs
                             self.settings_page.new_profile_name.clear();
                             self.settings_page.new_profile_model.clear();
                             self.settings_page.new_profile_endpoint.clear();
+                            self.settings_page.new_profile_api_key.clear();
+                            self.settings_page.new_profile_backend = "openai".to_string();
                         }
+                    }
+                    SimpleSettingsMessage::ToggleProfile(profile_name) => {
+                        if self.settings_page.expanded_profiles.contains(&profile_name) {
+                            self.settings_page.expanded_profiles.remove(&profile_name);
+                        } else {
+                            self.settings_page.expanded_profiles.insert(profile_name);
+                        }
+                    }
+                    SimpleSettingsMessage::StartEditProfile(profile_name) => {
+                        if let Some(profile) = self.settings_page.staged_profiles.get(&profile_name).cloned() {
+                            self.settings_page.editing_profiles.insert(
+                                profile_name.clone(),
+                                EditingProfileState {
+                                    name: profile_name.clone(),
+                                    backend: profile.backend,
+                                    model: profile.model,
+                                    endpoint: profile.endpoint,
+                                    api_key: profile.api_key,
+                                    temperature: profile.temperature,
+                                    temperature_str: profile.temperature.map(|t| t.to_string()).unwrap_or_default(),
+                                    max_tokens: profile.max_tokens,
+                                    max_tokens_str: profile.max_tokens.map(|t| t.to_string()).unwrap_or_default(),
+                                    profile_prompt_file: profile.profile_prompt_file.clone(),
+                                    profile_prompt_file_str: profile.profile_prompt_file.as_deref().unwrap_or("").to_string(),
+                                    enabled_mcp: profile.enabled_mcp.clone(),
+                                    enabled_mcp_str: profile.enabled_mcp.join(", "),
+                                },
+                            );
+                        }
+                    }
+                    SimpleSettingsMessage::CancelEditProfile(profile_name) => {
+                        self.settings_page.editing_profiles.remove(&profile_name);
+                    }
+                    SimpleSettingsMessage::SaveProfile(profile_name) => {
+                        if let Some(edit_state) = self.settings_page.editing_profiles.get(&profile_name) {
+                            if let Some(profile) = self.settings_page.staged_profiles.get_mut(&profile_name) {
+                                profile.backend = edit_state.backend.clone();
+                                profile.model = edit_state.model.clone();
+                                profile.endpoint = edit_state.endpoint.clone();
+                                profile.api_key = edit_state.api_key.clone();
+                                profile.temperature = edit_state.temperature;
+                                profile.max_tokens = edit_state.max_tokens;
+                                profile.profile_prompt_file = edit_state.profile_prompt_file.clone();
+                                profile.enabled_mcp = edit_state.enabled_mcp.clone();
+                                self.settings_page.has_changes = true;
+                            }
+                            self.settings_page.editing_profiles.remove(&profile_name);
+                        }
+                    }
+                    SimpleSettingsMessage::DeleteProfile(profile_name) => {
+                        self.settings_page.staged_profiles.remove(&profile_name);
+                        self.settings_page.expanded_profiles.remove(&profile_name);
+                        self.settings_page.editing_profiles.remove(&profile_name);
+                        if self.settings_page.staged_default == profile_name && !self.settings_page.staged_profiles.is_empty() {
+                            self.settings_page.staged_default = self.settings_page.staged_profiles.keys().next().unwrap().clone();
+                        }
+                        self.settings_page.has_changes = true;
+                    }
+                    SimpleSettingsMessage::UpdateProfileField(profile_name, field, value) => {
+                        if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
+                            match field {
+                                ProfileField::Name => edit_state.name = value,
+                                ProfileField::Backend => edit_state.backend = value,
+                                ProfileField::Model => edit_state.model = value,
+                                ProfileField::Endpoint => edit_state.endpoint = value,
+                                ProfileField::ApiKey => edit_state.api_key = value,
+                            }
+                        }
+                    }
+                    SimpleSettingsMessage::UpdateProfileTemperature(profile_name, temp) => {
+                        if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
+                            edit_state.temperature = temp;
+                            edit_state.temperature_str = temp.map(|t| t.to_string()).unwrap_or_default();
+                        }
+                    }
+                    SimpleSettingsMessage::UpdateProfileMaxTokens(profile_name, tokens) => {
+                        if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
+                            edit_state.max_tokens = tokens;
+                            edit_state.max_tokens_str = tokens.map(|t| t.to_string()).unwrap_or_default();
+                        }
+                    }
+                    SimpleSettingsMessage::UpdateProfilePromptFile(profile_name, prompt_file) => {
+                        if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
+                            edit_state.profile_prompt_file = if prompt_file.trim().is_empty() {
+                                None
+                            } else {
+                                Some(prompt_file.clone())
+                            };
+                            edit_state.profile_prompt_file_str = prompt_file;
+                        }
+                    }
+                    SimpleSettingsMessage::UpdateProfileEnabledMCP(profile_name, enabled_mcp) => {
+                        if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
+                            edit_state.enabled_mcp = enabled_mcp.clone();
+                            edit_state.enabled_mcp_str = enabled_mcp.join(", ");
+                        }
+                    }
+                    SimpleSettingsMessage::UpdateServerHost(val) => {
+                        self.settings_page.staged_server.host = val.clone();
+                        self.settings_page.server_host = val;
+                        self.settings_page.has_changes = true;
+                    }
+                    SimpleSettingsMessage::UpdateServerPort(val) => {
+                        if let Ok(port) = val.parse::<u16>() {
+                            self.settings_page.staged_server.port = port;
+                            self.settings_page.server_port = port;
+                            self.settings_page.server_port_str = val.clone();
+                            self.settings_page.has_changes = true;
+                        } else {
+                            self.settings_page.server_port_str = val;
+                        }
+                    }
+                    SimpleSettingsMessage::UpdateServerApiKey(val) => {
+                        self.settings_page.staged_server.api_key = val.clone();
+                        self.settings_page.server_api_key = val;
+                        self.settings_page.has_changes = true;
+                    }
+                    SimpleSettingsMessage::UpdateStreamTimeout(val) => {
+                        if let Ok(timeout) = val.parse::<u64>() {
+                            self.settings_page.staged_server.stream_timeout_secs = timeout;
+                            self.settings_page.stream_timeout_secs = timeout;
+                            self.settings_page.stream_timeout_str = val.clone();
+                            self.settings_page.has_changes = true;
+                        } else {
+                            self.settings_page.stream_timeout_str = val;
+                        }
+                    }
+                    SimpleSettingsMessage::UpdateTitleGenProfile(val) => {
+                        self.settings_page.staged_title_summary.title_generation_profile = if val.is_empty() {
+                            None
+                        } else {
+                            Some(val.clone())
+                        };
+                        self.settings_page.title_generation_profile = val;
+                        self.settings_page.has_changes = true;
+                    }
+                    SimpleSettingsMessage::UpdateSummaryChars(val) => {
+                        if let Ok(chars) = val.parse::<u32>() {
+                            self.settings_page.staged_title_summary.summary_chars = chars;
+                            self.settings_page.summary_chars = chars;
+                            self.settings_page.summary_chars_str = val.clone();
+                            self.settings_page.has_changes = true;
+                        } else {
+                            self.settings_page.summary_chars_str = val;
+                        }
+                    }
+                    SimpleSettingsMessage::UpdateSummaryLoopSleep(val) => {
+                        if let Ok(sleep) = val.parse::<u64>() {
+                            self.settings_page.staged_title_summary.summary_loop_sleep_seconds = sleep;
+                            self.settings_page.summary_loop_sleep_seconds = sleep;
+                            self.settings_page.summary_loop_str = val.clone();
+                            self.settings_page.has_changes = true;
+                        } else {
+                            self.settings_page.summary_loop_str = val;
+                        }
+                    }
+                    SimpleSettingsMessage::UpdateTitleGenPrompt(val) => {
+                        self.settings_page.staged_title_summary.title_generation_system_prompt = val.clone();
+                        self.settings_page.title_generation_system_prompt = val;
+                        self.settings_page.has_changes = true;
+                    }
+                    SimpleSettingsMessage::OpenConfigFile => {
+                        return cosmic::Task::perform(
+                            async {},
+                            |_| cosmic::Action::App(Message::OpenConfigFile),
+                        );
+                    }
+                    SimpleSettingsMessage::OpenProfilePrompt(profile_name) => {
+                        let profile_name_for_task = profile_name.clone();
+                        return cosmic::Task::perform(
+                            async { profile_name_for_task },
+                            |profile_name_for_task| cosmic::Action::App(Message::OpenProfilePrompt(profile_name_for_task)),
+                        );
+                    }
+                    SimpleSettingsMessage::SaveConfig => {
+                        // Apply all staged changes to actual config
+                        self.config.profiles = self.settings_page.staged_profiles.clone();
+                        self.config.default = self.settings_page.staged_default.clone();
+                        self.config.server = self.settings_page.staged_server.clone();
+                        self.config.title_summary = self.settings_page.staged_title_summary.clone();
+                        
+                        // Save to file
+                        if let Err(e) = self.config.save() {
+                            eprintln!("Failed to save settings: {}", e);
+                            self.dialog = Some(DialogPage::MessageText(
+                                text_editor::Content::with_text(&format!(
+                                    "Failed to save settings:\n{}",
+                                    e
+                                )),
+                            ));
+                        } else {
+                            self.settings_page.has_changes = false;
+                            self.settings_changed = false;
+                            // Update LLM client if default profile changed
+                            let profile_changed = self.config.default.clone();
+                            if let Some(profile) = self.config.get_default_profile().cloned() {
+                                self.llm_client = llm::build_llm_client(&profile);
+                            }
+                            // Update active conversation's profile in database if there is one
+                            if let Some(conv_id) = self.current_conversation_id {
+                                if let Err(e) = self.storage.update_conversation_profile(&conv_id, Some(&profile_changed)) {
+                                    eprintln!("Failed to update conversation profile: {}", e);
+                                } else {
+                                    println!("✅ Updated conversation {} profile to '{}'", conv_id, profile_changed);
+                                }
+                            }
+                            if let Some(task) = self.profile_tool_defaults_task() {
+                                return task;
+                            }
+                        }
+                    }
+                    SimpleSettingsMessage::CancelConfig => {
+                        // Reload from config to discard all staged changes
+                        self.settings_page.load_from_config(&self.config);
+                        self.current_page = NavigationPage::Chat;
                     }
                 }
             }
@@ -1238,7 +2088,9 @@ impl Application for CosmicLlmApp {
                 }
             }
             Message::ShowMessageDialog(content) => {
-                self.dialog = Some(DialogPage::MessageText(text_editor::Content::with_text(&content)));
+                self.dialog = Some(DialogPage::MessageText(text_editor::Content::with_text(
+                    &content,
+                )));
             }
             Message::MCPToolsUpdated(tools) => {
                 self.available_mcp_tools = tools;
@@ -1326,29 +2178,46 @@ impl Application for CosmicLlmApp {
             Message::SearchResults(results) => {
                 self.search_results = results;
             }
+            Message::InlineError(error) => {
+                self.current_error = Some(error);
+            }
+            Message::DismissError => {
+                self.current_error = None;
+            }
+            Message::TypingIndicatorTick(instant) => {
+                if let Some(start_time) = self.typing_indicator_start_time {
+                    let elapsed = instant.duration_since(start_time);
+                    // Update animation progress (cycles every 1.2 seconds)
+                    self.typing_indicator_progress = (elapsed.as_secs_f32() / 1.2) % 1.0;
+                }
+            }
+            Message::RefreshConversationList => {
+                self.load_recent_conversations();
+                self.update_nav_model();
+            }
         }
-        
+
         app::Task::none()
     }
 
     fn view(&self) -> Element<Self::Message> {
         // Main layout with side panel and content area
-        let mut content = cosmic::widget::row::with_capacity(1)
-            .push(
-                // Main content area
-                match self.current_page {
-                    NavigationPage::Chat => self.chat_view(),
-                    NavigationPage::History => self.history_view(),
-                    NavigationPage::MCPConfig => self.mcp_config_view(),
-                    NavigationPage::Settings => self.settings_page.view(&self.config).map(Message::SettingsMessage),
-                }
-            );
+        let mut content = cosmic::widget::row::with_capacity(1).push(
+            // Main content area
+            match self.current_page {
+                NavigationPage::Chat => chat::chat_view(self),
+                NavigationPage::History => history::history_view(self),
+                NavigationPage::MCPConfig => mcp_config::mcp_config_view(self),
+                NavigationPage::Settings => self
+                    .settings_page
+                    .view(&self.config)
+                    .map(Message::SettingsMessage),
+            },
+        );
 
         // Add dialog overlay if dialog is open
         if let Some(dialog_page) = &self.dialog {
-            content = content.push(
-                dialog_page.view(&self.dialog_text_input_id)
-            );
+            content = content.push(dialog_page.view(&self.dialog_text_input_id));
         }
 
         content.into()
@@ -1362,9 +2231,24 @@ impl Application for CosmicLlmApp {
         Some(&self.nav_model)
     }
 
-    fn on_nav_select(&mut self, entity: widget::segmented_button::Entity) -> app::Task<Self::Message> {
-        if let Some(page) = self.nav_model.data::<NavigationPage>(entity) {
-            self.current_page = *page;
+    fn on_nav_select(
+        &mut self,
+        entity: widget::segmented_button::Entity,
+    ) -> app::Task<Self::Message> {
+        if let Some(nav_item) = self.nav_model.data::<NavItem>(entity) {
+            match nav_item {
+                NavItem::Page(page) => {
+                    self.current_page = *page;
+                }
+                NavItem::Conversation(conv_id) => {
+                    // Select the conversation
+                    let conv_id = *conv_id;
+                    return app::Task::perform(
+                        async move { cosmic::Action::App(Message::SelectConversation(conv_id)) },
+                        |action| action,
+                    );
+                }
+            }
         }
         app::Task::none()
     }
@@ -1382,36 +2266,28 @@ impl Application for CosmicLlmApp {
                     None,
                     NavMenuAction::NewConversation,
                 ),
-                cosmic::widget::menu::Item::Button(
-                    "Settings",
-                    None,
-                    NavMenuAction::Settings,
-                ),
-                cosmic::widget::menu::Item::Button(
-                    "About",
-                    None,
-                    NavMenuAction::About,
-                ),
-                cosmic::widget::menu::Item::Button(
-                    "Quit",
-                    None,
-                    NavMenuAction::Quit,
-                ),
+                cosmic::widget::menu::Item::Button("Settings", None, NavMenuAction::Settings),
+                cosmic::widget::menu::Item::Button("About", None, NavMenuAction::About),
+                cosmic::widget::menu::Item::Button("Quit", None, NavMenuAction::Quit),
             ],
         ))
     }
 
-    fn context_drawer(&self) -> Option<app::context_drawer::ContextDrawer<<Self as Application>::Message>> {
+    fn context_drawer(
+        &self,
+    ) -> Option<app::context_drawer::ContextDrawer<<Self as Application>::Message>> {
         if !self.core.window.show_context {
             return None;
         }
-        
+
         if self.show_tools_context {
-            Some(app::context_drawer::context_drawer(
-                self.tools_context_view(),
-                Message::HideToolsContext,
+            Some(
+                app::context_drawer::context_drawer(
+                    tools::tools_context_view(self),
+                    Message::HideToolsContext,
+                )
+                .title("Tool Configuration"),
             )
-            .title("Tool Configuration"))
         } else {
             Some(match self.context_page {
                 ContextPage::About => app::context_drawer::about(
@@ -1419,56 +2295,239 @@ impl Application for CosmicLlmApp {
                     |url| Message::OpenUrl(url.to_string()),
                     Message::CloseAbout,
                 )
-                .title(self.context_page.title()),  // Dynamic title from ContextPage (pattern from msToDO)
+                .title(self.context_page.title()), // Dynamic title from ContextPage (pattern from msToDO)
             })
         }
     }
 }
 
 impl CosmicLlmApp {
+    /// Update the nav model with current conversation title and recent conversations
+    fn update_nav_model(&mut self) {
+        // Clear and rebuild the nav model
+        let mut model = widget::segmented_button::ModelBuilder::default().build();
+        
+        // Get current conversation title
+        let current_title = if let Some(conv_id) = self.current_conversation_id {
+            self.recent_conversations
+                .iter()
+                .find(|(id, _)| *id == conv_id)
+                .map(|(_, title)| title.clone())
+                .or_else(|| {
+                    // Try to get from storage if not in recent list
+                    self.storage
+                        .get_conversation(&conv_id)
+                        .ok()
+                        .flatten()
+                        .map(|c| c.title)
+                })
+                .unwrap_or_else(|| "New Chat".to_string())
+        } else {
+            "New Chat".to_string()
+        };
+        
+        // Add current chat title (non-selectable, just for display)
+        model
+            .insert()
+            .text(current_title.clone())
+            .icon(crate::ui::icons::get_icon("chat-symbolic", 16))
+            .data(NavItem::Page(NavigationPage::Chat));
+        
+        // Add separator
+        // Add recent conversations (up to 10)
+        let recent_conv_ids: Vec<(Uuid, String)> = self.recent_conversations
+            .iter()
+            .filter(|(conv_id, _)| Some(*conv_id) != self.current_conversation_id)
+            .map(|(id, title)| (*id, title.clone()))
+            .collect();
+        
+        for (conv_id, title) in recent_conv_ids {
+            model
+                .insert()
+                .text(title)
+                .icon(crate::ui::icons::get_icon("chat-bubble-text-symbolic", 16))
+                .data(NavItem::Conversation(conv_id));
+        }
+        
+        // Add "More history" (replaces History)
+        model
+            .insert()
+            .text("More history")
+            .icon(crate::ui::icons::get_icon("list-large-symbolic", 16))
+            .data(NavItem::Page(NavigationPage::History))
+            .divider_above(true);
+        
+        // Add MCP Config
+        model
+            .insert()
+            .text("MCP Config")
+            .icon(crate::ui::icons::get_icon("configure-symbolic", 16))
+            .data(NavItem::Page(NavigationPage::MCPConfig));
+        
+        // Add Settings
+        model
+            .insert()
+            .text("Settings")
+            .icon(crate::ui::icons::get_icon("settings-symbolic", 16))
+            .data(NavItem::Page(NavigationPage::Settings))
+            .divider_above(true);
+        
+        // Activate the current page or conversation
+        let current_conv_id = self.current_conversation_id;
+        let mut active_entity_opt = None;
+        let mut chat_entity_opt = None;
+        let mut first_entity_opt = None;
+        
+        for entity in model.iter() {
+            if first_entity_opt.is_none() {
+                first_entity_opt = Some(entity);
+            }
+            
+            if let Some(nav_item) = model.data::<NavItem>(entity) {
+                match nav_item {
+                    NavItem::Page(NavigationPage::Chat) => {
+                        if chat_entity_opt.is_none() {
+                            chat_entity_opt = Some(entity);
+                        }
+                    }
+                    NavItem::Conversation(id) => {
+                        if let Some(conv_id) = current_conv_id {
+                            if id == &conv_id {
+                                active_entity_opt = Some(entity);
+                                break; // Found the active conversation, no need to continue
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
+        // Activate the found entity or fallback to Chat or first
+        if let Some(entity) = active_entity_opt {
+            model.activate(entity);
+        } else if let Some(entity) = chat_entity_opt {
+            model.activate(entity);
+        } else if let Some(entity) = first_entity_opt {
+            model.activate(entity);
+        }
+        
+        self.nav_model = model;
+    }
+    
+    /// Load recent conversations from storage (last 10)
+    fn load_recent_conversations(&mut self) {
+        match self.storage.list_conversations_paginated(None, Some(10)) {
+            Ok(conversations) => {
+                self.recent_conversations = conversations
+                    .into_iter()
+                    .map(|c| (c.id, c.title))
+                    .collect();
+            }
+            Err(e) => {
+                eprintln!("Failed to load recent conversations: {}", e);
+                self.recent_conversations.clear();
+            }
+        }
+    }
+    
+    pub(crate) fn error_banner(&self) -> Option<Element<Message>> {
+        self.current_error.as_ref().map(|error| {
+            let content = widget::row::with_children(vec![
+                crate::ui::icons::get_icon("dialog-warning-symbolic", 16).into(),
+                widget::text(error.clone()).size(14).into(),
+                widget::Space::with_width(cosmic::iced::Length::Fill).into(),
+                widget::button::standard("Dismiss")
+                    .on_press(Message::DismissError)
+                    .padding([4, 12])
+                    .into(),
+            ])
+            .spacing(12)
+            .align_y(cosmic::iced::Alignment::Center);
+
+            widget::container(content)
+                .padding(12)
+                .width(cosmic::iced::Length::Fill)
+                .class(cosmic::style::Container::Card)
+                .into()
+        })
+    }
+
+    fn load_active_profile_prompt(&mut self) -> Option<String> {
+        let profile = self.config.get_default_profile()?;
+        let path = profile.profile_prompt_file.as_deref()?;
+
+        let resolved_path = crate::config::AppConfig::resolve_config_path(path);
+        let resolved = resolved_path.to_string_lossy().to_string();
+
+        match self.prompt_manager.load_profile_prompt(&resolved) {
+            Ok(content) => {
+                if self
+                    .current_error
+                    .as_deref()
+                    .map(|msg| msg.starts_with("Profile prompt"))
+                    .unwrap_or(false)
+                {
+                    self.current_error = None;
+                }
+                Some(content)
+            }
+            Err(err) => {
+                let message = match &err {
+                    ProfilePromptError::NotFound(_) => {
+                        format!("Profile prompt not found: {}", resolved)
+                    }
+                    _ => err.to_string(),
+                };
+                self.current_error = Some(message);
+                None
+            }
+        }
+    }
+
+    fn profile_tool_defaults_task(&self) -> Option<app::Task<Message>> {
+        let profile = self.config.get_default_profile()?;
+        if profile.enabled_mcp.is_empty() {
+            return None;
+        }
+
+        let allowed_servers = profile.enabled_mcp.clone();
+        let registry = self.mcp_registry.clone();
+
+        Some(cosmic::Task::perform(
+            async move {
+                let mut registry = registry.write().await;
+                registry.apply_profile_tool_defaults(&allowed_servers);
+                cosmic::Action::App(Message::RefreshMCPTools)
+            },
+            |msg| msg,
+        ))
+    }
 
     fn create_menu_bar(&self) -> Element<Message> {
         use cosmic::widget::menu::{items, root, Item, ItemHeight, ItemWidth, MenuBar, Tree};
         use cosmic::widget::RcElementWrapper;
-        
+
         MenuBar::new(vec![
             Tree::with_children(
                 RcElementWrapper::new(Element::from(root("File"))),
                 items(
                     &self.key_binds,
-                    vec![
-                        Item::Button(
-                            "Quit",
-                            None,
-                            MenuAction::Quit,
-                        ),
-                    ],
+                    vec![Item::Button("Quit", None, MenuAction::Quit)],
                 ),
             ),
             Tree::with_children(
                 RcElementWrapper::new(Element::from(root("View"))),
                 items(
                     &self.key_binds,
-                    vec![
-                        Item::Button(
-                            "Settings",
-                            None,
-                            MenuAction::Settings,
-                        ),
-                    ],
+                    vec![Item::Button("Settings", None, MenuAction::Settings)],
                 ),
             ),
             Tree::with_children(
                 RcElementWrapper::new(Element::from(root("Help"))),
                 items(
                     &self.key_binds,
-                    vec![
-                        Item::Button(
-                            "About",
-                            None,
-                            MenuAction::About,
-                        ),
-                    ],
+                    vec![Item::Button("About", None, MenuAction::About)],
                 ),
             ),
         ])
@@ -1477,939 +2536,4 @@ impl CosmicLlmApp {
         .spacing(4.0)
         .into()
     }
-
-    fn chat_view(&self) -> Element<Message> {
-        use cosmic::iced::{Length, Padding};
-        
-        cosmic::widget::column::with_capacity(3)
-            .push(
-                // Combined top panel with tools
-                self.combined_top_panel()
-            )
-            .push(
-                // Spacing between top panel and messages
-                cosmic::widget::Space::with_height(Length::Fixed(16.0))
-            )
-            .push(
-                // Messages area with better styling
-                {
-                    let mut column = cosmic::widget::column::with_capacity(self.messages.len()).spacing(12);
-                    
-                    // Add regular chat messages
-                    for (i, msg) in self.messages.iter().enumerate() {
-                        let content = msg.content.clone();
-                        let message_widget = cosmic::widget::container(
-                            {
-                                let content_widget: Element<Message> = if msg.is_user {
-                                    widget::container(
-                                        cosmic::widget::text(&msg.content)
-                                            .size(14)
-                                            .class(cosmic::style::Text::Color(cosmic::iced::Color::WHITE))
-                                    )
-                                    .width(Length::Fill)
-                                    .into()
-                                } else if msg.is_error {
-                                    widget::container(
-                                        cosmic::widget::text(&msg.content)
-                                            .size(14)
-                                            .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.8, 0.2, 0.2)))
-                                    )
-                                    .width(Length::Fill)
-                                    .into()
-                                } else {
-                                    widget::container(
-                                        widget::lazy(&msg.content, |_| {
-                                            let items = markdown::parse(&msg.content).collect::<Vec<_>>();
-                                            let style = widget::markdown::Style {
-                                                inline_code_padding: cosmic::iced::Padding::from([1, 2]),
-                                                inline_code_highlight: widget::markdown::Highlight {
-                                                    background: cosmic::iced::Background::Color(cosmic::iced::Color::from_rgb(0.1, 0.1, 0.1)),
-                                                    border: cosmic::iced::Border::default().rounded(2),
-                                                },
-                                                inline_code_color: cosmic::iced::Color::WHITE,
-                                                link_color: cosmic::iced::Color::from_rgb(0.3, 0.6, 1.0),
-                                            };
-                                            widget::markdown(&items, widget::markdown::Settings::default(), style)
-                                                .map(Message::MarkdownLinkClicked)
-                                        })
-                                    )
-                                    .width(Length::Fill)
-                                    .into()
-                                };
-                                
-                                cosmic::widget::row::with_capacity(2)
-                                .push(content_widget)
-                                .push(
-                                    cosmic::widget::button::text("📋")
-                                        .on_press(Message::ShowMessageDialog(content))
-                                        .padding(4)
-                                        .class(cosmic::style::Button::Text)
-                                )
-                            }
-                        )
-                        .padding(Padding::from([12, 16]))
-                        .class(if msg.is_user {
-                            cosmic::style::Container::Primary
-                        } else if msg.is_error {
-                            cosmic::style::Container::Card
-                        } else {
-                            cosmic::style::Container::Card
-                        })
-                        .width(Length::FillPortion(7)); // 70% width
-                        
-                        let message_row = if msg.is_user {
-                            // User messages: right-aligned
-                            cosmic::widget::row::with_capacity(2)
-                                .push(cosmic::widget::Space::with_width(Length::FillPortion(3)))
-                                .push(message_widget)
-                        } else {
-                            // AI messages: left-aligned
-                            cosmic::widget::row::with_capacity(2)
-                                .push(message_widget)
-                                .push(cosmic::widget::Space::with_width(Length::FillPortion(3)))
-                        };
-                        // Push the message first
-                        column = column.push(message_row);
-                        // If there are archived tool calls anchored to this message, render them right after
-                        for (idx, anchored) in self.archived_tool_calls.iter().enumerate() {
-                            if anchored.anchor_index == i {
-                                let is_expanded = self.expanded_tool_calls.contains(&idx);
-                                let tool_call = &anchored.tool_call;
-                                let tool_name = tool_call.tool_name.clone();
-                                let parameters = tool_call.parameters.clone();
-                                let status = match tool_call.status {
-                                    ToolCallStatus::Started => crate::ui::widgets::ToolCallStatus::Started,
-                                    ToolCallStatus::Completed => crate::ui::widgets::ToolCallStatus::Completed,
-                                    ToolCallStatus::Error => crate::ui::widgets::ToolCallStatus::Error,
-                                };
-                                let result = tool_call.result.clone();
-                                let error = tool_call.error.clone();
-                                let widget = Box::leak(Box::new(ToolCallWidget {
-                                    tool_name,
-                                    parameters,
-                                    status,
-                                    result,
-                                    error,
-                                    is_expanded,
-                                }));
-                                let widget_element = widget.view().map(move |msg| Message::ToolCallWidgetMessage(idx, msg));
-                                let tool_call_row = cosmic::widget::row::with_capacity(2)
-                                    .push(widget_element)
-                                    .push(cosmic::widget::Space::with_width(Length::Fill));
-                                column = column.push(tool_call_row);
-                            }
-                        }
-                        // If we're on the currently streaming AI message, also render active tool calls inline
-                        if let Some(anchor) = self.current_ai_message_index {
-                            if anchor == i {
-                                let offset = self.archived_tool_calls.len();
-                                for (j, tool_call) in self.active_tool_calls.iter().enumerate() {
-                                    let idx = offset + j;
-                                    let is_expanded = self.expanded_tool_calls.contains(&idx);
-                                    let tool_name = tool_call.tool_name.clone();
-                                    let parameters = tool_call.parameters.clone();
-                                    let status = match tool_call.status {
-                                        ToolCallStatus::Started => crate::ui::widgets::ToolCallStatus::Started,
-                                        ToolCallStatus::Completed => crate::ui::widgets::ToolCallStatus::Completed,
-                                        ToolCallStatus::Error => crate::ui::widgets::ToolCallStatus::Error,
-                                    };
-                                    let result = tool_call.result.clone();
-                                    let error = tool_call.error.clone();
-                                    let widget = Box::leak(Box::new(ToolCallWidget {
-                                        tool_name,
-                                        parameters,
-                                        status,
-                                        result,
-                                        error,
-                                        is_expanded,
-                                    }));
-                                    let widget_element = widget.view().map(move |msg| Message::ToolCallWidgetMessage(idx, msg));
-                                    let tool_call_row = cosmic::widget::row::with_capacity(2)
-                                        .push(widget_element)
-                                        .push(cosmic::widget::Space::with_width(Length::Fill));
-                                    column = column.push(tool_call_row);
-                                }
-                                // If there are no active tool calls yet, but the current turn is not complete, show a spinner row
-                                if self.active_tool_calls.is_empty() {
-                                    if let Some(current_turn) = self.turns.last() {
-                                        if !current_turn.complete {
-                                            let spinner = cosmic::widget::text("Working…").size(12);
-                                            let row = cosmic::widget::row::with_capacity(2)
-                                                .push(spinner)
-                                                .push(cosmic::widget::Space::with_width(Length::Fill));
-                                            column = column.push(row);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    
-                    // Add spacer at bottom to force scroll to bottom
-                    column = column.push(
-                        cosmic::widget::Space::with_height(Length::Fixed(1.0))
-                            .width(Length::Fill)
-                    );
-                    
-                    scrollable(column)
-                        .scrollbar_width(8)
-                        .scrollbar_padding(4)
-                        .id(self.scrollable_id.clone())
-                }
-                .height(Length::Fill)
-                .width(Length::Fill)
-            )
-            .push(
-                // Spacing between messages and input area
-                cosmic::widget::Space::with_height(Length::Fixed(16.0))
-            )
-            .push(
-                // Input area with better styling
-                cosmic::widget::container(
-                    cosmic::widget::column::with_capacity(3)
-                        .push(
-                            // Attached files display
-                            if !self.attached_files.is_empty() {
-                                cosmic::widget::column::with_children(
-                                    self.attached_files.iter().map(|file_path| {
-                                        let file_name = std::path::Path::new(file_path)
-                                            .file_name()
-                                            .and_then(|name| name.to_str())
-                                            .unwrap_or(file_path);
-                                        
-                                        cosmic::widget::row::with_children(vec![
-                                            cosmic::widget::text(format!("📎 {}", file_name)).size(12).into(),
-                                            cosmic::widget::Space::with_width(Length::Fill).into(),
-                                            cosmic::widget::button::standard("✕")
-                                                .on_press(Message::RemoveFile(file_path.clone()))
-                                                .padding([4, 8])
-                                                .into(),
-                                        ])
-                                        .spacing(8)
-                                        .align_y(cosmic::iced::Alignment::Center)
-                                        .into()
-                                    }).collect()
-                                )
-                                .spacing(4)
-                            } else {
-                                cosmic::widget::column::with_children(vec![
-                                    cosmic::widget::text("").size(12).into()
-                                ])
-                            }
-                        )
-                        .push(
-                            // Input row with buttons inline
-                            cosmic::widget::row::with_capacity(3)
-                                .push(
-                                    // Attach file button (left side)
-                                    widget::button::icon(crate::ui::icons::get_handle("mail-attachment-symbolic", 16))
-                                        .on_press(Message::AttachFile)
-                                )
-                                .push(
-                                    // Text editor for message (multi-line)
-                                    text_editor(&self.input_content)
-                                        .id(self.input_id.clone())
-                                        .on_action(Message::InputActionPerformed)
-                                        .height(Length::Shrink)
-                                        .padding(12)
-                                        .key_binding(|key_press| {
-                                            match key_press.key.as_ref() {
-                                                keyboard::Key::Named(keyboard::key::Named::Enter)
-                                                    if key_press.modifiers.shift() => {
-                                                    // Shift+Enter for new line
-                                                    text_editor::Binding::from_key_press(key_press)
-                                                }
-                                                keyboard::Key::Named(keyboard::key::Named::Enter) => {
-                                                    // Enter to send message
-                                                    Some(text_editor::Binding::Custom(Message::SendMessage))
-                                                }
-                                                _ => text_editor::Binding::from_key_press(key_press),
-                                            }
-                                        })
-                                )
-                                .push(
-                                    // Send/Stop button (right side)
-                                    if self.is_streaming {
-                                        // Stop button when streaming
-                                        widget::button::icon(crate::ui::icons::get_handle("process-stop-symbolic", 16))
-                                            .class(widget::button::ButtonClass::Destructive)
-                                            .on_press(Message::StopMessage)
-                                    } else {
-                                        // Send button when not streaming
-                                        widget::button::icon(crate::ui::icons::get_handle("send-symbolic", 16))
-                                            .class(widget::button::ButtonClass::Suggested)
-                                            .on_press(Message::SendMessage)
-                                    }
-                                )
-                                .spacing(8)
-                                .align_y(cosmic::iced::Alignment::Center)
-                        )
-                        .spacing(8)
-                )
-                .padding(16)
-                .width(Length::Fill)
-                .class(cosmic::style::Container::Card)
-            )
-            .into()
-    }
-
-    fn combined_top_panel(&self) -> Element<Message> {
-        use cosmic::iced::Length;
-        
-        // Count enabled/disabled tools
-        let total_tools = self.available_mcp_tools.len();
-        let enabled_count = self.available_mcp_tools.iter()
-            .filter(|tool| self.tool_states.get(&tool.name).copied().unwrap_or(true))
-            .count();
-        
-        // Conversation info
-        let (title, created_text, msg_count) = if let Some(id) = self.current_conversation_id {
-            if let Ok(Some(conv)) = self.storage.get_conversation(&id) {
-                let created = conv.created_at.format("%Y-%m-%d %H:%M").to_string();
-                // Prefer the latest title from the on-disk index (updated by background tasks)
-                let index = self.storage.list_conversations_from_index().unwrap_or_else(|e| {
-                    eprintln!("Failed to list conversations: {}", e);
-                    Vec::new()
-                });
-                let latest_title = index
-                    .into_iter()
-                    .find(|ci| ci.id == id)
-                    .map(|ci| ci.title)
-                    .unwrap_or_else(|| conv.title.clone());
-                (latest_title, Some(created), conv.messages.len())
-            } else {
-                ("New Chat".to_string(), None, self.messages.len())
-            }
-        } else {
-            ("New Chat".to_string(), None, self.messages.len())
-        };
-        
-        let _created_label = created_text.unwrap_or_else(|| "".to_string());
-        
-        cosmic::widget::container(
-            cosmic::widget::column::with_capacity(2)
-                .push(
-                    // Top row: Title, Messages count, New chat icon
-                    cosmic::widget::row::with_capacity(3)
-                        .push(
-                            cosmic::widget::text(title)
-                                .size(18)
-                        )
-                        .push(
-                            cosmic::widget::text(format!("{} messages", msg_count))
-                                .size(12)
-                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.4, 0.4, 0.4)))
-                        )
-                        .push(cosmic::widget::Space::with_width(Length::Fill))
-                        .push(
-                            // New chat icon button
-                            widget::button::icon(crate::ui::icons::get_handle("plus-circle-filled-symbolic", 16))
-                                .class(widget::button::ButtonClass::Suggested)
-                                .on_press(Message::NewConversation)
-                        )
-                        .spacing(12)
-                        .align_y(cosmic::iced::Alignment::Center)
-                )
-                .push(
-                    // Bottom row: Model select, Tools summary with icons
-                    cosmic::widget::row::with_capacity(4)
-                        .push(
-                            // Profile selection dropdown
-                            {
-                                let mut names: Vec<String> = self.config.profiles.keys().cloned().collect();
-                                names.sort();
-                                let idx = names.iter().position(|k| k == &self.config.default);
-                                widget::dropdown(names, idx, Message::ChangeDefaultProfile)
-                            }
-                        )
-                        .push(cosmic::widget::Space::with_width(Length::Fill))
-                        .push(
-                            // Tools summary with toggle and configure icons
-                            if total_tools == 0 {
-                                // Show configure button when no tools
-                                cosmic::widget::row::with_capacity(2)
-                                    .push(
-                                        cosmic::widget::text("No tools configured")
-                                            .size(12)
-                                            .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5)))
-                                    )
-                                    .push(
-                                        widget::button::icon(crate::ui::icons::get_handle("configure-symbolic", 16))
-                                            .on_press(Message::ShowToolsContext)
-                                    )
-                                    .spacing(8)
-                                    .align_y(cosmic::iced::Alignment::Center)
-                            } else {
-                                // Tool controls with icons
-                                cosmic::widget::row::with_capacity(4)
-                                    .push(
-                                        cosmic::widget::text(format!("{} / {} tools", enabled_count, total_tools))
-                                            .size(12)
-                                    )
-                                    .push(
-                                        // Toggle all tools button (toggler widget)
-                                        cosmic::widget::toggler(enabled_count == total_tools)
-                                            .on_toggle(|enabled| Message::ToggleAllTools(enabled))
-                                    )
-                                    .push(
-                                        // Configure tools button (icon)
-                                        widget::button::icon(crate::ui::icons::get_handle("configure-symbolic", 16))
-                                            .on_press(Message::ShowToolsContext)
-                                    )
-                                    .spacing(8)
-                                    .align_y(cosmic::iced::Alignment::Center)
-                            }
-                        )
-                        .spacing(12)
-                        .align_y(cosmic::iced::Alignment::Center)
-                )
-                .spacing(8)
-        )
-        .padding(12)
-        .class(cosmic::style::Container::Card)
-        .into()
-    }
-
-
-    fn tools_context_view(&self) -> Element<Message> {
-        
-        let total_tools = self.available_mcp_tools.len();
-        let enabled_count = self.available_mcp_tools.iter()
-            .filter(|tool| self.tool_states.get(&tool.name).copied().unwrap_or(true))
-            .count();
-        
-        cosmic::widget::column::with_capacity(3)
-            .push(
-                // Header with summary and controls
-                cosmic::widget::container(
-                    cosmic::widget::column::with_capacity(2)
-                        .push(
-                            cosmic::widget::text(format!("🔧 Tools: {} / {} enabled", enabled_count, total_tools))
-                                .size(16)
-                        )
-                        .push(
-                            cosmic::widget::row::with_capacity(2)
-                                .push(
-                                    cosmic::widget::button::text("Enable All")
-                                        .on_press(Message::ToggleAllTools(true))
-                                        .padding(6)
-                                        .class(cosmic::style::Button::Text)
-                                )
-                                .push(
-                                    cosmic::widget::button::text("Disable All")
-                                        .on_press(Message::ToggleAllTools(false))
-                                        .padding(6)
-                                        .class(cosmic::style::Button::Text)
-                                )
-                                .spacing(8)
-                        )
-                        .spacing(8)
-                )
-                .padding(16)
-                .class(cosmic::style::Container::Card)
-            )
-            .push(
-                // Tool list
-                if self.available_mcp_tools.is_empty() {
-                    Element::from(
-                        cosmic::widget::container(
-                            cosmic::widget::column::with_capacity(2)
-                                .push(
-                                    cosmic::widget::text("No tools available")
-                                        .size(14)
-                                )
-                                .push(
-                                    cosmic::widget::text("Configure MCP servers to see tools here")
-                                        .size(12)
-                                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
-                                )
-                                .spacing(4)
-                        )
-                        .padding(16)
-                        .class(cosmic::style::Container::Card)
-                    )
-                } else {
-                    let mut tool_list = cosmic::widget::column::with_capacity(self.available_mcp_tools.len())
-                        .spacing(4);
-                    
-                    for tool in &self.available_mcp_tools {
-                        let is_enabled = self.tool_states.get(&tool.name).copied().unwrap_or(true);
-                        let tool_row = cosmic::widget::container(
-                            cosmic::widget::column::with_capacity(3)
-                                .push(
-                                    cosmic::widget::row::with_capacity(2)
-                                        .push(
-                                            cosmic::widget::toggler(is_enabled)
-                                                .on_toggle(|enabled| Message::ToggleTool(tool.name.clone(), enabled))
-                                        )
-                                        .push(
-                                            cosmic::widget::text(&tool.name)
-                                                .size(14)
-                                                .class(if is_enabled {
-                                                    cosmic::style::Text::Default
-                                                } else {
-                                                    cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5))
-                                                })
-                                        )
-                                        .spacing(8)
-                                        .align_y(cosmic::iced::Alignment::Center)
-                                )
-                                .push(
-                                    cosmic::widget::text(&tool.description)
-                                        .size(12)
-                                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
-                                )
-                                .spacing(4)
-                        )
-                        .padding(12)
-                        .class(cosmic::style::Container::Card);
-                        
-                        tool_list = tool_list.push(tool_row);
-                    }
-                    
-                    cosmic::widget::scrollable(tool_list)
-                        .into()
-                }
-            )
-            .spacing(8)
-            .into()
-    }
-
-    fn history_view(&self) -> Element<Message> {
-        let conversations = self.storage.list_conversations_from_index().unwrap_or_else(|e| {
-            eprintln!("Failed to list conversations: {}", e);
-            Vec::new()
-        });
-        
-        cosmic::widget::column::with_capacity(3)
-            .push(
-                // Enhanced header with icon and stats
-                cosmic::widget::container(
-                    cosmic::widget::row::with_capacity(3)
-                        .push(
-                            cosmic::widget::row::with_capacity(2)
-                                .push(
-                                    widget::icon::from_name("list-large-symbolic")
-                                        .size(20)
-                                )
-                                .push(
-                                    cosmic::widget::text("Conversation History")
-                                        .size(20)
-                                )
-                                .spacing(8)
-                                .align_y(cosmic::iced::Alignment::Center)
-                        )
-                        .push(cosmic::widget::Space::with_width(Length::Fill))
-                        .push(
-                            cosmic::widget::text(format!("{} conversations", conversations.len()))
-                                .size(12)
-                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
-                        )
-                        .spacing(12)
-                        .align_y(cosmic::iced::Alignment::Center)
-                )
-                .padding(16)
-                .class(cosmic::style::Container::Card)
-            )
-            .push(
-                // Search bar
-                cosmic::widget::container(
-                    cosmic::widget::row::with_capacity(2)
-                        .push(
-                            widget::icon::from_name("search-symbolic")
-                                .size(16)
-                        )
-                        .push(
-                            cosmic::widget::text_input("Search conversations...", &self.search_query)
-                                .on_input(Message::SearchChanged)
-                                .width(Length::Fill)
-                        )
-                        .spacing(8)
-                        .align_y(cosmic::iced::Alignment::Center)
-                )
-                .padding(12)
-                .class(cosmic::style::Container::Card)
-            )
-            .push(
-                // Enhanced conversations list or search results
-                {
-                    // Show search results if search is active
-                    if !self.search_query.trim().is_empty() {
-                        let mut column = cosmic::widget::column::with_capacity(self.search_results.len().max(1));
-                        
-                        if self.search_results.is_empty() {
-                            column = column.push(
-                                cosmic::widget::container(
-                                    cosmic::widget::column::with_capacity(3)
-                                        .push(
-                                            widget::icon::from_name("search-symbolic")
-                                                .size(48)
-                                        )
-                                        .push(
-                                            cosmic::widget::text("No results found")
-                                                .size(16)
-                                        )
-                                        .push(
-                                            cosmic::widget::text(format!("No messages found matching '{}'", self.search_query))
-                                                .size(12)
-                                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
-                                        )
-                                        .spacing(8)
-                                        .align_x(cosmic::iced::Alignment::Center)
-                                )
-                                .padding(32)
-                                .class(cosmic::style::Container::Card)
-                            );
-                        } else {
-                            for result in &self.search_results {
-                                // Parse conversation ID to UUID
-                                if let Ok(conv_id) = Uuid::parse_str(&result.conversation_id) {
-                                    // Get conversation title
-                                    let title = if let Ok(Some(conv)) = self.storage.get_conversation(&conv_id) {
-                                        conv.title
-                                    } else {
-                                        "Unknown Conversation".to_string()
-                                    };
-                                    
-                                    // Format timestamp
-                                    let date_str = chrono::DateTime::from_timestamp(result.timestamp, 0)
-                                        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-                                        .unwrap_or_else(|| "Unknown date".to_string());
-                                    
-                                    // Truncate content for preview
-                                    let preview = if result.content.chars().count() > 200 {
-                                        result.content.chars().take(200).collect::<String>() + "..."
-                                    } else {
-                                        result.content.clone()
-                                    };
-                                    
-                                    let search_result_card = cosmic::widget::container(
-                                        cosmic::widget::column::with_capacity(4)
-                                            .push(
-                                                cosmic::widget::row::with_capacity(3)
-                                                    .push(
-                                                        cosmic::widget::text(title.clone())
-                                                            .size(16)
-                                                    )
-                                                    .push(cosmic::widget::Space::with_width(Length::Fill))
-                                                    .push(
-                                                        cosmic::widget::text(date_str)
-                                                            .size(12)
-                                                            .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
-                                                    )
-                                                    .align_y(cosmic::iced::Alignment::Center)
-                                            )
-                                            .push(
-                                                cosmic::widget::text(preview)
-                                                    .size(12)
-                                                    .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5)))
-                                            )
-                                            .push(
-                                                cosmic::widget::row::with_capacity(2)
-                                                    .push(cosmic::widget::Space::with_width(Length::Fill))
-                                                    .push(
-                                                        widget::button::icon(crate::ui::icons::get_handle("chat-bubble-text-symbolic", 16))
-                                                            .on_press(Message::SelectConversation(conv_id))
-                                                    )
-                                                    .spacing(8)
-                                                    .align_y(cosmic::iced::Alignment::Center)
-                                            )
-                                            .spacing(8)
-                                    )
-                                    .padding(16)
-                                    .class(cosmic::style::Container::Card);
-                                    
-                                    column = column.push(search_result_card);
-                                }
-                            }
-                        }
-                        
-                        scrollable(column.spacing(8))
-                    } else {
-                        // Show normal conversation list
-                        let mut column = cosmic::widget::column::with_capacity(conversations.len().max(1));
-                        if conversations.is_empty() {
-                            column = column.push(
-                                cosmic::widget::container(
-                                    cosmic::widget::column::with_capacity(3)
-                                        .push(
-                                            widget::icon::from_name("chat-bubble-empty-symbolic")
-                                                .size(48)
-                                        )
-                                        .push(
-                                            cosmic::widget::text("No conversations yet")
-                                                .size(16)
-                                        )
-                                        .push(
-                                            cosmic::widget::text("Start a new chat to create your first conversation!")
-                                                .size(12)
-                                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
-                                        )
-                                        .spacing(8)
-                                        .align_x(cosmic::iced::Alignment::Center)
-                                )
-                                .padding(32)
-                                .class(cosmic::style::Container::Card)
-                            );
-                        } else {
-                            for conv in conversations {
-                                let title = conv.title.clone();
-                                let date_str = conv.updated_at.format("%Y-%m-%d %H:%M").to_string();
-                                let message_count = 0; // TODO: Get actual message count from conversation
-                                
-                                let conversation_card = cosmic::widget::container(
-                                    cosmic::widget::column::with_capacity(3)
-                                        .push(
-                                            cosmic::widget::row::with_capacity(3)
-                                                .push(
-                                                    cosmic::widget::text(title.clone())
-                                                        .size(16)
-                                                )
-                                                .push(cosmic::widget::Space::with_width(Length::Fill))
-                                                .push(
-                                                    cosmic::widget::text(date_str)
-                                                        .size(12)
-                                                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
-                                                )
-                                                .align_y(cosmic::iced::Alignment::Center)
-                                        )
-                                        .push(
-                                            cosmic::widget::row::with_capacity(2)
-                                                .push(
-                                                    cosmic::widget::text(format!("{} messages", message_count))
-                                                        .size(12)
-                                                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5)))
-                                                )
-                                                .push(cosmic::widget::Space::with_width(Length::Fill))
-                                                .push(
-                                                    cosmic::widget::row::with_capacity(2)
-                                                        .push(
-                                                            widget::button::icon(crate::ui::icons::get_handle("chat-bubble-text-symbolic", 16))
-                                                                .on_press(Message::SelectConversation(conv.id))
-                                                        )
-                                                        .push(
-                                                            widget::button::icon(crate::ui::icons::get_handle("user-trash-full-symbolic", 16))
-                                                                .class(widget::button::ButtonClass::Destructive)
-                                                                .on_press(Message::DeleteConversation(conv.id))
-                                                        )
-                                                        .spacing(8)
-                                                )
-                                                .align_y(cosmic::iced::Alignment::Center)
-                                        )
-                                        .spacing(8)
-                                )
-                                .padding(16)
-                                .class(cosmic::style::Container::Card);
-                                
-                                column = column.push(conversation_card);
-                            }
-                        }
-                        scrollable(column.spacing(8))
-                    }
-                }
-                .height(Length::Fill)
-                .width(Length::Fill)
-            )
-            .spacing(12)
-            .into()
-    }
-
-    fn mcp_config_view(&self) -> Element<Message> {
-        // Load the actual MCP config (same as startup)
-        let mcp_config = crate::config::MCPConfig::load_from_json()
-            .unwrap_or_else(|_| self.config.mcp.clone());
-        
-        let server_count = mcp_config.servers.len();
-        let enabled_count = self.available_mcp_tools.len();
-        
-        // Build server list with owned data
-        let mut server_column = cosmic::widget::column::with_capacity(mcp_config.servers.len());
-        for (server_name, server_config) in mcp_config.servers {
-            let command_text = format!("{} {}", 
-                server_config.command,
-                server_config.args.join(" ")
-            );
-            
-            let server_widget = cosmic::widget::column::with_capacity(4)
-                .push(
-                    cosmic::widget::row::with_capacity(2)
-                        .push(
-                            cosmic::widget::text(server_name.clone())
-                                .size(16)
-                        )
-                        .push(cosmic::widget::Space::with_width(Length::Fill))
-                        .push(
-                            cosmic::widget::text("Connected")
-                                .size(12)
-                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.2, 0.8, 0.2)))
-                        )
-                        .align_y(cosmic::iced::Alignment::Center)
-                )
-                .push(
-                    cosmic::widget::text(format!("Type: stdio"))
-                        .size(12)
-                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
-                )
-                .push(
-                    cosmic::widget::text(format!("Command: {}", command_text))
-                        .size(12)
-                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
-                )
-                .spacing(4);
-            
-            server_column = server_column.push(server_widget);
-        }
-        
-        cosmic::widget::column::with_capacity(4)
-            .push(
-                // Simple header
-                cosmic::widget::row::with_capacity(3)
-                    .push(
-                        cosmic::widget::row::with_capacity(2)
-                            .push(
-                                widget::icon::from_name("configure-symbolic")
-                                    .size(20)
-                            )
-                            .push(
-                                cosmic::widget::text("MCP Configuration")
-                                    .size(20)
-                            )
-                            .spacing(8)
-                            .align_y(cosmic::iced::Alignment::Center)
-                    )
-                    .push(cosmic::widget::Space::with_width(Length::Fill))
-                    .push(
-                        cosmic::widget::text(format!("{} servers, {} tools", server_count, enabled_count))
-                            .size(12)
-                            .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
-                    )
-                    .spacing(12)
-                    .align_y(cosmic::iced::Alignment::Center)
-            )
-            .push(
-                // Servers section
-                cosmic::widget::column::with_capacity(2)
-                    .push(
-                        cosmic::widget::text(format!("MCP Servers ({})", server_count))
-                            .size(16)
-                    )
-                    .push(
-                        if server_count == 0 {
-                            Element::from(
-                                cosmic::widget::column::with_capacity(3)
-                                    .push(
-                                        widget::icon::from_name("network-server-symbolic")
-                                            .size(48)
-                                    )
-                                    .push(
-                                        cosmic::widget::text("No MCP servers configured")
-                                            .size(16)
-                                    )
-                                    .push(
-                                        cosmic::widget::text("Add MCP servers to enable tools and capabilities")
-                                            .size(12)
-                                            .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
-                                    )
-                                    .spacing(8)
-                                    .align_x(cosmic::iced::Alignment::Center)
-                            )
-                        } else {
-                            Element::from(scrollable(server_column))
-                        }
-                    )
-                    .spacing(12)
-            )
-            .push(
-                // Tools section
-                cosmic::widget::column::with_capacity(2)
-                    .push(
-                        cosmic::widget::text(format!("Available Tools ({})", enabled_count))
-                            .size(16)
-                    )
-                    .push(
-                        self.tools_list_view()
-                    )
-                    .spacing(12)
-            )
-            .spacing(16)
-            .into()
-    }
-
-    fn tools_list_view(&self) -> Element<Message> {
-        let tools = &self.available_mcp_tools;
-        
-        if tools.is_empty() {
-            return cosmic::widget::column::with_capacity(3)
-                .push(
-                    widget::icon::from_name("tool-symbolic")
-                        .size(48)
-                )
-                .push(
-                    cosmic::widget::text("No tools discovered yet")
-                        .size(16)
-                )
-                .push(
-                    cosmic::widget::text("Tools will appear here once MCP servers are connected")
-                        .size(12)
-                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
-                )
-                .spacing(8)
-                .align_x(cosmic::iced::Alignment::Center)
-                .into();
-        }
-
-        let mut column = cosmic::widget::column::with_capacity(tools.len());
-        for tool in tools.iter() {
-            // Build input schema text
-            let input_text = if let Some(properties) = tool.parameters.get("properties") {
-                if let Some(props_obj) = properties.as_object() {
-                    let params: Vec<String> = props_obj.keys()
-                        .map(|k| k.to_string())
-                        .collect();
-                    if params.is_empty() {
-                        "No parameters".to_string()
-                    } else {
-                        format!("Parameters: {}", params.join(", "))
-                    }
-                } else {
-                    "Parameters: (schema)".to_string()
-                }
-            } else {
-                "No parameters defined".to_string()
-            };
-
-            let tool_item = cosmic::widget::column::with_capacity(3)
-                .push(
-                    cosmic::widget::row::with_capacity(2)
-                        .push(
-                            cosmic::widget::text(&tool.name)
-                                .size(14)
-                                .font(cosmic::font::Font::MONOSPACE)
-                        )
-                        .push(cosmic::widget::Space::with_width(Length::Fill))
-                        .push(
-                            cosmic::widget::text("Available")
-                                .size(10)
-                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.2, 0.8, 0.2)))
-                        )
-                        .align_y(cosmic::iced::Alignment::Center)
-                )
-                .push(
-                    cosmic::widget::text(&tool.description)
-                        .size(12)
-                )
-                .push(
-                    cosmic::widget::text(input_text)
-                        .size(10)
-                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5)))
-                )
-                .spacing(4);
-            
-            column = column.push(tool_item);
-        }
-        
-        scrollable(column).into()
-    }
-
 }
-
