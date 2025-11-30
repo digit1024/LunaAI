@@ -1,9 +1,11 @@
+use crate::config::LlmProfile;
+use anyhow::Result;
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use futures::Stream;
+use serde::{Deserialize, Serialize};
 use std::pin::Pin;
-use anyhow::Result;
+use std::sync::Arc;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum Role {
@@ -45,7 +47,7 @@ impl Message {
             attachments: None,
         }
     }
-    
+
     pub fn new_with_attachments(role: Role, content: String, attachments: Vec<Attachment>) -> Self {
         Self {
             role,
@@ -57,7 +59,7 @@ impl Message {
             attachments: Some(attachments),
         }
     }
-    
+
     pub fn new_tool_result(tool_call_id: String, content: String, is_error: bool) -> Self {
         let prefix = if is_error { "Error: " } else { "" };
         Self {
@@ -83,8 +85,6 @@ impl Message {
         }
     }
 }
-
-
 
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
@@ -124,17 +124,22 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
+#[derive(Debug, Clone)]
+pub enum ChatStreamEvent {
+    ContentDelta(String),
+    ToolCallDelta(ToolCall),
+}
+
 #[async_trait]
 pub trait LlmClient: Send + Sync {
-
     async fn send_message_stream(
         &self,
         messages: Vec<Message>,
         temperature: Option<f32>,
         max_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>, LlmError>;
-    
-    // New method for tool-enabled chat
+
+    // Legacy non-streaming tool path
     async fn send_message_with_tools(
         &self,
         messages: Vec<Message>,
@@ -142,10 +147,34 @@ pub trait LlmClient: Send + Sync {
         temperature: Option<f32>,
         max_tokens: Option<u32>,
     ) -> Result<ChatResponse, LlmError>;
+
+    async fn send_message_stream_with_tools(
+        &self,
+        messages: Vec<Message>,
+        available_tools: Vec<ToolDefinition>,
+        temperature: Option<f32>,
+        max_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatStreamEvent, LlmError>> + Send>>, LlmError>
+    {
+        let _ = (messages, available_tools, temperature, max_tokens);
+        Err(LlmError::Config(
+            "Tool streaming not implemented for this backend".into(),
+        ))
+    }
 }
 
-pub mod openai;
 pub mod anthropic;
-pub mod ollama;
-pub mod gemini;
 pub mod file_utils;
+pub mod gemini;
+pub mod ollama;
+pub mod openai;
+
+pub fn build_llm_client(profile: &LlmProfile) -> Arc<dyn LlmClient> {
+    match profile.backend.as_str() {
+        "anthropic" => Arc::new(crate::llm::anthropic::AnthropicClient::new(profile.clone())),
+        "deepseek" | "openai" => Arc::new(crate::llm::openai::OpenAIClient::new(profile.clone())),
+        "ollama" => Arc::new(crate::llm::ollama::OllamaClient::new(profile.clone())),
+        "gemini" => Arc::new(crate::llm::gemini::GeminiClient::new(profile.clone())),
+        _ => Arc::new(crate::llm::openai::OpenAIClient::new(profile.clone())),
+    }
+}

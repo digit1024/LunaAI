@@ -16,6 +16,10 @@ model = "gpt-4o"
 endpoint = "https://api.openai.com/v1"
 temperature = 0.7
 max_tokens = 4000
+# Relative paths resolve from ~/.local/share/cosmic_llm/
+profile_prompt_file = "profiles/openai.md"
+# Comma-separated list or array is accepted
+enabled_mcp = "filesystem,weather"
 
 # Anthropic profile
 [profiles.anthropic]
@@ -47,18 +51,18 @@ max_tokens = 4000
 # Prompt configuration
 [prompts]
 system_prompt_file = "~/.local/share/cosmic_llm/system_prompt.md"
-user_prompt_file = "~/.local/share/cosmic_llm/user_prompt.md"
 
-# MCP Configuration
-[mcp]
-[mcp.servers]
+# Title & Summary configuration
+# Note: Title generation only runs if title_generation_profile is specified
+[title_summary]
+# Required: Profile name to use for title generation (feature disabled if not specified)
+title_generation_profile = "openai"
 
-# Example MCP server configuration
-# [mcp.servers.filesystem]
-# command = "npx"
-# args = ["@modelcontextprotocol/server-filesystem", "/home/user/documents"]
-#
-# [mcp.servers.weather]
-# command = "npx"
-# args = ["@modelcontextprotocol/server-weather"]
-# env = { "OPENWEATHER_API_KEY" = "your-api-key-here" }
+# Maximum characters to include in conversation transcript for title generation
+summary_chars = 1000
+
+# Sleep interval in seconds for background title generation thread (server mode only)
+summary_loop_sleep_seconds = 15
+
+# System prompt for title generation
+title_generation_system_prompt = "Your task is to generate a conversation title that will describe the topic easily. Keep original conversation language and tone. YOU SHOULD ALWAYS ANSWER ONLY WITH TITLE. MAXIMUM 100CHARS. You will receive a part of the conversation transcript in next message"
