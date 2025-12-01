@@ -69,3 +69,4 @@ echo "  2. Navigate to the project directory"
 echo "  3. Build the project: unset ARGV0 && cargo build --release"
 echo ""
 
+
