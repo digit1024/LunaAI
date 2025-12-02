@@ -25,6 +25,8 @@ struct OpenAIMessage {
     content: Option<serde_json::Value>,
     tool_calls: Option<Vec<OpenAIToolCall>>,
     tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -117,6 +119,7 @@ impl StreamedToolCallState {
 struct OpenAIDelta {
     content: Option<String>,
     tool_calls: Option<Vec<OpenAIToolCallDelta>>,
+    reasoning_content: Option<String>,
 }
 
 pub struct OpenAIClient {
@@ -210,6 +213,7 @@ impl OpenAIClient {
                     content,
                     tool_calls,
                     tool_call_id: msg.tool_call_id,
+                    reasoning_content: msg.reasoning_content.clone(),
                 }
             })
             .collect()
@@ -224,6 +228,13 @@ impl OpenAIClient {
             if let Some(content_delta) = choice.delta.content {
                 if !content_delta.is_empty() {
                     events.push(ChatStreamEvent::ContentDelta(content_delta));
+                }
+            }
+
+            // Extract reasoning_content deltas
+            if let Some(reasoning_delta) = choice.delta.reasoning_content {
+                if !reasoning_delta.is_empty() {
+                    events.push(ChatStreamEvent::ReasoningContentDelta(reasoning_delta));
                 }
             }
 
@@ -468,6 +479,7 @@ impl LlmClient for OpenAIClient {
         Ok(ChatResponse {
             content,
             tool_calls,
+            reasoning_content: choice.message.reasoning_content.clone(),
         })
     }
 

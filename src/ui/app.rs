@@ -1249,7 +1249,7 @@ impl Application for CosmicLlmApp {
                         // Trigger scroll to bottom during streaming
                         // The scroll will be handled by anchor_bottom() and widget operations
                     }
-                    AgentUpdate::AssistantComplete { full_text } => {
+                    AgentUpdate::AssistantComplete { full_text, reasoning_content } => {
                         if let Some(idx) = self.current_ai_message_index {
                             if let Some(msg) = self.messages.get_mut(idx) {
                                 msg.content = full_text.clone();
@@ -1276,6 +1276,7 @@ impl Application for CosmicLlmApp {
                                 tool_status: None,
                                 tool_params_json: None,
                                 tool_result_json: None,
+                                reasoning_content: reasoning_content.as_deref(),
                             };
                             if let Err(e) = self.storage.add_message_with_metadata(
                                 &conv_id,
@@ -1429,6 +1430,7 @@ impl Application for CosmicLlmApp {
                                 tool_status: Some("success"),
                                 tool_params_json: params_ref,
                                 tool_result_json: Some(&result_value),
+                                reasoning_content: None,
                             };
                             // Use empty content - tool_result_json holds the actual data
                             if let Err(e) = self.storage.add_message_with_metadata(
@@ -1503,6 +1505,7 @@ impl Application for CosmicLlmApp {
                                 tool_status: Some("error"),
                                 tool_params_json: params_ref,
                                 tool_result_json: Some(&error_value),
+                                reasoning_content: None,
                             };
                             // Use empty content - tool_result_json holds the error
                             if let Err(e) = self.storage.add_message_with_metadata(

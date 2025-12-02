@@ -76,6 +76,7 @@ impl Storage {
                     tool_status: msg.tool_status,
                     tool_params_json: msg.tool_params_json.clone(),
                     tool_result_json: msg.tool_result_json.clone(),
+                    reasoning_content: msg.reasoning_content.clone(),
                 })
                 .collect();
 
@@ -137,6 +138,7 @@ impl Storage {
                     tool_status: msg.tool_status,
                     tool_params_json: msg.tool_params_json.clone(),
                     tool_result_json: msg.tool_result_json.clone(),
+                    reasoning_content: msg.reasoning_content.clone(),
                 })
                 .collect();
 

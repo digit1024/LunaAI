@@ -455,6 +455,7 @@ impl LlmClient for GeminiClient {
         Ok(ChatResponse {
             content,
             tool_calls,
+            reasoning_content: None,
         })
     }
 
