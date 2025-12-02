@@ -16,6 +16,7 @@ pub enum AgentUpdate {
     },
     AssistantComplete {
         full_text: String,
+        reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
     },
     ToolPlanned {
         plan_items: Vec<PlannedTool>,

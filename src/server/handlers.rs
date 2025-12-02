@@ -498,7 +498,7 @@ fn conversation_to_llm(conversation: StoredConversation) -> Vec<LlmMessage> {
                 }
                 Role::Assistant => {
                     // Include tool_calls if present on assistant messages
-                    if let Some(tool_calls) = msg.tool_calls {
+                    let mut assistant_msg = if let Some(tool_calls) = msg.tool_calls {
                         if !tool_calls.is_empty() {
                             LlmMessage::new_with_tool_calls(role, msg.content, tool_calls)
                         } else {
@@ -506,7 +506,10 @@ fn conversation_to_llm(conversation: StoredConversation) -> Vec<LlmMessage> {
                         }
                     } else {
                         LlmMessage::new(role, msg.content)
-                    }
+                    };
+                    // Preserve reasoning_content from stored message
+                    assistant_msg.reasoning_content = msg.reasoning_content.clone();
+                    assistant_msg
                 }
                 _ => LlmMessage::new(role, msg.content),
             })
@@ -553,7 +556,7 @@ impl PersistenceContext {
         }
     }
 
-    async fn persist_assistant(&mut self, content: &str) -> Result<()> {
+    async fn persist_assistant(&mut self, content: &str, reasoning_content: Option<&str>) -> Result<()> {
         let tool_calls_slice = if self.pending_tool_calls.is_empty() {
             None
         } else {
@@ -561,6 +564,7 @@ impl PersistenceContext {
         };
         let metadata = MessageMetadata {
             tool_calls: tool_calls_slice,
+            reasoning_content,
             ..MessageMetadata::default()
         };
         self.storage
@@ -616,6 +620,7 @@ impl PersistenceContext {
             tool_status: Some(status),
             tool_params_json: params,
             tool_result_json: Some(&result_value),
+            reasoning_content: None,
         };
         // Use empty content - tool_result_json holds the actual data
         self.storage
@@ -652,8 +657,8 @@ async fn process_agent_update(
                 seq,
             });
         }
-        AgentUpdate::AssistantComplete { full_text } => {
-            persistence.persist_assistant(&full_text).await?;
+        AgentUpdate::AssistantComplete { full_text, reasoning_content } => {
+            persistence.persist_assistant(&full_text, reasoning_content.as_deref()).await?;
             let _ = outbound.send(ServerEvent::AssistantComplete {
                 conversation_id: conversation_id.to_string(),
                 content: full_text,
