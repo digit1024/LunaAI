@@ -1,5 +1,4 @@
 # LunaAI Build Dependencies
-# Quick reference - see BUILD_DEPENDENCIES.md for detailed information
 
 ## Runtime Libraries (from ldd analysis)
 libasound2t64
@@ -40,6 +39,7 @@ libegl1-mesa-dev
 libgles2-mesa-dev
 libvulkan-dev
 vulkan-tools
+
 
 
 

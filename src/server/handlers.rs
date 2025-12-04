@@ -657,11 +657,18 @@ async fn process_agent_update(
                 seq,
             });
         }
+        AgentUpdate::ReasoningContentDelta { chunk } => {
+            let _ = outbound.send(ServerEvent::ReasoningContentDelta {
+                conversation_id: conversation_id.to_string(),
+                chunk,
+            });
+        }
         AgentUpdate::AssistantComplete { full_text, reasoning_content } => {
             persistence.persist_assistant(&full_text, reasoning_content.as_deref()).await?;
             let _ = outbound.send(ServerEvent::AssistantComplete {
                 conversation_id: conversation_id.to_string(),
                 content: full_text,
+                reasoning_content: reasoning_content.clone(),
             });
         }
         AgentUpdate::ToolPlanned { plan_items } => {

@@ -116,6 +116,17 @@ class _AssistantBubble extends StatelessWidget {
                         p: Theme.of(context).textTheme.bodyMedium,
                       ),
                     ),
+                  // Reasoning content (collapsible) - show during streaming too
+                  if (message.reasoningContent != null && 
+                      message.reasoningContent!.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    _CollapsiblePayload(
+                      icon: Icons.psychology,
+                      label: '💭 Thinking',
+                      payload: message.reasoningContent!,
+                      initiallyExpanded: message.isStreaming, // Expand during streaming
+                    ),
+                  ],
                   const SizedBox(height: 6),
                   _TimestampRow(
                     timestamp: message.timestamp,

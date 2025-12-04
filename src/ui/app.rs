@@ -54,6 +54,7 @@ pub enum Message {
     ToolCallError(String, String),     // tool_name, error
     ToolCallWidgetMessage(usize, ToolCallMessage), // index, message
     ToggleToolSummary(usize, String),  // message idx, summary id
+    ToggleReasoning(usize),            // message idx
     ScrollToBottom,
     // Menu actions
     ShowAbout,
@@ -180,6 +181,7 @@ pub struct CosmicLlmApp {
     pub archived_tool_calls: Vec<AnchoredToolCall>,
     pub expanded_tool_calls: std::collections::HashSet<usize>,
     pub expanded_tool_summaries: std::collections::HashSet<(usize, String)>,
+    pub expanded_reasoning: std::collections::HashSet<usize>, // message indices with expanded reasoning
     pub expanded_mcp_servers: std::collections::HashSet<String>,
     pub scrollable_id: cosmic::widget::Id,
     pub key_binds: std::collections::HashMap<menu::KeyBind, MenuAction>,
@@ -227,6 +229,7 @@ pub struct ChatMessage {
     pub content: String,
     pub is_user: bool,
     pub is_error: bool,
+    pub reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
 }
 
 #[derive(Debug, Clone)]
@@ -318,6 +321,7 @@ impl CosmicLlmApp {
             archived_tool_calls: Vec::new(),
             expanded_tool_calls: std::collections::HashSet::new(),
             expanded_tool_summaries: std::collections::HashSet::new(),
+            expanded_reasoning: std::collections::HashSet::new(),
             expanded_mcp_servers: std::collections::HashSet::new(),
             scrollable_id: cosmic::widget::Id::unique(),
             key_binds: Self::create_key_binds(),
@@ -552,7 +556,7 @@ impl CosmicLlmApp {
         self.pending_tool_calls_for_history.clear();
         self.tool_runtime_context.clear();
         self.expanded_tool_summaries.clear();
-        self.expanded_tool_summaries.clear();
+        self.expanded_reasoning.clear();
 
         let mut archived_indices: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
@@ -596,6 +600,7 @@ impl CosmicLlmApp {
                 content: stored.content.clone(),
                 is_user,
                 is_error: false,
+                reasoning_content: stored.reasoning_content.clone(),
             });
             let anchor_index = self.messages.len().saturating_sub(1);
 
@@ -793,6 +798,7 @@ impl Application for CosmicLlmApp {
             content: "Welcome to Cosmic AI".to_string(),
             is_user: false,
             is_error: false,
+            reasoning_content: None,
         });
 
         // Load recent conversations and update nav model
@@ -907,6 +913,7 @@ impl Application for CosmicLlmApp {
                         content: message_content,
                         is_user: true,
                         is_error: false,
+                        reasoning_content: None,
                     };
                     self.messages.push(user_msg.clone());
 
@@ -1223,6 +1230,7 @@ impl Application for CosmicLlmApp {
                 self.pending_tool_calls_for_history.clear();
                 self.tool_runtime_context.clear();
                 self.expanded_tool_summaries.clear();
+                self.expanded_reasoning.clear();
                 // Update nav model to reflect new conversation
                 self.load_recent_conversations();
                 self.update_nav_model();
@@ -1237,6 +1245,7 @@ impl Application for CosmicLlmApp {
                             content: String::new(),
                             is_user: false,
                             is_error: false,
+                            reasoning_content: None,
                         });
                         self.current_ai_message_index = Some(self.messages.len() - 1);
                     }
@@ -1249,16 +1258,33 @@ impl Application for CosmicLlmApp {
                         // Trigger scroll to bottom during streaming
                         // The scroll will be handled by anchor_bottom() and widget operations
                     }
+                    AgentUpdate::ReasoningContentDelta { chunk } => {
+                        if let Some(idx) = self.current_ai_message_index {
+                            if let Some(msg) = self.messages.get_mut(idx) {
+                                // Accumulate reasoning content during streaming
+                                match &mut msg.reasoning_content {
+                                    Some(existing) => {
+                                        existing.push_str(&chunk);
+                                    }
+                                    None => {
+                                        msg.reasoning_content = Some(chunk.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
                     AgentUpdate::AssistantComplete { full_text, reasoning_content } => {
                         if let Some(idx) = self.current_ai_message_index {
                             if let Some(msg) = self.messages.get_mut(idx) {
                                 msg.content = full_text.clone();
+                                msg.reasoning_content = reasoning_content.clone();
                             }
                         } else {
                             self.messages.push(ChatMessage {
                                 content: full_text.clone(),
                                 is_user: false,
                                 is_error: false,
+                                reasoning_content: reasoning_content.clone(),
                             });
                             self.current_ai_message_index = Some(self.messages.len() - 1);
                         }
@@ -1569,6 +1595,7 @@ impl Application for CosmicLlmApp {
                             content: format!("❌ **Model Communication Error**\n\n{}", error),
                             is_user: false,
                             is_error: true,
+                            reasoning_content: None,
                         });
                     }
                 }
@@ -1624,6 +1651,13 @@ impl Application for CosmicLlmApp {
                     self.expanded_tool_summaries.remove(&key);
                 } else {
                     self.expanded_tool_summaries.insert(key);
+                }
+            }
+            Message::ToggleReasoning(message_idx) => {
+                if self.expanded_reasoning.contains(&message_idx) {
+                    self.expanded_reasoning.remove(&message_idx);
+                } else {
+                    self.expanded_reasoning.insert(message_idx);
                 }
             }
             Message::ToggleMCPServer(server_name) => {

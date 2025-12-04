@@ -402,8 +402,10 @@ class AppController extends StateNotifier<AppState> {
       state = state.copyWith(streaming: true);
     } else if (event is AssistantDeltaEvent) {
       _applyAssistantDelta(event.chunk);
+    } else if (event is ReasoningContentDeltaEvent) {
+      _applyReasoningContentDelta(event.chunk);
     } else if (event is AssistantCompleteEvent) {
-      _completeAssistant(event.content);
+      _completeAssistant(event.content, event.reasoningContent);
     } else if (event is ToolPlannedEvent) {
       // Tools interrupt assistant stream - reset so next delta creates new bubble
       _currentAssistantBubbleId = null;
@@ -526,6 +528,7 @@ class AppController extends StateNotifier<AppState> {
           content: m.content,
           timestamp: timestamp,
           bubbleType: m.role == 'user' ? BubbleType.user : BubbleType.assistant,
+          reasoningContent: m.reasoningContent,
         ));
       }
     }
@@ -579,7 +582,42 @@ class AppController extends StateNotifier<AppState> {
     state = state.copyWith(chatMessages: messages);
   }
 
-  void _completeAssistant(String content) {
+  void _applyReasoningContentDelta(String chunk) {
+    final messages = [...state.chatMessages];
+    
+    // Find existing bubble by our tracked ID
+    if (_currentAssistantBubbleId != null) {
+      final idx = messages.indexWhere((m) => m.id == _currentAssistantBubbleId);
+      if (idx >= 0) {
+        // Append to existing reasoning content
+        final existing = messages[idx];
+        final currentReasoning = existing.reasoningContent ?? '';
+        messages[idx] = existing.copyWith(
+          reasoningContent: '$currentReasoning$chunk',
+          isStreaming: true,
+        );
+        state = state.copyWith(chatMessages: messages);
+        return;
+      }
+    }
+    
+    // If no assistant bubble exists yet, create one with reasoning content
+    // This shouldn't normally happen, but handle it gracefully
+    final newId = DateTime.now().microsecondsSinceEpoch.toString();
+    _currentAssistantBubbleId = newId;
+    messages.add(ChatMessage(
+      id: newId,
+      role: 'assistant',
+      content: '',
+      timestamp: DateTime.now(),
+      bubbleType: BubbleType.assistant,
+      isStreaming: true,
+      reasoningContent: chunk,
+    ));
+    state = state.copyWith(chatMessages: messages);
+  }
+
+  void _completeAssistant(String content, String? reasoningContent) {
     final messages = [...state.chatMessages];
     
     // Find our tracked bubble or the last assistant bubble
@@ -589,6 +627,7 @@ class AppController extends StateNotifier<AppState> {
         messages[idx] = messages[idx].copyWith(
           content: content,
           isStreaming: false,
+          reasoningContent: reasoningContent,
         );
         state = state.copyWith(chatMessages: messages);
         return;

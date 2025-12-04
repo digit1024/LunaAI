@@ -14,6 +14,9 @@ pub enum AgentUpdate {
         text_chunk: String,
         seq: u64,
     },
+    ReasoningContentDelta {
+        chunk: String,
+    },
     AssistantComplete {
         full_text: String,
         reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content

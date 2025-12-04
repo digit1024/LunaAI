@@ -1,4 +1,4 @@
-# Cosmic LLM - Security Issues Report
+`# Cosmic LLM - Security Issues Report
 
 ## Critical Security Vulnerabilities
 

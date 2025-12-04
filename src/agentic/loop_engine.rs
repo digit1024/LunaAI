@@ -90,6 +90,12 @@ impl AgenticLoop {
                     Ok(ChatStreamEvent::ReasoningContentDelta(chunk)) => {
                         if !chunk.is_empty() {
                             reasoning_content.push_str(&chunk);
+                            // Send reasoning content delta during streaming
+                            if let Some(tx) = agent_tx.as_ref() {
+                                let _ = tx.send(AgentUpdate::ReasoningContentDelta {
+                                    chunk: chunk.clone(),
+                                });
+                            }
                         }
                     }
                     Ok(ChatStreamEvent::ToolCallDelta(tool_call)) => {
