@@ -68,6 +68,7 @@ impl AgenticLoop {
             }
 
             let mut assistant_response = String::new();
+            let mut reasoning_content = String::new();
             let mut planned_tools: Vec<ToolCall> = Vec::new();
             let mut seq: u64 = 0;
 
@@ -84,6 +85,17 @@ impl AgenticLoop {
                                 text_chunk: chunk,
                                 seq,
                             });
+                        }
+                    }
+                    Ok(ChatStreamEvent::ReasoningContentDelta(chunk)) => {
+                        if !chunk.is_empty() {
+                            reasoning_content.push_str(&chunk);
+                            // Send reasoning content delta during streaming
+                            if let Some(tx) = agent_tx.as_ref() {
+                                let _ = tx.send(AgentUpdate::ReasoningContentDelta {
+                                    chunk: chunk.clone(),
+                                });
+                            }
                         }
                     }
                     Ok(ChatStreamEvent::ToolCallDelta(tool_call)) => {
@@ -115,6 +127,7 @@ impl AgenticLoop {
             if let Some(tx) = agent_tx.as_ref() {
                 let _ = tx.send(AgentUpdate::AssistantComplete {
                     full_text: assistant_response.clone(),
+                    reasoning_content: if reasoning_content.is_empty() { None } else { Some(reasoning_content.clone()) },
                 });
             }
 
@@ -128,11 +141,13 @@ impl AgenticLoop {
                 return Ok(assistant_response);
             }
 
-            messages.push(Message::new_with_tool_calls(
+            let mut assistant_msg = Message::new_with_tool_calls(
                 Role::Assistant,
                 assistant_response.clone(),
                 planned_tools.clone(),
-            ));
+            );
+            assistant_msg.reasoning_content = if reasoning_content.is_empty() { None } else { Some(reasoning_content.clone()) };
+            messages.push(assistant_msg);
 
             for tool_call in planned_tools {
                 self.tool_logger.log_tool_call(&tool_call)?;
@@ -264,6 +279,7 @@ impl AgenticLoop {
                 }
                 let _ = tx.send(AgentUpdate::AssistantComplete {
                     full_text: response.content.clone(),
+                    reasoning_content: response.reasoning_content.clone(),
                 });
             }
 
@@ -292,11 +308,13 @@ impl AgenticLoop {
                 }
             }
 
-            messages.push(Message::new_with_tool_calls(
+            let mut assistant_msg = Message::new_with_tool_calls(
                 Role::Assistant,
                 response.content.clone(),
                 response.tool_calls.clone(),
-            ));
+            );
+            assistant_msg.reasoning_content = response.reasoning_content.clone();
+            messages.push(assistant_msg);
 
             for tool_call in response.tool_calls {
                 self.tool_logger.log_tool_call(&tool_call)?;

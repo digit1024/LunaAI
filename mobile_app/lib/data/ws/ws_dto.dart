@@ -47,10 +47,16 @@ sealed class ServerEvent {
           json['chunk'] as String? ?? '',
           json['seq'] as int? ?? 0,
         );
+      case 'reasoning_content_delta':
+        return ReasoningContentDeltaEvent(
+          json['conversation_id'] as String,
+          json['chunk'] as String? ?? '',
+        );
       case 'assistant_complete':
         return AssistantCompleteEvent(
           json['conversation_id'] as String,
           json['content'] as String? ?? '',
+          json['reasoning_content'] as String?,
         );
       case 'tool_planned':
         return ToolPlannedEvent(
@@ -153,11 +159,19 @@ class AssistantDeltaEvent extends ServerEvent {
   const AssistantDeltaEvent(this.conversationId, this.chunk, this.seq);
 }
 
+class ReasoningContentDeltaEvent extends ServerEvent {
+  final String conversationId;
+  final String chunk;
+
+  const ReasoningContentDeltaEvent(this.conversationId, this.chunk);
+}
+
 class AssistantCompleteEvent extends ServerEvent {
   final String conversationId;
   final String content;
+  final String? reasoningContent; // For DeepSeek thinking/reasoning content
 
-  const AssistantCompleteEvent(this.conversationId, this.content);
+  const AssistantCompleteEvent(this.conversationId, this.content, [this.reasoningContent]);
 }
 
 class ToolPlannedEvent extends ServerEvent {
@@ -322,6 +336,7 @@ class MessageView {
   final String? toolStatus;
   final dynamic toolParams;
   final dynamic toolResult;
+  final String? reasoningContent; // For DeepSeek thinking/reasoning content
 
   MessageView({
     required this.id,
@@ -333,6 +348,7 @@ class MessageView {
     this.toolStatus,
     this.toolParams,
     this.toolResult,
+    this.reasoningContent,
   });
 
   factory MessageView.fromJson(Map<String, dynamic> json) {
@@ -346,6 +362,7 @@ class MessageView {
       toolStatus: json['tool_status'] as String?,
       toolParams: json['tool_params_json'],
       toolResult: json['tool_result_json'],
+      reasoningContent: json['reasoning_content'] as String?,
     );
   }
 }

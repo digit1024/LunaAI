@@ -24,6 +24,7 @@ pub struct Message {
     pub tool_call_id: Option<String>, // For tool result messages
     pub tool_calls: Option<Vec<ToolCall>>, // For assistant messages with tool calls
     pub attachments: Option<Vec<Attachment>>, // File attachments
+    pub reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -45,6 +46,7 @@ impl Message {
             tool_call_id: None,
             tool_calls: None,
             attachments: None,
+            reasoning_content: None,
         }
     }
 
@@ -57,6 +59,7 @@ impl Message {
             tool_call_id: None,
             tool_calls: None,
             attachments: Some(attachments),
+            reasoning_content: None,
         }
     }
 
@@ -70,6 +73,7 @@ impl Message {
             tool_call_id: Some(tool_call_id),
             tool_calls: None,
             attachments: None,
+            reasoning_content: None,
         }
     }
 
@@ -82,6 +86,7 @@ impl Message {
             tool_call_id: None,
             tool_calls: Some(tool_calls),
             attachments: None,
+            reasoning_content: None,
         }
     }
 }
@@ -116,6 +121,7 @@ pub struct ToolDefinition {
 pub struct ChatResponse {
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
+    pub reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +134,7 @@ pub struct ToolResult {
 pub enum ChatStreamEvent {
     ContentDelta(String),
     ToolCallDelta(ToolCall),
+    ReasoningContentDelta(String), // For DeepSeek thinking/reasoning content
 }
 
 #[async_trait]

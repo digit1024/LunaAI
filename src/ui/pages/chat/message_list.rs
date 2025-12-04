@@ -111,6 +111,43 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                 }
             }
 
+            // Add reasoning content display for AI messages (show during streaming too)
+            if !msg.is_user && !msg.is_error {
+                if let Some(ref reasoning) = msg.reasoning_content {
+                    if !reasoning.is_empty() {
+                        let expanded = app.expanded_reasoning.contains(&i);
+                        // Auto-expand during streaming if not manually collapsed
+                        let should_show = expanded || (app.is_streaming && app.current_ai_message_index == Some(i));
+                        let toggle = cosmic::widget::button::text(format!(
+                            "{} 💭 Thinking",
+                            if should_show { "▼" } else { "▶" }
+                        ))
+                        .on_press(Message::ToggleReasoning(i))
+                        .class(cosmic::style::Button::Text)
+                        .width(Length::Fill);
+
+                        column = column.push(toggle);
+
+                        if should_show {
+                            column = column.push(
+                                cosmic::widget::container(
+                                    cosmic::widget::text(reasoning.clone())
+                                        .size(12)
+                                        .font(Font::MONOSPACE)
+                                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(
+                                            0.6, 0.7, 0.9,
+                                        )))
+                                        .width(Length::Fill),
+                                )
+                                .padding(Padding::from([8, 12]))
+                                .class(cosmic::style::Container::Card)
+                                .width(Length::Fill),
+                            );
+                        }
+                    }
+                }
+            }
+
             cosmic::widget::row::with_capacity(2).push(column).push(
                 cosmic::widget::button::text("📋")
                     .on_press(Message::ShowMessageDialog(content))

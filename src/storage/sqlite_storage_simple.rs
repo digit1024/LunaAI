@@ -33,6 +33,7 @@ pub struct Message {
     pub tool_status: Option<String>,
     pub tool_params_json: Option<Value>,
     pub tool_result_json: Option<Value>,
+    pub reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
 }
 
 /// Represents a search snippet from FTS5
@@ -148,10 +149,17 @@ impl SqliteStorage {
                 tool_status TEXT,
                 tool_params_json TEXT,
                 tool_result_json TEXT,
+                reasoning_content TEXT,
                 FOREIGN KEY (conversation_id) REFERENCES conversations (id) ON DELETE CASCADE
             )",
             [],
         )?;
+
+        // Migrate existing messages: add reasoning_content column if it doesn't exist
+        let _ = self.conn.execute(
+            "ALTER TABLE messages ADD COLUMN reasoning_content TEXT",
+            [],
+        );
 
         // Create FTS5 virtual table for full-text search
         self.conn.execute(
@@ -288,8 +296,8 @@ impl SqliteStorage {
         };
 
         self.conn.execute(
-            "INSERT INTO messages (conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json) 
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO messages (conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json, reasoning_content) 
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 conversation_id,
                 role,
@@ -301,7 +309,8 @@ impl SqliteStorage {
                 metadata.tool_name,
                 metadata.tool_status,
                 tool_params_json,
-                tool_result_json
+                tool_result_json,
+                metadata.reasoning_content
             ],
         )?;
 
@@ -311,7 +320,7 @@ impl SqliteStorage {
     /// Load all messages for a conversation
     pub fn load_conversation(&self, conversation_id: &str) -> SqliteResult<Vec<Message>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json 
+            "SELECT id, conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json, reasoning_content 
              FROM messages 
              WHERE conversation_id = ?1 
              ORDER BY created_at ASC"
@@ -344,6 +353,7 @@ impl SqliteStorage {
 
             let tool_params_json = Self::read_json_value(row.get(10)?);
             let tool_result_json = Self::read_json_value(row.get(11)?);
+            let reasoning_content: Option<String> = row.get(12)?;
 
             Ok(Message {
                 id: row.get(0)?,
@@ -358,6 +368,7 @@ impl SqliteStorage {
                 tool_status: row.get(9)?,
                 tool_params_json,
                 tool_result_json,
+                reasoning_content,
             })
         })?;
 
@@ -642,6 +653,7 @@ pub struct MessageMetadata<'a> {
     pub tool_status: Option<&'a str>,
     pub tool_params_json: Option<&'a Value>,
     pub tool_result_json: Option<&'a Value>,
+    pub reasoning_content: Option<&'a str>, // For DeepSeek thinking/reasoning content
 }
 
 impl<'a> Default for MessageMetadata<'a> {
@@ -653,6 +665,7 @@ impl<'a> Default for MessageMetadata<'a> {
             tool_status: None,
             tool_params_json: None,
             tool_result_json: None,
+            reasoning_content: None,
         }
     }
 }
