@@ -56,6 +56,7 @@ pub struct StoredMessage {
     pub tool_status: Option<String>,
     pub tool_params_json: Option<Value>,
     pub tool_result_json: Option<Value>,
+    pub reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
 }
 
 impl Conversation {
@@ -86,6 +87,7 @@ impl Conversation {
             tool_call_id: None,
             tool_name: None,
             tool_status: None,
+            reasoning_content: None,
             tool_params_json: None,
             tool_result_json: None,
         };
@@ -114,10 +116,12 @@ impl Conversation {
         // Add assistant turns with tool calls and results
         for turn in &self.turns {
             if !turn.text.trim().is_empty() {
-                llm_messages.push(crate::llm::Message::new(
+                let msg = crate::llm::Message::new(
                     crate::llm::Role::Assistant,
                     turn.text.clone(),
-                ));
+                );
+                // Note: reasoning_content is not stored in turns, would need to be added to Turn struct if needed
+                llm_messages.push(msg);
             }
 
             // Add tool results for this turn

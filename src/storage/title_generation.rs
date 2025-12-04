@@ -73,6 +73,7 @@ pub async fn generate_title_from_messages(
         tool_call_id: None,
         tool_calls: None,
         attachments: None,
+        reasoning_content: None,
     });
     llm_messages.push(LlmMessage {
         role: Role::User,
@@ -82,6 +83,7 @@ pub async fn generate_title_from_messages(
         tool_call_id: None,
         tool_calls: None,
         attachments: None,
+        reasoning_content: None,
     });
 
     // Call LLM with empty tools vector

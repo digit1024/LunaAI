@@ -348,6 +348,7 @@ impl LlmClient for OllamaClient {
         Ok(ChatResponse {
             content,
             tool_calls,
+            reasoning_content: None,
         })
     }
 }

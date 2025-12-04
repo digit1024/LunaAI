@@ -444,6 +444,7 @@ impl LlmClient for AnthropicClient {
         Ok(ChatResponse {
             content,
             tool_calls,
+            reasoning_content: None,
         })
     }
 

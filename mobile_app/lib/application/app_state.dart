@@ -30,6 +30,7 @@ class ChatMessage extends Equatable {
   final dynamic toolParams;   // For toolRequest bubbles
   final dynamic toolResult;   // For toolResult bubbles
   final String? toolError;    // For error state
+  final String? reasoningContent; // For DeepSeek thinking/reasoning content
 
   const ChatMessage({
     required this.id,
@@ -44,6 +45,7 @@ class ChatMessage extends Equatable {
     this.toolParams,
     this.toolResult,
     this.toolError,
+    this.reasoningContent,
   });
 
   ChatMessage copyWith({
@@ -59,6 +61,7 @@ class ChatMessage extends Equatable {
     Object? toolParams = _unset,
     Object? toolResult = _unset,
     Object? toolError = _unset,
+    String? reasoningContent,
   }) {
     return ChatMessage(
       id: id ?? this.id,
@@ -73,6 +76,7 @@ class ChatMessage extends Equatable {
       toolParams: identical(toolParams, _unset) ? this.toolParams : toolParams,
       toolResult: identical(toolResult, _unset) ? this.toolResult : toolResult,
       toolError: identical(toolError, _unset) ? this.toolError : toolError as String?,
+      reasoningContent: reasoningContent ?? this.reasoningContent,
     );
   }
 
@@ -92,6 +96,7 @@ class ChatMessage extends Equatable {
         toolParams,
         toolResult,
         toolError,
+        reasoningContent,
       ];
 }
 

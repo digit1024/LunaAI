@@ -76,9 +76,14 @@ pub enum ServerEvent {
         chunk: String,
         seq: u64,
     },
+    ReasoningContentDelta {
+        conversation_id: String,
+        chunk: String,
+    },
     AssistantComplete {
         conversation_id: String,
         content: String,
+        reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
     },
     ToolPlanned {
         conversation_id: String,
@@ -153,6 +158,8 @@ pub struct MessageView {
     pub tool_result_json: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<Attachment>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -176,6 +183,7 @@ impl From<&StoredMessage> for MessageView {
             tool_params_json: msg.tool_params_json.clone(),
             tool_result_json: msg.tool_result_json.clone(),
             attachments: None, // StoredMessage doesn't have attachments yet
+            reasoning_content: msg.reasoning_content.clone(),
         }
     }
 }
