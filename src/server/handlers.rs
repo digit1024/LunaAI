@@ -257,7 +257,12 @@ impl ServerHandler {
     }
 
     async fn handle_list_profiles(&self) -> Result<()> {
-        let profiles: Vec<String> = self.ctx.config.profiles.keys().cloned().collect();
+        let mut profiles: Vec<String> = self.ctx.config.profiles
+            .iter()
+            .filter(|(_, p)| !p.hidden)
+            .map(|(name, _)| name.clone())
+            .collect();
+        profiles.sort();
         let _ = self.outbound.send(ServerEvent::ProfilesList {
             profiles,
             default_profile: self.ctx.config.default.clone(),

@@ -55,6 +55,7 @@ temperature = 0.7
 max_tokens = 4000
 profile_prompt_file = "~/.local/share/cosmic_llm/profiles/diet.md"
 enabled_mcp = "filesystem,weather"
+hidden = false  # Set to true to hide from dropdowns
 
 [profiles.anthropic]
 backend = "anthropic"
@@ -90,6 +91,7 @@ max_tokens = 4000
 ### Per-profile Behavior
 - `profile_prompt_file` (optional) lets you load an extra system prompt whenever that profile is active. Paths can be absolute or relative to the config directory (`~/.local/share/cosmic_llm/`), so `profiles/diet.md` resolves to `~/.local/share/cosmic_llm/profiles/diet.md`. Cosmic LLM adds the content after the global system prompt if the file exists; missing files show a warning instead of failing silently.
 - `enabled_mcp` (optional) lists MCP server names to auto-enable for this profile. The value accepts a comma-separated string or a TOML list. Tools from other servers stay visible but default to disabled so you can opt in manually.
+- `hidden` (optional, default: `false`) when set to `true`, hides the profile from dropdown menus in the UI and from server API responses. Hidden profiles remain accessible via direct configuration and can still be edited in the settings page. This is useful for keeping test profiles or deprecated configurations without cluttering the interface.
 
 ### Prompt Configuration
 ```toml
@@ -244,6 +246,7 @@ You can also create and manage LLM profiles through the Cosmic LLM interface:
    - Model
    - Endpoint
    - API Key
+   - Hidden (checkbox to hide profile from dropdowns)
 
 ### Switching Between Profiles
 

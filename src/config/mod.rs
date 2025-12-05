@@ -19,6 +19,8 @@ pub struct LlmProfile {
     pub profile_prompt_file: Option<String>,
     #[serde(default, deserialize_with = "deserialize_enabled_mcp")]
     pub enabled_mcp: Vec<String>,
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 fn default_backend() -> String {
@@ -36,6 +38,7 @@ impl Default for LlmProfile {
             max_tokens: Some(1000),
             profile_prompt_file: None,
             enabled_mcp: Vec::new(),
+            hidden: false,
         }
     }
 }
@@ -251,12 +254,24 @@ impl AppConfig {
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         use std::fs;
         use toml;
+        use chrono::Local;
 
         let config_path = Self::config_toml_path();
 
         // Create config directory if it doesn't exist
         if let Some(parent) = config_path.parent() {
             fs::create_dir_all(parent)?;
+        }
+
+        // Create backup if config file exists
+        if config_path.exists() {
+            let now = Local::now();
+            let backup_filename = format!(
+                "config_bcp_{}.toml",
+                now.format("%Y_%m_%d_%H_%M_%S")
+            );
+            let backup_path = config_path.parent().unwrap().join(backup_filename);
+            fs::copy(&config_path, &backup_path)?;
         }
 
         let toml_string = toml::to_string_pretty(self)?;
