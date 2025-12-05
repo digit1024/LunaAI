@@ -69,8 +69,11 @@ pub fn top_panel(app: &CosmicLlmApp) -> Element<Message> {
                     .push(
                         // Profile selection dropdown
                         {
-                            let mut names: Vec<String> =
-                                app.config.profiles.keys().cloned().collect();
+                            let mut names: Vec<String> = app.config.profiles
+                                .iter()
+                                .filter(|(_, p)| !p.hidden)
+                                .map(|(name, _)| name.clone())
+                                .collect();
                             names.sort();
                             let idx = names.iter().position(|k| k == &app.config.default);
                             widget::dropdown(names, idx, Message::ChangeDefaultProfile)

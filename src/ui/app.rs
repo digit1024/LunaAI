@@ -1788,7 +1788,12 @@ impl Application for CosmicLlmApp {
             }
             Message::ChangeDefaultProfile(profile_index) => {
                 // Must sort the same way as in the view to maintain index consistency
-                let mut profile_names: Vec<String> = self.config.profiles.keys().cloned().collect();
+                // Filter out hidden profiles
+                let mut profile_names: Vec<String> = self.config.profiles
+                    .iter()
+                    .filter(|(_, p)| !p.hidden)
+                    .map(|(name, _)| name.clone())
+                    .collect();
                 profile_names.sort();
                 if let Some(profile_name) = profile_names.get(profile_index) {
                     let new_profile = profile_name.clone();
@@ -1912,6 +1917,7 @@ impl Application for CosmicLlmApp {
                                     profile_prompt_file_str: profile.profile_prompt_file.as_deref().unwrap_or("").to_string(),
                                     enabled_mcp: profile.enabled_mcp.clone(),
                                     enabled_mcp_str: profile.enabled_mcp.join(", "),
+                                    hidden: profile.hidden,
                                 },
                             );
                         }
@@ -1930,6 +1936,7 @@ impl Application for CosmicLlmApp {
                                 profile.max_tokens = edit_state.max_tokens;
                                 profile.profile_prompt_file = edit_state.profile_prompt_file.clone();
                                 profile.enabled_mcp = edit_state.enabled_mcp.clone();
+                                profile.hidden = edit_state.hidden;
                                 self.settings_page.has_changes = true;
                             }
                             self.settings_page.editing_profiles.remove(&profile_name);
@@ -1977,10 +1984,20 @@ impl Application for CosmicLlmApp {
                             edit_state.profile_prompt_file_str = prompt_file;
                         }
                     }
-                    SimpleSettingsMessage::UpdateProfileEnabledMCP(profile_name, enabled_mcp) => {
+                    SimpleSettingsMessage::UpdateProfileEnabledMCP(profile_name, enabled_mcp_str) => {
                         if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
-                            edit_state.enabled_mcp = enabled_mcp.clone();
-                            edit_state.enabled_mcp_str = enabled_mcp.join(", ");
+                            edit_state.enabled_mcp_str = enabled_mcp_str.clone();
+                            // Parse the comma-separated string into Vec, but keep the raw string for editing
+                            edit_state.enabled_mcp = enabled_mcp_str
+                                .split(',')
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty())
+                                .collect();
+                        }
+                    }
+                    SimpleSettingsMessage::UpdateProfileHidden(profile_name, hidden) => {
+                        if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
+                            edit_state.hidden = hidden;
                         }
                     }
                     SimpleSettingsMessage::UpdateServerHost(val) => {

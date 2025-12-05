@@ -54,6 +54,7 @@ pub struct EditingProfileState {
     pub profile_prompt_file_str: String,
     pub enabled_mcp: Vec<String>,
     pub enabled_mcp_str: String,
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -92,7 +93,8 @@ pub enum SimpleSettingsMessage {
     CancelConfig,
     // Profile prompt and MCP
     UpdateProfilePromptFile(String, String), // profile_name, prompt_file
-    UpdateProfileEnabledMCP(String, Vec<String>), // profile_name, enabled_mcp
+    UpdateProfileEnabledMCP(String, String), // profile_name, enabled_mcp_str (comma-separated string)
+    UpdateProfileHidden(String, bool), // profile_name, hidden
 }
 
 #[derive(Debug, Clone)]
@@ -161,7 +163,7 @@ impl SimpleSettingsPage {
         self.has_changes = false;
     }
 
-    pub fn view<'a>(&'a self, config: &'a AppConfig) -> Element<'a, SimpleSettingsMessage> {
+    pub fn view<'a>(&'a self, _config: &'a AppConfig) -> Element<'a, SimpleSettingsMessage> {
         let mut content = column().spacing(16);
 
         // Header with Edit Config button
@@ -571,6 +573,7 @@ impl SimpleSettingsPage {
                     let profile_name_tokens = profile_name_base.clone();
                     let profile_name_prompt = profile_name_base.clone();
                     let profile_name_mcp = profile_name_base.clone();
+                    let profile_name_hidden = profile_name_base.clone();
                     let profile_name_save = profile_name_base.clone();
                     let profile_name_cancel = profile_name_base.clone();
                     card_content = card_content.push(
@@ -686,16 +689,24 @@ impl SimpleSettingsPage {
                                         .push(
                                             text_input("server1, server2", &edit_state.enabled_mcp_str)
                                                 .on_input(move |v| {
-                                                    let mcp_list: Vec<String> = v.split(',')
-                                                        .map(|s| s.trim().to_string())
-                                                        .filter(|s| !s.is_empty())
-                                                        .collect();
                                                     SimpleSettingsMessage::UpdateProfileEnabledMCP(
                                                         profile_name_mcp.clone(),
-                                                        mcp_list,
+                                                        v,
                                                     )
                                                 })
                                                 .width(Length::Fill),
+                                        )
+                                        .spacing(8),
+                                )
+                                .push(
+                                    row()
+                                        .push(text("Hidden:").size(12).width(Length::Fixed(120.0)))
+                                        .push(
+                                            widget::checkbox("Hide profile from dropdowns", edit_state.hidden)
+                                                .on_toggle(move |hidden| SimpleSettingsMessage::UpdateProfileHidden(
+                                                    profile_name_hidden.clone(),
+                                                    hidden,
+                                                )),
                                         )
                                         .spacing(8),
                                 )

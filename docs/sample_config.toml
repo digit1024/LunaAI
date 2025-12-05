@@ -38,6 +38,8 @@ model = "llama3.1:8b"
 endpoint = "http://localhost:11434"
 temperature = 0.7
 max_tokens = 4000
+# Hide this profile from dropdowns (still accessible via config)
+hidden = false
 
 # Google Gemini profile
 [profiles.gemini]
