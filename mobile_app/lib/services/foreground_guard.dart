@@ -1,5 +1,3 @@
-import 'dart:isolate';
-
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 class ForegroundGuard {
@@ -11,10 +9,10 @@ class ForegroundGuard {
     if (_initialized) return;
     FlutterForegroundTask.init(
       foregroundTaskOptions: ForegroundTaskOptions(
-        interval: 3000,
-        allowWifiLock: true,
+        eventAction: ForegroundTaskEventAction.nothing(),
         autoRunOnBoot: false,
-        isOnceEvent: false,
+        allowWakeLock: true,
+        allowWifiLock: true,
       ),
       androidNotificationOptions: AndroidNotificationOptions(
         channelId: 'luna_channel',
@@ -22,16 +20,8 @@ class ForegroundGuard {
         channelDescription: 'Keeps the websocket alive during streaming.',
         channelImportance: NotificationChannelImportance.DEFAULT,
         priority: NotificationPriority.DEFAULT,
-        iconData: NotificationIconData(
-          resType: ResourceType.mipmap,
-          resPrefix: ResourcePrefix.ic,
-          name: 'launcher',
-        ),
-        buttons: [
-          NotificationButton(id: 'stop', text: 'Stop'),
-        ],
       ),
-      iosNotificationOptions: IOSNotificationOptions(),
+      iosNotificationOptions: const IOSNotificationOptions(),
     );
     _initialized = true;
   }
@@ -96,16 +86,13 @@ void startLunaService() {
 
 class _LunaTaskHandler extends TaskHandler {
   @override
-  Future<void> onStart(DateTime timestamp, SendPort? sendPort) async {}
+  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {}
 
   @override
-  Future<void> onEvent(DateTime timestamp, SendPort? sendPort) async {}
+  void onRepeatEvent(DateTime timestamp) {}
 
   @override
-  Future<void> onDestroy(DateTime timestamp, SendPort? sendPort) async {}
-
-  @override
-  Future<void> onRepeatEvent(DateTime timestamp, SendPort? sendPort) async {}
+  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {}
 }
 
 

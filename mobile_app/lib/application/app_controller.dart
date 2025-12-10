@@ -31,34 +31,38 @@ final wsClientProvider = Provider<LunaWsClient>((ref) {
 
 /// Singleton AppController - does NOT recreate on config/wsClient changes!
 final appControllerProvider =
-    StateNotifierProvider<AppController, AppState>((ref) {
-  // Use ref.read to avoid recreation on changes
-  final wsClient = ref.read(wsClientProvider);
-  final notifications = ref.read(notificationServiceProvider);
-  final guard = ref.read(foregroundGuardProvider);
-  final controller = AppController(
-    ref,
-    wsClient: wsClient,
-    notifications: notifications,
-    guard: guard,
-  );
-  controller.init();
-  ref.onDispose(controller.dispose);
-  return controller;
-});
+    NotifierProvider<AppController, AppState>(AppController.new);
 
-class AppController extends StateNotifier<AppState> {
-  AppController(
-    this.ref, {
-    required this.wsClient,
-    required this.notifications,
-    required this.guard,
-  }) : super(AppState.initial());
+class AppController extends Notifier<AppState> {
+  late final LunaWsClient _wsClient;
+  late final NotificationService _notifications;
+  late final ForegroundGuard _guard;
 
-  final Ref ref;
-  final LunaWsClient wsClient;
-  final NotificationService notifications;
-  final ForegroundGuard guard;
+  @override
+  AppState build() {
+    // Use ref.read to avoid recreation on changes
+    _wsClient = ref.read(wsClientProvider);
+    _notifications = ref.read(notificationServiceProvider);
+    _guard = ref.read(foregroundGuardProvider);
+    
+    // Initialize and auto-connect
+    Future.microtask(() async {
+      await init();
+    });
+    
+    // Setup disposal
+    ref.onDispose(() {
+      unawaited(_subscription?.cancel());
+      unawaited(_guard.stopConnectionGuard());
+      unawaited(_wsClient.dispose());
+    });
+    
+    return AppState.initial();
+  }
+
+  LunaWsClient get wsClient => _wsClient;
+  NotificationService get notifications => _notifications;
+  ForegroundGuard get guard => _guard;
 
   StreamSubscription<ServerEvent>? _subscription;
   bool _initialized = false;
@@ -137,13 +141,6 @@ class AppController extends StateNotifier<AppState> {
     );
   }
 
-  @override
-  void dispose() {
-    unawaited(_subscription?.cancel());
-    unawaited(guard.stopConnectionGuard());
-    unawaited(wsClient.dispose());
-    super.dispose();
-  }
 
   void refreshConversations() {
     wsClient.send(ClientCommand.listConversations(limit: 10));

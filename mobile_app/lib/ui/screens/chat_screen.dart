@@ -13,6 +13,7 @@ import '../../application/app_state.dart';
 import '../../core/config/server_config.dart';
 import '../../data/http/file_client.dart';
 import '../../core/config/tts_preferences.dart';
+import '../../core/config/stt_preferences.dart';
 import '../../services/speech_service.dart';
 import '../../services/tts_service.dart';
 import '../../utils/text_processing.dart';
@@ -241,7 +242,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     debugPrint('ChatScreen: _startDialogMode called');
     final speechService = ref.read(speechServiceProvider);
     _speechService = speechService;
-    final ttsPrefs = ref.read(ttsPreferencesProvider);
+    final sttPrefs = ref.read(sttPreferencesProvider);
     final controller = ref.read(appControllerProvider.notifier);
     
     // Enable wakelock to keep screen on
@@ -299,7 +300,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         debugPrint('ChatScreen: Attempting to restart listening after error');
         Future.delayed(const Duration(milliseconds: 500), () {
           if (ref.read(appControllerProvider).isDialogModeActive) {
-            speechService.startListening(ttsPrefs.language);
+            final currentSttPrefs = ref.read(sttPreferencesProvider);
+            speechService.startListening(
+              currentSttPrefs.language,
+              pauseDuration: currentSttPrefs.pauseDuration,
+            );
           }
         });
       }
@@ -314,16 +319,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         debugPrint('ChatScreen: Restarting listening after unexpected stop');
         Future.delayed(const Duration(milliseconds: 300), () {
           if (ref.read(appControllerProvider).isDialogModeActive) {
-            speechService.startListening(ttsPrefs.language);
+            final currentSttPrefs = ref.read(sttPreferencesProvider);
+            speechService.startListening(
+              currentSttPrefs.language,
+              pauseDuration: currentSttPrefs.pauseDuration,
+            );
           }
         });
       }
     };
     
     // Start listening
-    debugPrint('ChatScreen: Starting to listen with language=${ttsPrefs.language}');
+    debugPrint('ChatScreen: Starting to listen with language=${sttPrefs.language}');
     controller.setDialogModeState(DialogModeState.listening);
-    final started = await speechService.startListening(ttsPrefs.language);
+    final started = await speechService.startListening(
+      sttPrefs.language,
+      pauseDuration: sttPrefs.pauseDuration,
+    );
     debugPrint('ChatScreen: startListening returned $started');
   }
 
@@ -367,13 +379,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (!appState.isDialogModeActive) return;
     
     final controller = ref.read(appControllerProvider.notifier);
-    final ttsPrefs = ref.read(ttsPreferencesProvider);
+    final sttPrefs = ref.read(sttPreferencesProvider);
     
     // Switch back to listening state
     controller.setDialogModeState(DialogModeState.listening);
     
     // Resume listening
-    await _speechService?.startListening(ttsPrefs.language);
+    await _speechService?.startListening(
+      sttPrefs.language,
+      pauseDuration: sttPrefs.pauseDuration,
+    );
   }
 
   Future<void> _stopTtsAndResumeListing() async {
@@ -413,15 +428,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           controller.openConversations();
         }
       },
-      child: Column(
-      children: [
-        _TopBar(
-          title: heading,
-          connection: state.connection,
+      child: Scaffold(
+        drawer: _ChatDrawer(
           profile: state.currentProfile.isNotEmpty ? state.currentProfile : config.profile,
-          streaming: state.streaming,
-          onSettings: controller.openSetup,
+          availableProfiles: state.availableProfiles,
+          onProfileChanged: (newProfile) {
+            controller.changeProfile(newProfile);
+          },
         ),
+        body: Column(
+        children: [
+          _TopBar(
+            title: heading,
+            connection: state.connection,
+            streaming: state.streaming,
+            onSettings: controller.openSetup,
+          ),
         Expanded(
           child: Stack(
             children: [
@@ -500,6 +522,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
       ],
     ),
+      ),
     );
   }
 }
@@ -508,25 +531,26 @@ class _TopBar extends ConsumerWidget {
   const _TopBar({
     required this.title,
     required this.connection,
-    required this.profile,
     required this.streaming,
     required this.onSettings,
   });
 
   final String title;
   final ConnectionStatus connection;
-  final String profile;
   final bool streaming;
   final VoidCallback onSettings;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final state = ref.watch(appControllerProvider);
-    final controller = ref.read(appControllerProvider.notifier);
-    final connectionLabel = switch (connection) {
-      ConnectionStatus.connecting => '🔄 Connection: Connecting',
-      ConnectionStatus.online => '🟢 Connection: Online',
-      ConnectionStatus.error => '🔴 Connection: Error',
+    final connectionIcon = switch (connection) {
+      ConnectionStatus.connecting => Icons.sync,
+      ConnectionStatus.online => Icons.circle,
+      ConnectionStatus.error => Icons.error,
+    };
+    final connectionColor = switch (connection) {
+      ConnectionStatus.connecting => Colors.orange,
+      ConnectionStatus.online => Colors.green,
+      ConnectionStatus.error => Colors.red,
     };
 
     return Container(
@@ -537,65 +561,217 @@ class _TopBar extends ConsumerWidget {
           bottom: BorderSide(color: Theme.of(context).dividerColor),
         ),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-              if (state.availableProfiles.isNotEmpty && state.availableProfiles.contains(profile))
-                DropdownButton<String>(
-                  value: profile,
-                  icon: Icon(
-                    Icons.arrow_drop_down,
-                    color: Theme.of(context).colorScheme.onSurface,
-                  ),
-                  elevation: 16,
-                  style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
-                  dropdownColor: Theme.of(context).colorScheme.surfaceContainer,
-                  underline: Container(
-                    height: 2,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                  onChanged: (String? newValue) {
-                    if (newValue != null && newValue != profile) {
-                      controller.changeProfile(newValue);
-                    }
-                  },
-                  items: state.availableProfiles
-                      .toSet() // Remove duplicates
-                      .map<DropdownMenuItem<String>>((String value) {
-                    return DropdownMenuItem<String>(
-                      value: value,
-                      child: Text('Profile: $value'),
-                    );
-                  }).toList(),
-                )
-              else
-                TextButton.icon(
-                  onPressed: onSettings,
-                  icon: const Icon(Icons.person),
-                  label: Text('Profile: $profile'),
-                ),
-            ],
+          Builder(
+            builder: (context) => IconButton(
+              icon: const Icon(Icons.menu),
+              onPressed: () => Scaffold.of(context).openDrawer(),
+            ),
           ),
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              Text(connectionLabel),
-              if (streaming) const Padding(
-                padding: EdgeInsets.only(left: 8),
-                child: Text('Streaming…'),
+          Expanded(
+            child: Text(
+              title,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
               ),
-            ],
+            ),
+          ),
+          Icon(
+            connectionIcon,
+            color: connectionColor,
+            size: 16,
+          ),
+          if (streaming) const Padding(
+            padding: EdgeInsets.only(left: 8),
+            child: Text('Streaming…', style: TextStyle(fontSize: 12)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ChatDrawer extends ConsumerStatefulWidget {
+  const _ChatDrawer({
+    required this.profile,
+    required this.availableProfiles,
+    required this.onProfileChanged,
+  });
+
+  final String profile;
+  final List<String> availableProfiles;
+  final Function(String) onProfileChanged;
+
+  @override
+  ConsumerState<_ChatDrawer> createState() => _ChatDrawerState();
+}
+
+class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
+  List<dynamic>? _availableLanguages;
+  bool _loadingLanguages = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadLanguages();
+  }
+
+  Future<void> _loadLanguages() async {
+    setState(() {
+      _loadingLanguages = true;
+    });
+    try {
+      final ttsService = ref.read(ttsServiceProvider);
+      final languages = await ttsService.getLanguages();
+      if (mounted) {
+        setState(() {
+          _availableLanguages = languages;
+          _loadingLanguages = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _loadingLanguages = false;
+        });
+      }
+    }
+  }
+
+  String _getLanguageDisplayName(String languageCode) {
+    final parts = languageCode.split('-');
+    final lang = parts[0];
+    final country = parts.length > 1 ? parts[1] : null;
+
+    final languageNames = {
+      'en': 'English',
+      'es': 'Spanish',
+      'fr': 'French',
+      'de': 'German',
+      'it': 'Italian',
+      'pt': 'Portuguese',
+      'ru': 'Russian',
+      'ja': 'Japanese',
+      'ko': 'Korean',
+      'zh': 'Chinese',
+      'ar': 'Arabic',
+      'hi': 'Hindi',
+      'nl': 'Dutch',
+      'pl': 'Polish',
+      'tr': 'Turkish',
+      'sv': 'Swedish',
+      'da': 'Danish',
+      'fi': 'Finnish',
+      'no': 'Norwegian',
+      'cs': 'Czech',
+      'hu': 'Hungarian',
+      'ro': 'Romanian',
+      'el': 'Greek',
+      'he': 'Hebrew',
+      'th': 'Thai',
+      'vi': 'Vietnamese',
+    };
+
+    final langName = languageNames[lang] ?? lang.toUpperCase();
+    if (country != null) {
+      return '$langName ($country)';
+    }
+    return langName;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sttPrefs = ref.watch(sttPreferencesProvider);
+    final sttPrefsNotifier = ref.read(sttPreferencesProvider.notifier);
+    final ttsPrefs = ref.watch(ttsPreferencesProvider);
+    final ttsPrefsNotifier = ref.read(ttsPreferencesProvider.notifier);
+
+    return Drawer(
+      child: ListView(
+        padding: EdgeInsets.zero,
+        children: [
+          DrawerHeader(
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.primaryContainer,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                Text(
+                  'Chat Settings',
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onPrimaryContainer,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Profile Selection
+          if (widget.availableProfiles.isNotEmpty)
+            ExpansionTile(
+              leading: const Icon(Icons.person),
+              title: const Text('Profile'),
+              subtitle: Text(widget.profile),
+              children: widget.availableProfiles.map((profile) {
+                return ListTile(
+                  title: Text(profile),
+                  selected: profile == widget.profile,
+                  onTap: () {
+                    widget.onProfileChanged(profile);
+                    Navigator.pop(context);
+                  },
+                );
+              }).toList(),
+            ),
+          const Divider(),
+          // TTS Toggle
+          SwitchListTile(
+            secondary: const Icon(Icons.volume_up),
+            title: const Text('Text-to-Speech'),
+            subtitle: const Text('Read assistant messages aloud'),
+            value: ttsPrefs.enabled,
+            onChanged: (value) {
+              ttsPrefsNotifier.setEnabled(value);
+            },
+          ),
+          const Divider(),
+          // Language Selection (applies to both STT and TTS)
+          ListTile(
+            leading: const Icon(Icons.language),
+            title: const Text('Voice Language'),
+            subtitle: _loadingLanguages
+                ? const Text('Loading...')
+                : (_availableLanguages != null && _availableLanguages!.isNotEmpty)
+                    ? DropdownButton<String>(
+                        value: ttsPrefs.language,
+                        isExpanded: true,
+                        underline: Container(),
+                        items: _availableLanguages!
+                            .map<DropdownMenuItem<String>>((lang) {
+                          final langCode = lang.toString();
+                          final displayName = _getLanguageDisplayName(langCode);
+                          return DropdownMenuItem<String>(
+                            value: langCode,
+                            child: Text(displayName),
+                          );
+                        }).toList(),
+                        onChanged: (value) {
+                          if (value != null) {
+                            // Set both TTS and STT language
+                            ttsPrefsNotifier.setLanguage(value);
+                            sttPrefsNotifier.setLanguage(value);
+                            ref.read(ttsServiceProvider).setLanguage(value);
+                          }
+                        },
+                      )
+                    : TextButton.icon(
+                        onPressed: _loadLanguages,
+                        icon: const Icon(Icons.refresh, size: 18),
+                        label: const Text('Load Languages'),
+                      ),
           ),
         ],
       ),

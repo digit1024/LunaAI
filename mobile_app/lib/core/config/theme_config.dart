@@ -30,14 +30,16 @@ class ThemeConfig {
   }
 }
 
-class ThemeConfigNotifier extends StateNotifier<ThemeConfig> {
-  ThemeConfigNotifier() : super(ThemeConfig.defaults()) {
-    _loadFuture = _loadFromPrefs();
-  }
-
+class ThemeConfigNotifier extends Notifier<ThemeConfig> {
   static const _themeKey = 'theme_preference';
 
   late final Future<void> _loadFuture;
+
+  @override
+  ThemeConfig build() {
+    _loadFuture = _loadFromPrefs();
+    return ThemeConfig.defaults();
+  }
 
   Future<void> ensureLoaded() => _loadFuture;
 
@@ -65,7 +67,7 @@ class ThemeConfigNotifier extends StateNotifier<ThemeConfig> {
   }
 
   void toggleDarkMode() {
-    final next = switch (state.preference) {
+    final next = switch (state.preference as ThemePreference) {
       ThemePreference.system => ThemePreference.dark,
       ThemePreference.dark => ThemePreference.light,
       ThemePreference.light => ThemePreference.system,
@@ -75,7 +77,7 @@ class ThemeConfigNotifier extends StateNotifier<ThemeConfig> {
 }
 
 final themeConfigProvider =
-    StateNotifierProvider<ThemeConfigNotifier, ThemeConfig>(
-  (ref) => ThemeConfigNotifier(),
+    NotifierProvider<ThemeConfigNotifier, ThemeConfig>(
+  ThemeConfigNotifier.new,
 );
 

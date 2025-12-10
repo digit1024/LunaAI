@@ -28,15 +28,17 @@ class TtsPreferences {
   }
 }
 
-class TtsPreferencesNotifier extends StateNotifier<TtsPreferences> {
-  TtsPreferencesNotifier() : super(TtsPreferences.defaults()) {
-    _loadFuture = _loadFromPrefs();
-  }
-
+class TtsPreferencesNotifier extends Notifier<TtsPreferences> {
   static const _enabledKey = 'tts_enabled';
   static const _languageKey = 'tts_language';
 
   late final Future<void> _loadFuture;
+
+  @override
+  TtsPreferences build() {
+    _loadFuture = _loadFromPrefs();
+    return TtsPreferences.defaults();
+  }
 
   /// Wait for saved preferences to be loaded from SharedPreferences.
   Future<void> ensureLoaded() => _loadFuture;
@@ -70,8 +72,8 @@ class TtsPreferencesNotifier extends StateNotifier<TtsPreferences> {
 }
 
 final ttsPreferencesProvider =
-    StateNotifierProvider<TtsPreferencesNotifier, TtsPreferences>(
-  (ref) => TtsPreferencesNotifier(),
+    NotifierProvider<TtsPreferencesNotifier, TtsPreferences>(
+  TtsPreferencesNotifier.new,
 );
 
 

@@ -51,17 +51,19 @@ class ServerConfig {
   }
 }
 
-class ServerConfigNotifier extends StateNotifier<ServerConfig> {
-  ServerConfigNotifier() : super(ServerConfig.defaults()) {
-    _loadFuture = _loadFromPrefs();
-  }
-
+class ServerConfigNotifier extends Notifier<ServerConfig> {
   static const _hostKey = 'server_host';
   static const _portKey = 'server_port';
   static const _apiKeyKey = 'server_api_key';
   static const _profileKey = 'server_profile';
 
   late final Future<void> _loadFuture;
+
+  @override
+  ServerConfig build() {
+    _loadFuture = _loadFromPrefs();
+    return ServerConfig.defaults();
+  }
 
   /// Wait for saved config to be loaded from SharedPreferences.
   /// Call this before using config on startup.
@@ -114,6 +116,6 @@ class ServerConfigNotifier extends StateNotifier<ServerConfig> {
 }
 
 final serverConfigProvider =
-    StateNotifierProvider<ServerConfigNotifier, ServerConfig>(
-  (ref) => ServerConfigNotifier(),
+    NotifierProvider<ServerConfigNotifier, ServerConfig>(
+  ServerConfigNotifier.new,
 );
