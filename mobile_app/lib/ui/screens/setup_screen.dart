@@ -6,6 +6,7 @@ import '../../application/app_state.dart';
 import '../../core/config/server_config.dart';
 import '../../core/config/theme_config.dart';
 import '../../core/config/tts_preferences.dart';
+import '../../core/config/stt_preferences.dart';
 import '../../services/tts_service.dart';
 
 class SetupScreen extends ConsumerStatefulWidget {
@@ -134,6 +135,8 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
     final appController = ref.read(appControllerProvider.notifier);
     final ttsPrefs = ref.watch(ttsPreferencesProvider);
     final ttsPrefsNotifier = ref.read(ttsPreferencesProvider.notifier);
+    final sttPrefs = ref.watch(sttPreferencesProvider);
+    final sttPrefsNotifier = ref.read(sttPreferencesProvider.notifier);
 
     return Center(
       child: SingleChildScrollView(
@@ -233,16 +236,16 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
                     },
                   ),
                   const SizedBox(height: 24),
-                  // TTS Section
+                  // Voice Settings Section
                   Row(
                     children: [
                       Icon(
-                        Icons.volume_up_outlined,
+                        Icons.record_voice_over_outlined,
                         color: Theme.of(context).colorScheme.primary,
                       ),
                       const SizedBox(width: 12),
                       Text(
-                        'Text-to-Speech',
+                        'Voice Settings',
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
                     ],
@@ -267,58 +270,87 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
                               ttsPrefsNotifier.setEnabled(value);
                             },
                           ),
-                          if (ttsPrefs.enabled) ...[
-                            const Divider(),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Language',
-                              style: Theme.of(context).textTheme.titleSmall,
-                            ),
-                            const SizedBox(height: 8),
-                            if (_loadingLanguages)
-                              const Center(
-                                child: Padding(
-                                  padding: EdgeInsets.all(16),
-                                  child: CircularProgressIndicator(),
-                                ),
-                              )
-                            else if (_availableLanguages != null &&
-                                _availableLanguages!.isNotEmpty)
-                              DropdownButtonFormField<String>(
-                                value: ttsPrefs.language,
-                                decoration: const InputDecoration(
-                                  border: OutlineInputBorder(),
-                                  hintText: 'Select language',
-                                  isDense: true,
-                                ),
-                                isExpanded: true,
-                                items: _availableLanguages!
-                                    .map<DropdownMenuItem<String>>((lang) {
-                                  final langCode = lang.toString();
-                                  final displayName = _getLanguageDisplayName(langCode);
-                                  return DropdownMenuItem<String>(
-                                    value: langCode,
-                                    child: Text(displayName),
-                                  );
-                                }).toList(),
-                                onChanged: (value) {
-                                  if (value != null) {
-                                    ttsPrefsNotifier.setLanguage(value);
-                                    // Update TTS service language
-                                    ref.read(ttsServiceProvider).setLanguage(value);
-                                  }
-                                },
-                              )
-                            else
-                              TextButton.icon(
-                                onPressed: _loadLanguages,
-                                icon: const Icon(Icons.refresh, size: 18),
-                                label: const Text('Load Languages'),
+                          const Divider(),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Voice Language',
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Used for both STT and TTS',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                          const SizedBox(height: 8),
+                          if (_loadingLanguages)
+                            const Center(
+                              child: Padding(
+                                padding: EdgeInsets.all(16),
+                                child: CircularProgressIndicator(),
                               ),
-                          ],
+                            )
+                          else if (_availableLanguages != null &&
+                              _availableLanguages!.isNotEmpty)
+                            DropdownButtonFormField<String>(
+                              value: ttsPrefs.language,
+                              decoration: const InputDecoration(
+                                border: OutlineInputBorder(),
+                                hintText: 'Select language',
+                                isDense: true,
+                              ),
+                              isExpanded: true,
+                              items: _availableLanguages!
+                                  .map<DropdownMenuItem<String>>((lang) {
+                                final langCode = lang.toString();
+                                final displayName = _getLanguageDisplayName(langCode);
+                                return DropdownMenuItem<String>(
+                                  value: langCode,
+                                  child: Text(displayName),
+                                );
+                              }).toList(),
+                              onChanged: (value) {
+                                if (value != null) {
+                                  // Set both TTS and STT language
+                                  ttsPrefsNotifier.setLanguage(value);
+                                  sttPrefsNotifier.setLanguage(value);
+                                  ref.read(ttsServiceProvider).setLanguage(value);
+                                }
+                              },
+                            )
+                          else
+                            TextButton.icon(
+                              onPressed: _loadLanguages,
+                              icon: const Icon(Icons.refresh, size: 18),
+                              label: const Text('Load Languages'),
+                            ),
                         ],
                       ),
                     ),
+                  ),
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  // STT Pause Duration
+                  Text(
+                    'STT Pause Duration',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Wait time before sending speech (${sttPrefs.pauseDuration.inSeconds}s)',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 8),
+                  Slider(
+                    value: sttPrefs.pauseDuration.inSeconds.toDouble(),
+                    min: 0.5,
+                    max: 5.0,
+                    divisions: 9,
+                    label: '${sttPrefs.pauseDuration.inSeconds}s',
+                    onChanged: (value) {
+                      sttPrefsNotifier.setPauseDuration(
+                        Duration(milliseconds: (value * 1000).round()),
+                      );
+                    },
                   ),
                 ],
               ),

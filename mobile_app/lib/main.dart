@@ -44,7 +44,8 @@ class _LunaAppState extends ConsumerState<LunaApp> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    ref.read(appControllerProvider.notifier).init();
+    // Note: init() is called automatically in AppController.build() via Future.microtask
+    // No need to call it explicitly here
   }
 
   @override
@@ -92,24 +93,13 @@ class _HomeRouter extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(appControllerProvider);
 
-    Widget child;
-    switch (state.pane) {
-      case ActivePane.setup:
-        child = const SetupScreen();
-        break;
-      case ActivePane.connecting:
-        child = const ConnectingScreen();
-        break;
-      case ActivePane.conversations:
-        child = const ConversationsScreen();
-        break;
-      case ActivePane.chat:
-        child = const ChatScreen();
-        break;
-      case ActivePane.settings:
-        child = const SettingsScreen();
-        break;
-    }
+    final child = switch (state.pane) {
+      ActivePane.setup => const SetupScreen(),
+      ActivePane.connecting => const ConnectingScreen(),
+      ActivePane.conversations => const ConversationsScreen(),
+      ActivePane.chat => const ChatScreen(),
+      ActivePane.settings => const SettingsScreen(),
+    };
 
     return Scaffold(
       body: SafeArea(child: child),

@@ -25,7 +25,12 @@ class SpeechService {
   Function(String error)? onError;
   Function()? onUnexpectedStop; // Called when STT stops unexpectedly
 
-  static const Duration _pauseDuration = Duration(seconds: 2);
+  Duration _pauseDuration = const Duration(seconds: 2);
+  
+  /// Set the pause duration for STT pause detection
+  void setPauseDuration(Duration duration) {
+    _pauseDuration = duration;
+  }
 
   /// Initialize speech recognition
   Future<bool> initialize() async {
@@ -94,7 +99,11 @@ class SpeechService {
   }
 
   /// Start listening for speech
-  Future<bool> startListening(String languageCode) async {
+  Future<bool> startListening(String languageCode, {Duration? pauseDuration}) async {
+    // Update pause duration if provided
+    if (pauseDuration != null) {
+      _pauseDuration = pauseDuration;
+    }
     debugPrint('SpeechService: startListening called with language=$languageCode');
     
     if (!_initialized) {
