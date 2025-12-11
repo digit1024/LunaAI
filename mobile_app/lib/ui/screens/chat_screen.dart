@@ -243,7 +243,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
-  Future<void> _playTtsForMessage(ChatMessage message) async {
+  Future<void> _playTtsForMessage(
+    ChatMessage message, {
+    bool shouldResumeListening = false,
+  }) async {
     if (message.content.isEmpty) return;
     
     final state = ref.read(appControllerProvider);
@@ -261,16 +264,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     await ttsService.stop();
     
     if (state.isDialogModeActive) {
-      // In dialog mode, set state to speaking and resume listening after TTS
+      // In dialog mode, set state to speaking
       final controller = ref.read(appControllerProvider.notifier);
       controller.setDialogModeState(DialogModeState.speaking);
-      await ttsService.speak(cleanText, onComplete: () {
+      
+      // Only resume listening after TTS if this is the last message
+      await ttsService.speak(cleanText, onComplete: shouldResumeListening ? () {
         // TTS finished, resume listening if still in dialog mode
         final currentState = ref.read(appControllerProvider);
         if (currentState.isDialogModeActive) {
           _resumeListening();
         }
-      });
+      } : null);
     } else {
       await ttsService.speak(cleanText);
     }
@@ -321,8 +326,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (_processedMessageIds.contains(lastAssistant.id)) return;
     _processedMessageIds.add(lastAssistant.id);
 
-    // Play TTS for the last message
-    await _playTtsForMessage(lastAssistant);
+    // Play TTS for the last message and resume listening after it completes
+    await _playTtsForMessage(lastAssistant, shouldResumeListening: true);
   }
 
   Future<void> _startDialogMode() async {
