@@ -11,6 +11,7 @@ import '../data/ws/luna_ws_client.dart';
 import '../data/ws/ws_dto.dart';
 import '../services/foreground_guard.dart';
 import '../services/notification_service.dart';
+import '../utils/platform_utils.dart';
 import 'app_state.dart';
 
 final notificationServiceProvider = Provider<NotificationService>((_) {
@@ -237,6 +238,15 @@ class AppController extends Notifier<AppState> {
   }
 
   void startDialogMode() {
+    // Voice mode only available on mobile platforms
+    if (!isMobile) {
+      debugPrint('Dialog mode not available on desktop/web platform');
+      state = state.copyWith(
+        error: 'Voice mode is only available on mobile devices',
+      );
+      return;
+    }
+    
     if (state.isDialogModeActive) return;
     state = state.copyWith(
       isDialogModeActive: true,
