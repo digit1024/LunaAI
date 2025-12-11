@@ -19,6 +19,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
   bool _isLoadingMore = false;
   bool _hasMore = true;
   int _currentOffset = 0;
+  int _previousConversationCount = 0;
 
   @override
   void initState() {
@@ -49,10 +50,10 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
     if (_isLoadingMore || !_hasMore) return;
     setState(() {
       _isLoadingMore = true;
+      _previousConversationCount = ref.read(appControllerProvider).conversations.length;
     });
     final nextOffset = _currentOffset + 10;
     ref.read(appControllerProvider.notifier).loadMoreConversations(nextOffset);
-    _currentOffset = nextOffset;
     // Reset loading state after a delay (will be updated when new data arrives)
     Future.delayed(const Duration(seconds: 1), () {
       if (mounted) {
@@ -68,13 +69,39 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
     final state = ref.watch(appControllerProvider);
     final controller = ref.read(appControllerProvider.notifier);
 
-    // Update hasMore based on loaded conversations
-    // If we got fewer than 10 conversations, we've reached the end
-    if (state.conversations.length <= _currentOffset && _currentOffset > 0) {
-      _hasMore = false;
-    } else if (state.conversations.length < 10 && _currentOffset == 0) {
+    // Update offset and hasMore when conversations change
+    final currentCount = state.conversations.length;
+    
+    // Check if conversations increased (pagination) or changed (refresh)
+    if (currentCount > _previousConversationCount) {
+      // Conversations increased - this could be pagination
+      final addedCount = currentCount - _previousConversationCount;
+      
+      // If count exceeds current offset, it's pagination - update offset
+      if (currentCount > _currentOffset) {
+        _currentOffset = currentCount;
+        // If we got fewer than 10 items, we've reached the end
+        if (addedCount < 10) {
+          _hasMore = false;
+        }
+      }
+    } else if (currentCount != _previousConversationCount && _previousConversationCount > 0) {
+      // Count changed but didn't increase - this was a refresh
+      // Reset offset to current count
+      _currentOffset = currentCount;
+      // Re-enable hasMore if we have 10 or more items
+      if (currentCount >= 10) {
+        _hasMore = true;
+      } else {
+        _hasMore = false;
+      }
+    } else if (_currentOffset == 0 && currentCount < 10 && currentCount > 0) {
+      // Initial load with fewer than 10 items
       _hasMore = false;
     }
+    
+    // Update previous count for next comparison
+    _previousConversationCount = currentCount;
 
     return Column(
       children: [
@@ -85,6 +112,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
               _currentOffset = 0;
               _hasMore = true;
               _isLoadingMore = false;
+              _previousConversationCount = 0;
             });
             controller.refreshConversations();
           },
