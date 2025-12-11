@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../../utils/platform_utils.dart';
 
 class ServerConfig {
   final String host;
@@ -20,8 +21,11 @@ class ServerConfig {
   factory ServerConfig.defaults() {
     var host = '127.0.0.1';
     if (!kIsWeb && Platform.isAndroid) {
-      host = '10.0.2.2';
+      host = '10.0.2.2'; // Android emulator special IP
+    } else if (isDesktop) {
+      host = '127.0.0.1'; // Desktop platforms (Linux/Windows/macOS)
     }
+    // Web and other platforms also default to 127.0.0.1
     return ServerConfig(
       host: host,
       port: 8080,

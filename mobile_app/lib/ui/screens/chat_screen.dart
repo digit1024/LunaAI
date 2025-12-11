@@ -17,6 +17,7 @@ import '../../core/config/stt_preferences.dart';
 import '../../services/speech_service.dart';
 import '../../services/tts_service.dart';
 import '../../utils/text_processing.dart';
+import '../../utils/platform_utils.dart';
 import '../widgets/bottom_nav.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/typing_bubble.dart';
@@ -331,9 +332,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final sttPrefs = ref.read(sttPreferencesProvider);
     final controller = ref.read(appControllerProvider.notifier);
     
-    // Enable wakelock to keep screen on
-    await WakelockPlus.enable();
-    debugPrint('ChatScreen: Wakelock enabled');
+    // Enable wakelock to keep screen on (mobile only)
+    if (isMobile) {
+      await WakelockPlus.enable();
+      debugPrint('ChatScreen: Wakelock enabled');
+    }
     
     // Initialize speech service
     final available = await speechService.isAvailable();
@@ -428,8 +431,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Future<void> _stopDialogMode() async {
     debugPrint('ChatScreen: _stopDialogMode called');
     
-    // Disable wakelock
-    await WakelockPlus.disable();
+    // Disable wakelock (mobile only)
+    if (isMobile) {
+      await WakelockPlus.disable();
+    }
     
     // Stop speech recognition and clear callbacks
     await _speechService?.cancel();
@@ -961,7 +966,8 @@ class _Composer extends ConsumerWidget {
                 ),
               ),
               const SizedBox(width: 8),
-              if (!isStreaming && !state.isDialogModeActive)
+              // Voice mode button only shown on mobile platforms
+              if (isMobile && !isStreaming && !state.isDialogModeActive)
                 IconButton(
                   onPressed: onVoiceMode,
                   icon: const Icon(Icons.mic),

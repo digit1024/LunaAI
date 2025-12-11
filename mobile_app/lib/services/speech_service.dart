@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
+import '../utils/platform_utils.dart';
 
 final speechServiceProvider = Provider<SpeechService>((ref) {
   final service = SpeechService();
@@ -35,6 +36,13 @@ class SpeechService {
   /// Initialize speech recognition
   Future<bool> initialize() async {
     if (_initialized) return true;
+    
+    // STT only available on mobile platforms
+    if (!isMobile) {
+      debugPrint('SpeechService: Not available on desktop/web platform');
+      _initialized = false;
+      return false;
+    }
     
     debugPrint('SpeechService: Initializing...');
     
@@ -92,6 +100,11 @@ class SpeechService {
 
   /// Check if speech recognition is available
   Future<bool> isAvailable() async {
+    // Desktop/web: STT not available
+    if (!isMobile) {
+      return false;
+    }
+    
     if (!_initialized) {
       await initialize();
     }
@@ -100,6 +113,12 @@ class SpeechService {
 
   /// Start listening for speech
   Future<bool> startListening(String languageCode, {Duration? pauseDuration}) async {
+    // Desktop/web: STT not available
+    if (!isMobile) {
+      debugPrint('SpeechService: startListening called on desktop/web - not available');
+      return false;
+    }
+    
     // Update pause duration if provided
     if (pauseDuration != null) {
       _pauseDuration = pauseDuration;
@@ -181,6 +200,7 @@ class SpeechService {
   /// Stop listening
   Future<void> stopListening() async {
     debugPrint('SpeechService: stopListening called');
+    if (!isMobile) return; // Desktop: No-op
     _isListening = false;
     _pauseTimer?.cancel();
     _pauseTimer = null;
@@ -190,6 +210,17 @@ class SpeechService {
   /// Cancel listening (without processing results)
   Future<void> cancel() async {
     debugPrint('SpeechService: cancel called');
+    if (!isMobile) {
+      // Desktop: Just clear state
+      _sessionActive = false;
+      _isListening = false;
+      _hasPendingText = false;
+      _pauseAlreadyTriggered = false;
+      _pauseTimer?.cancel();
+      _pauseTimer = null;
+      _currentText = '';
+      return;
+    }
     _sessionActive = false; // Mark session as inactive to prevent stale callbacks
     _isListening = false;
     _hasPendingText = false;
@@ -239,7 +270,9 @@ class SpeechService {
   /// Dispose resources
   void dispose() {
     _pauseTimer?.cancel();
-    _speech.cancel();
+    if (isMobile) {
+      _speech.cancel();
+    }
     _isListening = false;
   }
 }
