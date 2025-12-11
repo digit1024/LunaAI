@@ -175,6 +175,7 @@ pub mod file_utils;
 pub mod gemini;
 pub mod ollama;
 pub mod openai;
+pub mod tokenizer;
 
 pub fn build_llm_client(profile: &LlmProfile) -> Arc<dyn LlmClient> {
     match profile.backend.as_str() {

@@ -117,6 +117,9 @@ tokio-stream = "0.1"
 rodio = "0.17"
 symphonia = { version = "0.5", features = ["mp3"] }
 
+# Token counting for context management
+tiktoken-rs = "0.5"
+
 [dev-dependencies]
 tokio-test = "0.4"
 
