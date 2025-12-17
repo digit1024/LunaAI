@@ -77,6 +77,8 @@ impl Storage {
                     tool_params_json: msg.tool_params_json.clone(),
                     tool_result_json: msg.tool_result_json.clone(),
                     reasoning_content: msg.reasoning_content.clone(),
+                    is_summary: msg.is_summary,
+                    summarized_count: msg.summarized_count,
                 })
                 .collect();
 
@@ -139,6 +141,8 @@ impl Storage {
                     tool_params_json: msg.tool_params_json.clone(),
                     tool_result_json: msg.tool_result_json.clone(),
                     reasoning_content: msg.reasoning_content.clone(),
+                    is_summary: msg.is_summary,
+                    summarized_count: msg.summarized_count,
                 })
                 .collect();
 
@@ -279,6 +283,16 @@ impl Storage {
     /// Load messages for a conversation (exposed for title generation)
     pub fn load_conversation_messages(&self, conversation_id: &str) -> SqliteResult<Vec<super::sqlite_storage_simple::Message>> {
         self.sqlite.load_conversation(conversation_id)
+    }
+
+    /// Perform summarization: delete old messages and insert summary
+    pub fn perform_summarization(
+        &self,
+        conversation_id: &str,
+        messages_to_summarize: &[super::sqlite_storage_simple::Message],
+        summary_content: &str,
+    ) -> SqliteResult<()> {
+        self.sqlite.perform_summarization(conversation_id, messages_to_summarize, summary_content)
     }
 }
 

@@ -34,6 +34,10 @@ pub struct Message {
     pub tool_params_json: Option<Value>,
     pub tool_result_json: Option<Value>,
     pub reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
+    #[serde(default)]
+    pub is_summary: bool, // True if this message is a summary of previous messages
+    pub summarized_message_ids: Option<Vec<i64>>, // IDs of messages that were summarized
+    pub summarized_count: Option<usize>, // Count of messages summarized
 }
 
 /// Represents a search snippet from FTS5
@@ -158,6 +162,20 @@ impl SqliteStorage {
         // Migrate existing messages: add reasoning_content column if it doesn't exist
         let _ = self.conn.execute(
             "ALTER TABLE messages ADD COLUMN reasoning_content TEXT",
+            [],
+        );
+
+        // Migrate existing messages: add summarization columns if they don't exist
+        let _ = self.conn.execute(
+            "ALTER TABLE messages ADD COLUMN is_summary INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE messages ADD COLUMN summarized_message_ids TEXT",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE messages ADD COLUMN summarized_count INTEGER",
             [],
         );
 
@@ -296,8 +314,8 @@ impl SqliteStorage {
         };
 
         self.conn.execute(
-            "INSERT INTO messages (conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json, reasoning_content) 
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO messages (conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json, reasoning_content, is_summary, summarized_message_ids, summarized_count) 
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 conversation_id,
                 role,
@@ -310,7 +328,10 @@ impl SqliteStorage {
                 metadata.tool_status,
                 tool_params_json,
                 tool_result_json,
-                metadata.reasoning_content
+                metadata.reasoning_content,
+                0, // is_summary = false for regular messages
+                None::<String>, // summarized_message_ids
+                None::<i64>, // summarized_count
             ],
         )?;
 
@@ -320,7 +341,7 @@ impl SqliteStorage {
     /// Load all messages for a conversation
     pub fn load_conversation(&self, conversation_id: &str) -> SqliteResult<Vec<Message>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json, reasoning_content 
+            "SELECT id, conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json, reasoning_content, is_summary, summarized_message_ids, summarized_count
              FROM messages 
              WHERE conversation_id = ?1 
              ORDER BY created_at ASC"
@@ -354,6 +375,15 @@ impl SqliteStorage {
             let tool_params_json = Self::read_json_value(row.get(10)?);
             let tool_result_json = Self::read_json_value(row.get(11)?);
             let reasoning_content: Option<String> = row.get(12)?;
+            
+            // Read summarization fields
+            let is_summary: i64 = row.get(13).unwrap_or(0);
+            let summarized_message_ids_json: Option<String> = row.get(14)?;
+            let summarized_message_ids = summarized_message_ids_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<Vec<i64>>(json).ok());
+            let summarized_count: Option<i64> = row.get(15)?;
+            let summarized_count_usize = summarized_count.map(|c| c as usize);
 
             Ok(Message {
                 id: row.get(0)?,
@@ -369,6 +399,9 @@ impl SqliteStorage {
                 tool_params_json,
                 tool_result_json,
                 reasoning_content,
+                is_summary: is_summary != 0,
+                summarized_message_ids,
+                summarized_count: summarized_count_usize,
             })
         })?;
 
@@ -430,6 +463,107 @@ impl SqliteStorage {
         )?;
 
         Ok(changes > 0)
+    }
+
+    /// Insert a summary message (replaces old messages)
+    pub fn insert_summary_message(
+        &self,
+        conversation_id: &str,
+        summary_content: &str,
+        summarized_message_ids: &[i64],
+        earliest_timestamp: i64,
+    ) -> SqliteResult<()> {
+        let summarized_count = summarized_message_ids.len();
+        let summarized_ids_json = serde_json::to_string(summarized_message_ids)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+
+        self.conn.execute(
+            "INSERT INTO messages (conversation_id, role, content, created_at, is_summary, summarized_message_ids, summarized_count) 
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                conversation_id,
+                "system", // Summary messages use "system" role
+                summary_content,
+                earliest_timestamp,
+                1, // is_summary = true
+                summarized_ids_json,
+                summarized_count as i64,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Delete messages by IDs (used during summarization)
+    pub fn delete_messages(&self, message_ids: &[i64]) -> SqliteResult<usize> {
+        if message_ids.is_empty() {
+            return Ok(0);
+        }
+
+        // Build placeholders for IN clause
+        let placeholders: String = message_ids.iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let sql = format!("DELETE FROM messages WHERE id IN ({})", placeholders);
+        let changes = self.conn.execute(&sql, rusqlite::params_from_iter(message_ids.iter()))?;
+
+        Ok(changes)
+    }
+
+    /// Perform summarization: delete old messages and insert summary
+    pub fn perform_summarization(
+        &self,
+        conversation_id: &str,
+        messages_to_summarize: &[Message],
+        summary_content: &str,
+    ) -> SqliteResult<()> {
+        let transaction = self.conn.unchecked_transaction()?;
+
+        // Collect IDs of messages to be deleted
+        let message_ids: Vec<i64> = messages_to_summarize.iter().map(|m| m.id).collect();
+        let summarized_count = message_ids.len();
+
+        if summarized_count == 0 {
+            return Ok(());
+        }
+
+        // Get the earliest timestamp from messages being summarized
+        let earliest_timestamp = messages_to_summarize
+            .iter()
+            .map(|m| m.created_at)
+            .min()
+            .unwrap_or_else(|| chrono::Utc::now().timestamp());
+
+        // Delete the old messages
+        let placeholders: String = message_ids.iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let delete_sql = format!("DELETE FROM messages WHERE id IN ({})", placeholders);
+        transaction.execute(&delete_sql, rusqlite::params_from_iter(message_ids.iter()))?;
+
+        // Insert the summary message
+        let summarized_ids_json = serde_json::to_string(&message_ids)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+
+        transaction.execute(
+            "INSERT INTO messages (conversation_id, role, content, created_at, is_summary, summarized_message_ids, summarized_count) 
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                conversation_id,
+                "system",
+                summary_content,
+                earliest_timestamp,
+                1, // is_summary = true
+                summarized_ids_json,
+                summarized_count as i64,
+            ],
+        )?;
+
+        transaction.commit()?;
+        Ok(())
     }
 
     /// Get conversation by ID

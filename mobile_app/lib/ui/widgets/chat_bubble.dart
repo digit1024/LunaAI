@@ -26,6 +26,8 @@ class ChatBubble extends StatelessWidget {
         return _ToolRequestBubble(message: message);
       case BubbleType.toolResult:
         return _ToolResultBubble(message: message);
+      case BubbleType.summary:
+        return _SummaryBubble(message: message);
     }
   }
 }
@@ -235,6 +237,60 @@ class _ToolRequestBubble extends StatelessWidget {
                   ),
                 ],
                 
+                const SizedBox(height: 6),
+                Text(
+                  _formatTimestamp(message.timestamp),
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Summary bubble - shows summary of previous messages (collapsed by default)
+class _SummaryBubble extends StatelessWidget {
+  const _SummaryBubble({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final summaryCount = message.summarizedCount ?? 0;
+
+    return Align(
+      alignment: Alignment.center,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * 0.95,
+        ),
+        child: Card(
+          color: colorScheme.surfaceContainerHighest.withOpacity(0.7),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+            side: BorderSide(
+              color: colorScheme.primary.withOpacity(0.3),
+              width: 1,
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Header row with toggle
+                _CollapsiblePayload(
+                  icon: Icons.summarize,
+                  label: '📄 Summary ($summaryCount messages)',
+                  payload: message.content,
+                  initiallyExpanded: false,
+                ),
                 const SizedBox(height: 6),
                 Text(
                   _formatTimestamp(message.timestamp),

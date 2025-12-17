@@ -55,6 +55,7 @@ pub enum Message {
     ToolCallWidgetMessage(usize, ToolCallMessage), // index, message
     ToggleToolSummary(usize, String),  // message idx, summary id
     ToggleReasoning(usize),            // message idx
+    ToggleSummary(usize),              // message idx for summary messages
     ScrollToBottom,
     // Menu actions
     ShowAbout,
@@ -182,6 +183,7 @@ pub struct CosmicLlmApp {
     pub expanded_tool_calls: std::collections::HashSet<usize>,
     pub expanded_tool_summaries: std::collections::HashSet<(usize, String)>,
     pub expanded_reasoning: std::collections::HashSet<usize>, // message indices with expanded reasoning
+    pub expanded_summaries: std::collections::HashSet<usize>, // message indices with expanded summaries
     pub expanded_mcp_servers: std::collections::HashSet<String>,
     pub scrollable_id: cosmic::widget::Id,
     pub key_binds: std::collections::HashMap<menu::KeyBind, MenuAction>,
@@ -230,6 +232,8 @@ pub struct ChatMessage {
     pub is_user: bool,
     pub is_error: bool,
     pub reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
+    pub is_summary: bool, // True if this message is a summary of previous messages
+    pub summarized_count: Option<usize>, // Count of messages summarized
 }
 
 #[derive(Debug, Clone)]
@@ -322,6 +326,7 @@ impl CosmicLlmApp {
             expanded_tool_calls: std::collections::HashSet::new(),
             expanded_tool_summaries: std::collections::HashSet::new(),
             expanded_reasoning: std::collections::HashSet::new(),
+            expanded_summaries: std::collections::HashSet::new(),
             expanded_mcp_servers: std::collections::HashSet::new(),
             scrollable_id: cosmic::widget::Id::unique(),
             key_binds: Self::create_key_binds(),
@@ -557,6 +562,7 @@ impl CosmicLlmApp {
         self.tool_runtime_context.clear();
         self.expanded_tool_summaries.clear();
         self.expanded_reasoning.clear();
+        self.expanded_summaries.clear();
 
         let mut archived_indices: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
@@ -601,6 +607,8 @@ impl CosmicLlmApp {
                 is_user,
                 is_error: false,
                 reasoning_content: stored.reasoning_content.clone(),
+                is_summary: stored.is_summary,
+                summarized_count: stored.summarized_count,
             });
             let anchor_index = self.messages.len().saturating_sub(1);
 
@@ -799,6 +807,8 @@ impl Application for CosmicLlmApp {
             is_user: false,
             is_error: false,
             reasoning_content: None,
+            is_summary: false,
+            summarized_count: None,
         });
 
         // Load recent conversations and update nav model
@@ -914,6 +924,8 @@ impl Application for CosmicLlmApp {
                         is_user: true,
                         is_error: false,
                         reasoning_content: None,
+                        is_summary: false,
+                        summarized_count: None,
                     };
                     self.messages.push(user_msg.clone());
 
@@ -1246,6 +1258,8 @@ impl Application for CosmicLlmApp {
                             is_user: false,
                             is_error: false,
                             reasoning_content: None,
+                            is_summary: false,
+                            summarized_count: None,
                         });
                         self.current_ai_message_index = Some(self.messages.len() - 1);
                     }
@@ -1285,6 +1299,8 @@ impl Application for CosmicLlmApp {
                                 is_user: false,
                                 is_error: false,
                                 reasoning_content: reasoning_content.clone(),
+                                is_summary: false,
+                                summarized_count: None,
                             });
                             self.current_ai_message_index = Some(self.messages.len() - 1);
                         }
@@ -1596,6 +1612,8 @@ impl Application for CosmicLlmApp {
                             is_user: false,
                             is_error: true,
                             reasoning_content: None,
+                            is_summary: false,
+                            summarized_count: None,
                         });
                     }
                 }
@@ -1658,6 +1676,13 @@ impl Application for CosmicLlmApp {
                     self.expanded_reasoning.remove(&message_idx);
                 } else {
                     self.expanded_reasoning.insert(message_idx);
+                }
+            }
+            Message::ToggleSummary(message_idx) => {
+                if self.expanded_summaries.contains(&message_idx) {
+                    self.expanded_summaries.remove(&message_idx);
+                } else {
+                    self.expanded_summaries.insert(message_idx);
                 }
             }
             Message::ToggleMCPServer(server_name) => {

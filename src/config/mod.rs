@@ -21,10 +21,24 @@ pub struct LlmProfile {
     pub enabled_mcp: Vec<String>,
     #[serde(default)]
     pub hidden: bool,
+    /// Maximum context window size in tokens
+    /// If not set, will be auto-detected based on model
+    #[serde(default)]
+    pub context_window_size: Option<usize>,
+    /// Summarization threshold (0.0 - 1.0)
+    /// When context usage reaches this percentage of context_window_size,
+    /// summarization of older messages will be triggered
+    /// Default: 0.7 (70% of context window)
+    #[serde(default = "default_summarize_threshold")]
+    pub summarize_threshold: f32,
 }
 
 fn default_backend() -> String {
     "openai".to_string()
+}
+
+fn default_summarize_threshold() -> f32 {
+    0.7
 }
 
 impl Default for LlmProfile {
@@ -39,6 +53,8 @@ impl Default for LlmProfile {
             profile_prompt_file: None,
             enabled_mcp: Vec::new(),
             hidden: false,
+            context_window_size: None,
+            summarize_threshold: default_summarize_threshold(),
         }
     }
 }
