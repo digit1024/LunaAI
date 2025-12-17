@@ -15,6 +15,7 @@ enum BubbleType {
   assistant,   // Assistant text content
   toolRequest, // Tool call with parameters (when tool starts)
   toolResult,  // Tool result (when tool completes)
+  summary,      // Summary of previous messages
 }
 
 class ChatMessage extends Equatable {
@@ -31,6 +32,8 @@ class ChatMessage extends Equatable {
   final dynamic toolResult;   // For toolResult bubbles
   final String? toolError;    // For error state
   final String? reasoningContent; // For DeepSeek thinking/reasoning content
+  final bool isSummary; // True if this message is a summary
+  final int? summarizedCount; // Count of messages summarized
 
   const ChatMessage({
     required this.id,
@@ -46,6 +49,8 @@ class ChatMessage extends Equatable {
     this.toolResult,
     this.toolError,
     this.reasoningContent,
+    this.isSummary = false,
+    this.summarizedCount,
   });
 
   ChatMessage copyWith({
@@ -62,6 +67,8 @@ class ChatMessage extends Equatable {
     Object? toolResult = _unset,
     Object? toolError = _unset,
     String? reasoningContent,
+    bool? isSummary,
+    int? summarizedCount,
   }) {
     return ChatMessage(
       id: id ?? this.id,
@@ -77,6 +84,8 @@ class ChatMessage extends Equatable {
       toolResult: identical(toolResult, _unset) ? this.toolResult : toolResult,
       toolError: identical(toolError, _unset) ? this.toolError : toolError as String?,
       reasoningContent: reasoningContent ?? this.reasoningContent,
+      isSummary: isSummary ?? this.isSummary,
+      summarizedCount: summarizedCount ?? this.summarizedCount,
     );
   }
 
@@ -97,6 +106,8 @@ class ChatMessage extends Equatable {
         toolResult,
         toolError,
         reasoningContent,
+        isSummary,
+        summarizedCount,
       ];
 }
 

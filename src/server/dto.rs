@@ -160,6 +160,14 @@ pub struct MessageView {
     pub attachments: Option<Vec<Attachment>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_summary: bool, // True if this message is a summary of previous messages
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summarized_count: Option<usize>, // Count of messages summarized
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -184,6 +192,8 @@ impl From<&StoredMessage> for MessageView {
             tool_result_json: msg.tool_result_json.clone(),
             attachments: None, // StoredMessage doesn't have attachments yet
             reasoning_content: msg.reasoning_content.clone(),
+            is_summary: msg.is_summary,
+            summarized_count: msg.summarized_count,
         }
     }
 }

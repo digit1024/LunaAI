@@ -527,6 +527,17 @@ class AppController extends Notifier<AppState> {
                 : null,
           ));
         }
+      } else if (m.isSummary) {
+        // Summary message
+        result.add(ChatMessage(
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          timestamp: timestamp,
+          bubbleType: BubbleType.summary,
+          isSummary: true,
+          summarizedCount: m.summarizedCount,
+        ));
       } else {
         // Regular user/assistant message
         result.add(ChatMessage(

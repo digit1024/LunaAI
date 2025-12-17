@@ -11,6 +11,60 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
 
     // Add regular chat messages
     for (i, msg) in app.messages.iter().enumerate() {
+        // Check if this is a summary message - render it differently
+        if msg.is_summary {
+            let expanded = app.expanded_summaries.contains(&i);
+            let summary_count = msg.summarized_count.unwrap_or(0);
+            
+            let toggle_button = cosmic::widget::button::text(format!(
+                "{} 📄 Summary ({} messages)",
+                if expanded { "▼" } else { "▶" },
+                summary_count
+            ))
+            .on_press(Message::ToggleSummary(i))
+            .class(cosmic::style::Button::Text)
+            .width(Length::Fill);
+            
+            let mut summary_column = cosmic::widget::column()
+                .push(toggle_button);
+            
+            if expanded {
+                // Show summary content when expanded
+                summary_column = summary_column.push(
+                    widget::container(widget::lazy(&msg.content, |_| {
+                        let items = markdown::parse(&msg.content).collect::<Vec<_>>();
+                        let style = widget::markdown::Style {
+                            inline_code_padding: cosmic::iced::Padding::from([1, 2]),
+                            inline_code_highlight: widget::markdown::Highlight {
+                                background: cosmic::iced::Background::Color(
+                                    cosmic::iced::Color::from_rgb(0.1, 0.1, 0.1),
+                                ),
+                                border: cosmic::iced::Border::default().rounded(2),
+                            },
+                            inline_code_color: cosmic::iced::Color::WHITE,
+                            link_color: cosmic::iced::Color::from_rgb(0.3, 0.6, 1.0),
+                        };
+                        widget::markdown(&items, widget::markdown::Settings::default(), style)
+                            .map(Message::MarkdownLinkClicked)
+                    }))
+                    .width(Length::Fill)
+                    .padding(Padding::from([8, 12]))
+                );
+            }
+            
+            let summary_widget = cosmic::widget::container(summary_column)
+                .padding(Padding::from([12, 16]))
+                .class(cosmic::style::Container::Card)
+                .width(Length::Fill); // 100% width for summary messages
+            
+            // Summary messages span full width, centered
+            let summary_row = cosmic::widget::row::with_capacity(1)
+                .push(summary_widget);
+            
+            column = column.push(summary_row);
+            continue; // Skip regular message rendering for summaries
+        }
+        
         let content = msg.content.clone();
         let mut tool_summaries: Vec<(String, String, String)> = Vec::new();
         if !msg.is_user {

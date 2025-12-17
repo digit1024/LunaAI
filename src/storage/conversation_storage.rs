@@ -57,6 +57,9 @@ pub struct StoredMessage {
     pub tool_params_json: Option<Value>,
     pub tool_result_json: Option<Value>,
     pub reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
+    #[serde(default)]
+    pub is_summary: bool, // True if this message is a summary of previous messages
+    pub summarized_count: Option<usize>, // Count of messages summarized
 }
 
 impl Conversation {
@@ -90,6 +93,8 @@ impl Conversation {
             reasoning_content: None,
             tool_params_json: None,
             tool_result_json: None,
+            is_summary: false,
+            summarized_count: None,
         };
         self.messages.push(message);
         self.updated_at = Utc::now();

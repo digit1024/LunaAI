@@ -337,6 +337,8 @@ class MessageView {
   final dynamic toolParams;
   final dynamic toolResult;
   final String? reasoningContent; // For DeepSeek thinking/reasoning content
+  final bool isSummary; // True if this message is a summary of previous messages
+  final int? summarizedCount; // Count of messages summarized
 
   MessageView({
     required this.id,
@@ -349,6 +351,8 @@ class MessageView {
     this.toolParams,
     this.toolResult,
     this.reasoningContent,
+    this.isSummary = false,
+    this.summarizedCount,
   });
 
   factory MessageView.fromJson(Map<String, dynamic> json) {
@@ -363,6 +367,8 @@ class MessageView {
       toolParams: json['tool_params_json'],
       toolResult: json['tool_result_json'],
       reasoningContent: json['reasoning_content'] as String?,
+      isSummary: json['is_summary'] as bool? ?? false,
+      summarizedCount: json['summarized_count'] as int?,
     );
   }
 }

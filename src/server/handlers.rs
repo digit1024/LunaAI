@@ -5,12 +5,17 @@ use crate::{
     },
     config::{AppConfig, ServerConfig},
     llm::{self, Attachment, Message as LlmMessage, Role},
+    llm::tokenizer::TokenCounter,
     mcp::MCPServerRegistry,
     prompts::PromptManager,
-    server::{dto::{
-        ClientCommand, ConversationSummary, ConversationView, MessageView, PlannedToolView,
-        SearchResult, ServerEvent,
-    }, http::AttachmentStorage},
+    server::{
+        context_manager::SmartContextManager,
+        dto::{
+            ClientCommand, ConversationSummary, ConversationView, MessageView, PlannedToolView,
+            SearchResult, ServerEvent,
+        },
+        http::AttachmentStorage,
+    },
     storage::{
         conversation_storage::Conversation as StoredConversation,
         sqlite_storage_simple::MessageMetadata, Storage,
@@ -347,9 +352,284 @@ impl ServerHandler {
         } else {
             LlmMessage::new_with_attachments(Role::User, content.clone(), attachments)
         };
+        let current_user_message_clone = current_user_message.clone();
         llm_messages.push(current_user_message);
         
-        let agent_messages = inject_prompts(llm_messages, &prompt_manager, &profile)?;
+        // Inject system prompts first
+        let mut agent_messages = inject_prompts(llm_messages, &prompt_manager, &profile)?;
+        
+        // Apply context management (token counting and smart selection)
+        let token_counter = TokenCounter::new(&profile);
+        let total_tokens: usize = agent_messages.iter()
+            .map(|msg| token_counter.count_message_tokens(msg))
+            .sum();
+        
+        let context_limit = token_counter.get_context_limit(&profile);
+        let summarize_threshold_tokens = token_counter.get_summarize_threshold_tokens(&profile);
+        
+        // Log token usage
+        let usage_percent = (total_tokens as f32 / context_limit as f32 * 100.0) as u32;
+        log::info!(
+            "Context usage: {} tokens / {} limit ({}%), Threshold: {} tokens",
+            total_tokens,
+            context_limit,
+            usage_percent,
+            summarize_threshold_tokens
+        );
+        
+        // Check if summarization threshold is exceeded
+        if total_tokens > summarize_threshold_tokens {
+            log::info!(
+                "Summarization threshold exceeded: {} tokens > {} threshold tokens. Triggering summarization.",
+                total_tokens,
+                summarize_threshold_tokens
+            );
+            
+            // Perform summarization before context selection
+            // We need to work with database messages, not LLM messages
+            let storage = self.ctx.storage.lock().await;
+            let db_messages = storage.load_conversation_messages(&conversation_uuid.to_string())
+                .context("failed to load conversation for summarization")?;
+            drop(storage);
+            
+            // Separate system messages (prompts) from conversation messages
+            // System messages are at the beginning (from inject_prompts)
+            let system_count = agent_messages.iter()
+                .take_while(|m| matches!(m.role, Role::System))
+                .count();
+            
+            // Convert database messages to LLM messages for summarization
+            // We want to summarize old messages, keeping recent ones (last 10 messages)
+            // IMPORTANT: Exclude summary messages and tool messages from summarization
+            let keep_recent_count = 10; // Keep last 10 messages
+            
+            // Filter out summary messages and tool messages - we only want regular conversation messages
+            let regular_messages: Vec<_> = db_messages.iter()
+                .filter(|msg| !msg.is_summary && msg.role != "tool")
+                .collect();
+            
+            log::info!(
+                "Total messages: {}, Regular messages (excluding summaries/tools): {}, Keeping last {}",
+                db_messages.len(),
+                regular_messages.len(),
+                keep_recent_count
+            );
+            
+            let messages_to_summarize_count = regular_messages.len().saturating_sub(keep_recent_count);
+            
+            if messages_to_summarize_count > 0 {
+                // Get the IDs of messages we want to summarize
+                let messages_to_summarize_ids: Vec<i64> = regular_messages[..messages_to_summarize_count]
+                    .iter()
+                    .map(|msg| msg.id)
+                    .collect();
+                
+                // Get the actual messages from db_messages (preserving order)
+                let messages_to_summarize_db: Vec<_> = db_messages.iter()
+                    .filter(|msg| messages_to_summarize_ids.contains(&msg.id))
+                    .cloned()
+                    .collect();
+                
+                if messages_to_summarize_db.is_empty() {
+                    log::warn!("No messages found to summarize despite count > 0");
+                    // Continue without summarization
+                } else {
+                    log::info!(
+                        "Summarizing {} messages (IDs: {:?})",
+                        messages_to_summarize_db.len(),
+                        messages_to_summarize_ids
+                    );
+                
+                    // Convert to LlmMessage format
+                    let messages_to_summarize: Vec<LlmMessage> = messages_to_summarize_db.iter()
+                        .filter_map(|msg| {
+                            // Skip summary messages and tool messages
+                            if msg.is_summary || msg.role == "tool" {
+                                return None;
+                            }
+                            
+                            let role = match msg.role.as_str() {
+                                "user" => Role::User,
+                                "assistant" => Role::Assistant,
+                                "system" => Role::System,
+                                _ => return None,
+                            };
+                            Some(match role {
+                                Role::Assistant => {
+                                    let mut assistant_msg = if let Some(tool_calls) = msg.tool_calls.clone() {
+                                        if !tool_calls.is_empty() {
+                                            LlmMessage::new_with_tool_calls(role, msg.content.clone(), tool_calls)
+                                        } else {
+                                            LlmMessage::new(role, msg.content.clone())
+                                        }
+                                    } else {
+                                        LlmMessage::new(role, msg.content.clone())
+                                    };
+                                    assistant_msg.reasoning_content = msg.reasoning_content.clone();
+                                    assistant_msg
+                                }
+                                _ => LlmMessage::new(role, msg.content.clone()),
+                            })
+                        })
+                        .collect();
+                    
+                    if !messages_to_summarize.is_empty() {
+                        log::info!(
+                            "Calling LLM to summarize {} messages ({} LLM messages after filtering)",
+                            messages_to_summarize_db.len(),
+                            messages_to_summarize.len()
+                        );
+                        
+                        // Call LLM to generate summary
+                        let llm_client = self.session.llm_client.clone();
+                        match SmartContextManager::summarize_messages(
+                            messages_to_summarize,
+                            &profile,
+                            llm_client.as_ref(),
+                        ).await {
+                            Ok(summary_message) => {
+                                log::info!("✅ Generated summary ({} chars), replacing {} messages", 
+                                    summary_message.content.len(),
+                                    messages_to_summarize_db.len()
+                                );
+                                
+                                // Perform database summarization
+                                let storage = self.ctx.storage.lock().await;
+                                if let Err(e) = storage.perform_summarization(
+                                    &conversation_uuid.to_string(),
+                                    &messages_to_summarize_db,
+                                    &summary_message.content,
+                                ) {
+                                    log::error!("Failed to perform summarization in database: {}", e);
+                                } else {
+                                    log::info!("Summarization completed successfully");
+                                    
+                                    // Notify user
+                                    let _ = self.outbound.send(ServerEvent::Error {
+                                        message: format!(
+                                            "Conversation summarized: {} messages condensed into summary",
+                                            messages_to_summarize_db.len()
+                                        ),
+                                    });
+                                    
+                                    // Reload messages after summarization
+                                    let reloaded_messages = storage.load_conversation_messages(&conversation_uuid.to_string())
+                                        .context("failed to reload conversation after summarization")?;
+                                    drop(storage);
+                                    
+                                    // Rebuild LLM messages from reloaded database
+                                    // Convert database messages to StoredMessage format
+                                    use crate::storage::conversation_storage::StoredMessage;
+                                    let stored_messages: Vec<StoredMessage> = reloaded_messages.iter()
+                                        .map(|db_msg| StoredMessage {
+                                            id: uuid::Uuid::parse_str(&format!("{:x}", db_msg.id))
+                                                .unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                                            role: db_msg.role.clone(),
+                                            content: db_msg.content.clone(),
+                                            timestamp: chrono::DateTime::from_timestamp(db_msg.created_at, 0)
+                                                .unwrap_or_else(|| chrono::Utc::now()),
+                                            tool_calls: db_msg.tool_calls.clone(),
+                                            tool_call_id: db_msg.tool_call_id.clone(),
+                                            tool_name: db_msg.tool_name.clone(),
+                                            tool_status: db_msg.tool_status.clone(),
+                                            tool_params_json: db_msg.tool_params_json.clone(),
+                                            tool_result_json: db_msg.tool_result_json.clone(),
+                                            reasoning_content: db_msg.reasoning_content.clone(),
+                                            is_summary: db_msg.is_summary,
+                                            summarized_count: db_msg.summarized_count,
+                                        })
+                                        .collect();
+                                    
+                                    let mut reloaded_llm = conversation_to_llm(StoredConversation {
+                                        id: conversation_uuid,
+                                        title: "".to_string(),
+                                        created_at: chrono::Utc::now(),
+                                        updated_at: chrono::Utc::now(),
+                                        messages: stored_messages,
+                                        turns: Vec::new(), // Turns not used in SQLite storage
+                                        profile_name: None,
+                                    });
+                                    
+                                    // Add current message back
+                                    reloaded_llm.push(current_user_message_clone);
+                                    
+                                    // Re-inject prompts and recalculate
+                                    agent_messages = inject_prompts(reloaded_llm, &prompt_manager, &profile)?;
+                                    
+                                    // Recalculate tokens after summarization
+                                    let new_total_tokens: usize = agent_messages.iter()
+                                        .map(|msg| token_counter.count_message_tokens(msg))
+                                        .sum();
+                                    
+                                    log::info!(
+                                        "After summarization: {} tokens (reduced from {} tokens)",
+                                        new_total_tokens,
+                                        total_tokens
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("❌ Failed to generate summary: {}", e);
+                                // Continue without summarization - will fall back to context selection
+                            }
+                        }
+                    } else {
+                        log::warn!(
+                            "No messages to summarize after filtering (had {} DB messages, {} LLM messages after conversion)",
+                            messages_to_summarize_db.len(),
+                            messages_to_summarize.len()
+                        );
+                    }
+                } // End of messages_to_summarize_db.is_empty() else block
+            } else {
+                log::info!(
+                    "Not enough messages to summarize: {} regular messages, need at least {} to keep {} recent",
+                    regular_messages.len(),
+                    keep_recent_count + 1,
+                    keep_recent_count
+                );
+            }
+        } else {
+            log::debug!(
+                "Token usage {} <= threshold {}, no summarization needed",
+                total_tokens,
+                summarize_threshold_tokens
+            );
+        }
+        
+        // Apply smart context selection if we're over the safe limit
+        let safe_limit = token_counter.get_safe_context_limit(&profile);
+        if total_tokens > safe_limit {
+            log::info!(
+                "Context overflow detected: {} tokens > {} safe limit. Applying smart context selection.",
+                total_tokens,
+                safe_limit
+            );
+            let original_count = agent_messages.len();
+            agent_messages = SmartContextManager::select_context(agent_messages, &token_counter, &profile);
+            let selected_count = agent_messages.len();
+            let selected_tokens: usize = agent_messages.iter()
+                .map(|msg| token_counter.count_message_tokens(msg))
+                .sum();
+            
+            log::info!(
+                "Context selection: {} messages -> {} messages ({} tokens -> {} tokens)",
+                original_count,
+                selected_count,
+                total_tokens,
+                selected_tokens
+            );
+            
+            // Notify user about truncation
+            let _ = self.outbound.send(ServerEvent::Error {
+                message: format!(
+                    "Context truncated: {} messages selected from {} ({} tokens used)",
+                    selected_count,
+                    original_count,
+                    selected_tokens
+                ),
+            });
+        }
 
         let outbound = self.outbound.clone();
         let llm_client = self.session.llm_client.clone();

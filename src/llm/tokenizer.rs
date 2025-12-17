@@ -7,7 +7,7 @@
 //! - Ollama: Model-specific estimation
 
 use crate::config::LlmProfile;
-use crate::llm::{Attachment, Message, Role, ToolCall};
+use crate::llm::Message;
 
 /// Tokenizer type based on model backend
 #[derive(Debug, Clone)]
@@ -158,6 +158,12 @@ impl TokenCounter {
 
     /// Get the context window limit for a given profile
     pub fn get_context_limit(&self, profile: &LlmProfile) -> usize {
+        // First, check if context_window_size is configured in profile
+        if let Some(configured_size) = profile.context_window_size {
+            return configured_size;
+        }
+
+        // Otherwise, auto-detect based on model name
         let model_lower = profile.model.to_lowercase();
 
         match profile.backend.as_str() {
@@ -175,8 +181,17 @@ impl TokenCounter {
                     8_192 // GPT-4 base
                 } else if model_lower.contains("gpt-3.5-turbo") {
                     16_385 // GPT-3.5 Turbo
+                } else if model_lower.contains("deepseek") {
+                    // DeepSeek models typically have large context windows
+                    if model_lower.contains("reasoner") {
+                        64_000 // DeepSeek Reasoner models
+                    } else if model_lower.contains("chat") || model_lower.contains("v2") {
+                        64_000 // DeepSeek Chat models
+                    } else {
+                        32_768 // Default for other DeepSeek models
+                    }
                 } else {
-                    4_096 // Default/safe
+                    4_096 // Default/safe for unknown models
                 }
             }
             "anthropic" => {
@@ -221,6 +236,20 @@ impl TokenCounter {
         let limit = self.get_context_limit(profile);
         // Leave 20% headroom for response generation
         ((limit as f32) * 0.8) as usize
+    }
+
+    /// Get the summarization threshold (0.0 - 1.0) from profile
+    /// Default: 0.7 (70% of context window)
+    pub fn get_summarize_threshold(&self, profile: &LlmProfile) -> f32 {
+        profile.summarize_threshold
+    }
+
+    /// Get the token count at which summarization should trigger
+    /// This is: context_window_size * summarize_threshold
+    pub fn get_summarize_threshold_tokens(&self, profile: &LlmProfile) -> usize {
+        let context_limit = self.get_context_limit(profile);
+        let threshold = self.get_summarize_threshold(profile);
+        ((context_limit as f32) * threshold) as usize
     }
 
     // Fallback estimation: ~4 characters per token (conservative)
@@ -301,5 +330,6 @@ mod tests {
         assert_eq!(safe_limit, 102_400); // 80% of 128k
     }
 }
+
 
 
