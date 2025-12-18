@@ -6,16 +6,14 @@ use crate::{
     config::{AppConfig, ServerConfig},
     llm::{self, Attachment, Message as LlmMessage, Role},
     llm::tokenizer::TokenCounter,
+    llm::context_manager::SmartContextManager,
     mcp::MCPServerRegistry,
     prompts::PromptManager,
-    server::{
-        context_manager::SmartContextManager,
-        dto::{
-            ClientCommand, ConversationSummary, ConversationView, MessageView, PlannedToolView,
-            SearchResult, ServerEvent,
-        },
-        http::AttachmentStorage,
+    server::dto::{
+        ClientCommand, ConversationSummary, ConversationView, MessageView, PlannedToolView,
+        SearchResult, ServerEvent,
     },
+    server::http::AttachmentStorage,
     storage::{
         conversation_storage::Conversation as StoredConversation,
         sqlite_storage_simple::MessageMetadata, Storage,
@@ -403,9 +401,9 @@ impl ServerHandler {
             // IMPORTANT: Exclude summary messages and tool messages from summarization
             let keep_recent_count = 10; // Keep last 10 messages
             
-            // Filter out summary messages and tool messages - we only want regular conversation messages
+            // Filter out summary messages, tool messages, and already summarized messages - we only want regular conversation messages
             let regular_messages: Vec<_> = db_messages.iter()
-                .filter(|msg| !msg.is_summary && msg.role != "tool")
+                .filter(|msg| !msg.is_summary && !msg.is_summarized && msg.role != "tool")
                 .collect();
             
             log::info!(
@@ -418,16 +416,43 @@ impl ServerHandler {
             let messages_to_summarize_count = regular_messages.len().saturating_sub(keep_recent_count);
             
             if messages_to_summarize_count > 0 {
-                // Get the IDs of messages we want to summarize
-                let messages_to_summarize_ids: Vec<i64> = regular_messages[..messages_to_summarize_count]
+                // Get the IDs of regular messages (assistant/user) we want to summarize
+                let regular_ids_to_summarize: Vec<i64> = regular_messages[..messages_to_summarize_count]
                     .iter()
                     .map(|msg| msg.id)
                     .collect();
                 
-                // Get the actual messages from db_messages (preserving order)
+                // Collect tool_call_ids from assistant messages being summarized
+                // so we can also delete the corresponding tool result messages
+                let mut tool_call_ids_to_delete: std::collections::HashSet<String> = std::collections::HashSet::new();
+                for msg in &regular_messages[..messages_to_summarize_count] {
+                    if let Some(ref tool_calls) = msg.tool_calls {
+                        for tc in tool_calls {
+                            tool_call_ids_to_delete.insert(tc.id.clone());
+                        }
+                    }
+                }
+                
+                // Get all messages to delete: regular messages + their corresponding tool results
                 let messages_to_summarize_db: Vec<_> = db_messages.iter()
-                    .filter(|msg| messages_to_summarize_ids.contains(&msg.id))
+                    .filter(|msg| {
+                        // Include if it's a regular message we're summarizing
+                        if regular_ids_to_summarize.contains(&msg.id) {
+                            return true;
+                        }
+                        // Also include tool messages whose tool_call_id matches an assistant being summarized
+                        if msg.role == "tool" {
+                            if let Some(ref tool_call_id) = msg.tool_call_id {
+                                return tool_call_ids_to_delete.contains(tool_call_id);
+                            }
+                        }
+                        false
+                    })
                     .cloned()
+                    .collect();
+                
+                let messages_to_summarize_ids: Vec<i64> = messages_to_summarize_db.iter()
+                    .map(|msg| msg.id)
                     .collect();
                 
                 if messages_to_summarize_db.is_empty() {
@@ -435,8 +460,10 @@ impl ServerHandler {
                     // Continue without summarization
                 } else {
                     log::info!(
-                        "Summarizing {} messages (IDs: {:?})",
+                        "Summarizing {} messages ({} regular + {} tool results, IDs: {:?})",
                         messages_to_summarize_db.len(),
+                        regular_ids_to_summarize.len(),
+                        messages_to_summarize_db.len() - regular_ids_to_summarize.len(),
                         messages_to_summarize_ids
                     );
                 
@@ -536,6 +563,7 @@ impl ServerHandler {
                                             tool_result_json: db_msg.tool_result_json.clone(),
                                             reasoning_content: db_msg.reasoning_content.clone(),
                                             is_summary: db_msg.is_summary,
+                                            is_summarized: db_msg.is_summarized,
                                             summarized_count: db_msg.summarized_count,
                                         })
                                         .collect();
@@ -599,7 +627,40 @@ impl ServerHandler {
         
         // Apply smart context selection if we're over the safe limit
         let safe_limit = token_counter.get_safe_context_limit(&profile);
-        if total_tokens > safe_limit {
+        let hard_limit = token_counter.get_context_limit(&profile);
+        
+        // Always ensure we don't exceed the hard limit (API will reject if we do)
+        if total_tokens > hard_limit {
+            log::warn!(
+                "⚠️ CRITICAL: Context exceeds hard limit! {} tokens > {} limit. Forcing truncation.",
+                total_tokens,
+                hard_limit
+            );
+            let original_count = agent_messages.len();
+            agent_messages = SmartContextManager::select_context(agent_messages, &token_counter, &profile);
+            let selected_count = agent_messages.len();
+            let selected_tokens: usize = agent_messages.iter()
+                .map(|msg| token_counter.count_message_tokens(msg))
+                .sum();
+            
+            log::warn!(
+                "⚠️ Emergency truncation: {} messages -> {} messages ({} tokens -> {} tokens)",
+                original_count,
+                selected_count,
+                total_tokens,
+                selected_tokens
+            );
+            
+            // Notify user about truncation
+            let _ = self.outbound.send(ServerEvent::Error {
+                message: format!(
+                    "⚠️ Context exceeded limit! Truncated: {} messages -> {} messages ({} tokens)",
+                    original_count,
+                    selected_count,
+                    selected_tokens
+                ),
+            });
+        } else if total_tokens > safe_limit {
             log::info!(
                 "Context overflow detected: {} tokens > {} safe limit. Applying smart context selection.",
                 total_tokens,
@@ -629,6 +690,41 @@ impl ServerHandler {
                     selected_tokens
                 ),
             });
+        }
+        
+        // Final safety check: verify we're under the hard limit before sending
+        let final_tokens: usize = agent_messages.iter()
+            .map(|msg| token_counter.count_message_tokens(msg))
+            .sum();
+        
+        if final_tokens > hard_limit {
+            log::error!(
+                "❌ FATAL: After truncation, still over limit! {} tokens > {} limit. This should not happen!",
+                final_tokens,
+                hard_limit
+            );
+            // Emergency fallback: keep only system messages and most recent messages
+            let system_count = agent_messages.iter()
+                .take_while(|m| matches!(m.role, Role::System))
+                .count();
+            let mut emergency_messages: Vec<LlmMessage> = agent_messages[..system_count].to_vec();
+            let mut emergency_tokens: usize = emergency_messages.iter()
+                .map(|msg| token_counter.count_message_tokens(msg))
+                .sum();
+            
+            // Add recent messages until we hit the limit
+            for msg in agent_messages.iter().skip(system_count).rev() {
+                let msg_tokens = token_counter.count_message_tokens(msg);
+                if emergency_tokens + msg_tokens <= hard_limit {
+                    emergency_messages.push(msg.clone());
+                    emergency_tokens += msg_tokens;
+                } else {
+                    break;
+                }
+            }
+            
+            agent_messages = emergency_messages;
+            log::warn!("Emergency fallback: Reduced to {} messages", agent_messages.len());
         }
 
         let outbound = self.outbound.clone();
@@ -763,6 +859,11 @@ fn conversation_to_llm(conversation: StoredConversation) -> Vec<LlmMessage> {
         .messages
         .into_iter()
         .filter_map(|msg| {
+            // Skip messages that have been summarized (but keep summary messages themselves)
+            if msg.is_summarized && !msg.is_summary {
+                return None;
+            }
+            
             let role = match msg.role.as_str() {
                 "user" => Role::User,
                 "assistant" => Role::Assistant,
@@ -775,9 +876,17 @@ fn conversation_to_llm(conversation: StoredConversation) -> Vec<LlmMessage> {
                     let tool_call_id = msg
                         .tool_call_id
                         .unwrap_or_else(|| "tool_result".to_string());
+                    // Combine content AND tool_result_json (both may contain data)
+                    let mut content = msg.content;
+                    if let Some(ref result_json) = msg.tool_result_json {
+                        if !content.is_empty() {
+                            content.push_str("\n");
+                        }
+                        content.push_str(&result_json.to_string());
+                    }
                     LlmMessage::new_tool_result(
                         tool_call_id,
-                        msg.content,
+                        content,
                         msg.tool_status.as_deref() == Some("error"),
                     )
                 }

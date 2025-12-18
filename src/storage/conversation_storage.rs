@@ -59,6 +59,8 @@ pub struct StoredMessage {
     pub reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
     #[serde(default)]
     pub is_summary: bool, // True if this message is a summary of previous messages
+    #[serde(default)]
+    pub is_summarized: bool, // True if this message has been summarized (should be excluded from LLM payload)
     pub summarized_count: Option<usize>, // Count of messages summarized
 }
 
@@ -94,6 +96,7 @@ impl Conversation {
             tool_params_json: None,
             tool_result_json: None,
             is_summary: false,
+            is_summarized: false,
             summarized_count: None,
         };
         self.messages.push(message);

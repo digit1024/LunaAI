@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../application/app_controller.dart';
+import '../../core/config/stt_preferences.dart';
 import '../../core/config/tts_preferences.dart';
 import '../../services/tts_service.dart';
+import '../widgets/language_favorites_dialog.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -48,6 +50,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Widget build(BuildContext context) {
     final ttsPrefs = ref.watch(ttsPreferencesProvider);
     final ttsPrefsNotifier = ref.read(ttsPreferencesProvider.notifier);
+    final sttPrefs = ref.watch(sttPreferencesProvider);
+    final sttPrefsNotifier = ref.read(sttPreferencesProvider.notifier);
     final appController = ref.read(appControllerProvider.notifier);
 
     return PopScope(
@@ -143,6 +147,118 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           label: const Text('Load Languages'),
                         ),
                     ],
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 24),
+            // STT Section
+            Text(
+              'Speech-to-Text',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            const SizedBox(height: 16),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Language Picker
+                    const SizedBox(height: 8),
+                    Text(
+                      'Language',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 8),
+                    if (_loadingLanguages)
+                      const Center(
+                        child: Padding(
+                          padding: EdgeInsets.all(16),
+                          child: CircularProgressIndicator(),
+                        ),
+                      )
+                    else if (_availableLanguages != null &&
+                        _availableLanguages!.isNotEmpty)
+                      DropdownButtonFormField<String>(
+                        value: sttPrefs.language,
+                        decoration: const InputDecoration(
+                          border: OutlineInputBorder(),
+                          hintText: 'Select language',
+                        ),
+                        items: _availableLanguages!
+                            .map<DropdownMenuItem<String>>((lang) {
+                          final langCode = lang.toString();
+                          final displayName = _getLanguageDisplayName(langCode);
+                          return DropdownMenuItem<String>(
+                            value: langCode,
+                            child: Text(displayName),
+                          );
+                        }).toList(),
+                        onChanged: (value) {
+                          if (value != null) {
+                            sttPrefsNotifier.setLanguage(value);
+                          }
+                        },
+                      )
+                    else
+                      TextButton.icon(
+                        onPressed: _loadLanguages,
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('Load Languages'),
+                      ),
+                    const SizedBox(height: 16),
+                    // Favorite Languages - Button to open dialog
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: _availableLanguages != null && _availableLanguages!.isNotEmpty
+                                ? () => LanguageFavoritesDialog.show(
+                                      context,
+                                      _availableLanguages!,
+                                    )
+                                : null,
+                            icon: const Icon(Icons.star),
+                            label: Text(
+                              'Manage Favorite Languages (${sttPrefs.favoriteLanguages.length})',
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Languages shown in quick menu',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const Divider(),
+                    const SizedBox(height: 8),
+                    // STT Pause Duration
+                    Text(
+                      'STT Pause Duration',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Wait time before sending speech (${(sttPrefs.pauseDuration.inMilliseconds / 1000).toStringAsFixed(1)}s)',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 8),
+                    Slider(
+                      value: sttPrefs.pauseDuration.inMilliseconds / 1000,
+                      min: 0.5,
+                      max: 5.0,
+                      divisions: 9,
+                      label: '${(sttPrefs.pauseDuration.inMilliseconds / 1000).toStringAsFixed(1)}s',
+                      onChanged: (value) {
+                        sttPrefsNotifier.setPauseDuration(
+                          Duration(milliseconds: (value * 1000).round()),
+                        );
+                      },
+                    ),
                   ],
                 ),
               ),

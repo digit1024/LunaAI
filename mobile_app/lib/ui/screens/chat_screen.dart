@@ -835,32 +835,60 @@ class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
           ),
           const Divider(),
           // Language Selection (applies to both STT and TTS)
+          // Only show favorite languages in the burger menu
           ListTile(
             leading: const Icon(Icons.language),
             title: const Text('Voice Language'),
             subtitle: _loadingLanguages
                 ? const Text('Loading...')
                 : (_availableLanguages != null && _availableLanguages!.isNotEmpty)
-                    ? DropdownButton<String>(
-                        value: ttsPrefs.language,
-                        isExpanded: true,
-                        underline: Container(),
-                        items: _availableLanguages!
-                            .map<DropdownMenuItem<String>>((lang) {
-                          final langCode = lang.toString();
-                          final displayName = _getLanguageDisplayName(langCode);
-                          return DropdownMenuItem<String>(
-                            value: langCode,
-                            child: Text(displayName),
-                          );
-                        }).toList(),
-                        onChanged: (value) {
-                          if (value != null) {
-                            // Set both TTS and STT language
-                            ttsPrefsNotifier.setLanguage(value);
-                            sttPrefsNotifier.setLanguage(value);
-                            ref.read(ttsServiceProvider).setLanguage(value);
+                    ? Builder(
+                        builder: (context) {
+                          // Filter to only show favorite languages
+                          final favoriteLanguages = sttPrefs.favoriteLanguages;
+                          final favoriteLangItems = _availableLanguages!
+                              .where((lang) {
+                                final langCode = lang.toString();
+                                return favoriteLanguages.contains(langCode);
+                              })
+                              .toList();
+                          
+                          // If current language is not in favorites, add it temporarily
+                          final currentLangCode = ttsPrefs.language;
+                          if (!favoriteLanguages.contains(currentLangCode)) {
+                            favoriteLangItems.insert(0, currentLangCode);
                           }
+                          
+                          if (favoriteLangItems.isEmpty) {
+                            return TextButton.icon(
+                              onPressed: _loadLanguages,
+                              icon: const Icon(Icons.refresh, size: 18),
+                              label: const Text('Load Languages'),
+                            );
+                          }
+                          
+                          return DropdownButton<String>(
+                            value: ttsPrefs.language,
+                            isExpanded: true,
+                            underline: Container(),
+                            items: favoriteLangItems
+                                .map<DropdownMenuItem<String>>((lang) {
+                              final langCode = lang.toString();
+                              final displayName = _getLanguageDisplayName(langCode);
+                              return DropdownMenuItem<String>(
+                                value: langCode,
+                                child: Text(displayName),
+                              );
+                            }).toList(),
+                            onChanged: (value) {
+                              if (value != null) {
+                                // Set both TTS and STT language
+                                ttsPrefsNotifier.setLanguage(value);
+                                sttPrefsNotifier.setLanguage(value);
+                                ref.read(ttsServiceProvider).setLanguage(value);
+                              }
+                            },
+                          );
                         },
                       )
                     : TextButton.icon(
