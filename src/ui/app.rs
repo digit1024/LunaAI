@@ -221,6 +221,8 @@ pub struct CosmicLlmApp {
     pub search_results: Vec<crate::storage::sqlite_storage_simple::Snippet>,
     // Typing indicator animation state
     pub typing_indicator_progress: f32,
+    // Cache for context usage percentage per conversation (to avoid blocking UI)
+    pub context_usage_cache: std::collections::HashMap<Uuid, Option<u32>>,
     pub typing_indicator_start_time: Option<cosmic::iced::time::Instant>,
     // Recent conversations for nav bar (last 10)
     pub recent_conversations: Vec<(Uuid, String)>, // (id, title)
@@ -384,6 +386,7 @@ impl CosmicLlmApp {
             typing_indicator_progress: 0.0,
             typing_indicator_start_time: None,
             recent_conversations: Vec::new(),
+            context_usage_cache: std::collections::HashMap::new(),
         }
     }
 
@@ -442,6 +445,7 @@ impl CosmicLlmApp {
         let messages = self.messages.clone();
         let mcp_registry = self.mcp_registry.clone();
         let pending_messages = self.pending_llm_messages.clone();
+        let profile = self.config.get_default_profile().cloned();
         let profile_prompt_path = self.config.get_default_profile().and_then(|profile| {
             profile
                 .profile_prompt_file
@@ -512,13 +516,57 @@ impl CosmicLlmApp {
                     llm_messages
                 };
 
+                // === CONTEXT MANAGEMENT ===
+                // Apply token counting and truncation to prevent API context overflow
+                let final_messages = if let Some(ref prof) = profile {
+                    use crate::llm::tokenizer::TokenCounter;
+                    use crate::llm::context_manager::SmartContextManager;
+                    
+                    let token_counter = TokenCounter::new(prof);
+                    let context_limit = token_counter.get_context_limit(prof);
+                    let safe_limit = token_counter.get_safe_context_limit(prof);
+                    
+                    let total_tokens: usize = llm_messages.iter()
+                        .map(|msg| token_counter.count_message_tokens(msg))
+                        .sum();
+                    
+                    println!("📊 Desktop context: {} tokens / {} limit (safe: {})", 
+                        total_tokens, context_limit, safe_limit);
+                    
+                    if total_tokens > safe_limit {
+                        println!("⚠️ Context exceeds safe limit, applying smart truncation...");
+                        let _ = output.send(Message::InlineError(format!(
+                            "Context size ({} tokens) exceeds safe limit ({}). Applying smart truncation.",
+                            total_tokens, safe_limit
+                        ))).await;
+                        
+                        // Apply smart context selection
+                        let truncated = SmartContextManager::select_context(
+                            llm_messages,
+                            &token_counter,
+                            prof,
+                        );
+                        
+                        let new_tokens: usize = truncated.iter()
+                            .map(|msg| token_counter.count_message_tokens(msg))
+                            .sum();
+                        println!("✂️ Truncated to {} tokens ({} messages)", new_tokens, truncated.len());
+                        
+                        truncated
+                    } else {
+                        llm_messages
+                    }
+                } else {
+                    llm_messages
+                };
+
                 // Create channel for agent updates
                 let (tx_agent, mut rx_agent) = mpsc::unbounded_channel::<AgentUpdate>();
 
                 // Start agentic processing in background
                 let llm_client_clone = llm_client.clone();
                 let mcp_registry_clone = mcp_registry.clone();
-                let llm_messages_clone = llm_messages.clone();
+                let llm_messages_clone = final_messages.clone();
 
                 tokio::spawn(async move {
                     let mut agentic_loop = crate::agentic::loop_engine::AgenticLoop::new(
@@ -631,6 +679,22 @@ impl CosmicLlmApp {
                     archived_indices.insert(call.id.clone(), self.archived_tool_calls.len() - 1);
                 }
             }
+        }
+        
+        // Update context usage cache for this conversation
+        self.update_context_usage_cache(conversation.id);
+    }
+
+    /// Update the context usage cache for a conversation
+    /// This is called when conversations are loaded/changed to avoid blocking UI during rendering
+    fn update_context_usage_cache(&mut self, conversation_id: Uuid) {
+        if let Ok(Some(conv)) = self.storage.get_conversation(&conversation_id) {
+            let usage_pct = crate::ui::pages::chat::top_panel::calculate_context_usage(
+                &conv,
+                &self.config,
+                &self.prompt_manager,
+            );
+            self.context_usage_cache.insert(conversation_id, usage_pct);
         }
     }
 
@@ -943,6 +1007,9 @@ impl Application for CosmicLlmApp {
                             self.input.clone(),
                         ) {
                             eprintln!("Failed to add message to conversation: {}", e);
+                        } else {
+                            // Update context usage cache after adding message
+                            self.update_context_usage_cache(conv_id);
                         }
                     }
 
@@ -1002,20 +1069,113 @@ impl Application for CosmicLlmApp {
                         ));
                     }
 
-                    if let Some(profile_prompt) = profile_prompt {
+                    if let Some(ref profile_prompt) = profile_prompt {
                         llm_messages.push(crate::llm::Message::new(
                             crate::llm::Role::System,
-                            profile_prompt,
+                            profile_prompt.clone(),
                         ));
                     }
 
-                    for msg in &self.messages {
-                        let role = if msg.is_user {
-                            crate::llm::Role::User
-                        } else {
-                            crate::llm::Role::Assistant
-                        };
-                        llm_messages.push(crate::llm::Message::new(role, msg.content.clone()));
+                    // Load messages from database to get full tool_result_json data
+                    if let Some(conv_id) = self.current_conversation_id {
+                        match self.storage.load_conversation_messages(&conv_id.to_string()) {
+                            Ok(db_messages) => {
+                                // First pass: collect all valid tool_call_ids from assistant messages
+                                let mut valid_tool_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+                                for msg in &db_messages {
+                                    if msg.role == "assistant" {
+                                        if let Some(ref tool_calls) = msg.tool_calls {
+                                            for tc in tool_calls {
+                                                valid_tool_call_ids.insert(tc.id.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Second pass: build messages, skipping orphaned tool results
+                                let mut skipped_orphans = 0;
+                                for msg in db_messages {
+                                    let role = match msg.role.as_str() {
+                                        "user" => crate::llm::Role::User,
+                                        "assistant" => crate::llm::Role::Assistant,
+                                        "system" => crate::llm::Role::System,
+                                        "tool" => {
+                                            // Check if this tool result has a matching tool_call
+                                            if let Some(ref tool_call_id) = msg.tool_call_id {
+                                                if !valid_tool_call_ids.contains(tool_call_id) {
+                                                    skipped_orphans += 1;
+                                                    continue; // Skip orphaned tool result
+                                                }
+                                            } else {
+                                                skipped_orphans += 1;
+                                                continue; // No tool_call_id, skip
+                                            }
+                                            crate::llm::Role::Tool
+                                        }
+                                        _ => continue,
+                                    };
+                                    
+                                    // For tool messages, combine content with tool_result_json
+                                    let content = if role == crate::llm::Role::Tool {
+                                        let mut combined = msg.content.clone();
+                                        if let Some(ref result_json) = msg.tool_result_json {
+                                            if !combined.is_empty() {
+                                                combined.push_str("\n");
+                                            }
+                                            combined.push_str(&result_json.to_string());
+                                        }
+                                        combined
+                                    } else {
+                                        msg.content.clone()
+                                    };
+                                    
+                                    let mut llm_msg = crate::llm::Message::new(role.clone(), content);
+                                    
+                                    // Preserve tool call metadata
+                                    if role == crate::llm::Role::Tool {
+                                        llm_msg.tool_call_id = msg.tool_call_id.clone();
+                                    }
+                                    if let Some(ref tool_calls) = msg.tool_calls {
+                                        llm_msg.tool_calls = Some(tool_calls.iter().map(|tc| {
+                                            crate::llm::ToolCall {
+                                                id: tc.id.clone(),
+                                                name: tc.name.clone(),
+                                                parameters: tc.parameters.clone(),
+                                            }
+                                        }).collect());
+                                    }
+                                    llm_msg.reasoning_content = msg.reasoning_content.clone();
+                                    
+                                    llm_messages.push(llm_msg);
+                                }
+                                
+                                if skipped_orphans > 0 {
+                                    println!("⚠️ Skipped {} orphaned tool results (no matching tool_call)", skipped_orphans);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to load messages from DB, falling back to UI messages: {}", e);
+                                // Fallback to UI messages
+                                for msg in &self.messages {
+                                    let role = if msg.is_user {
+                                        crate::llm::Role::User
+                                    } else {
+                                        crate::llm::Role::Assistant
+                                    };
+                                    llm_messages.push(crate::llm::Message::new(role, msg.content.clone()));
+                                }
+                            }
+                        }
+                    } else {
+                        // No conversation yet, use UI messages
+                        for msg in &self.messages {
+                            let role = if msg.is_user {
+                                crate::llm::Role::User
+                            } else {
+                                crate::llm::Role::Assistant
+                            };
+                            llm_messages.push(crate::llm::Message::new(role, msg.content.clone()));
+                        }
                     }
 
                     // Create the current user message with attachments
@@ -1035,17 +1195,206 @@ impl Application for CosmicLlmApp {
                         current_user_message
                     );
 
-                    llm_messages.push(current_user_message);
+                    llm_messages.push(current_user_message.clone());
 
                     // Clear attached files after processing
                     self.attached_files.clear();
 
+                    // === DESKTOP CONTEXT MANAGEMENT ===
+                    // Check token count and trigger summarization if needed
+                    if let Some(profile) = self.config.get_default_profile() {
+                        use crate::llm::tokenizer::TokenCounter;
+                        
+                        let token_counter = TokenCounter::new(profile);
+                        let total_tokens: usize = llm_messages.iter()
+                            .map(|msg| token_counter.count_message_tokens(msg))
+                            .sum();
+                        
+                        let context_limit = token_counter.get_context_limit(profile);
+                        let summarize_threshold_tokens = token_counter.get_summarize_threshold_tokens(profile);
+                        let safe_limit = token_counter.get_safe_context_limit(profile);
+                        
+                        let percentage = (total_tokens as f32 / context_limit as f32) * 100.0;
+                        println!("📊 Desktop context: {} tokens ({:.1}% of {} limit)", 
+                            total_tokens, percentage, context_limit);
+                        println!("   Summarize threshold: {} tokens, Safe limit: {} tokens", 
+                            summarize_threshold_tokens, safe_limit);
+                        
+                        // Check if summarization is needed
+                        if total_tokens > summarize_threshold_tokens {
+                            println!("🔄 Summarization threshold exceeded! ({} > {})", 
+                                total_tokens, summarize_threshold_tokens);
+                            
+                            if let Some(conv_id) = self.current_conversation_id {
+                                // Load messages from DB for summarization
+                                if let Ok(db_messages) = self.storage.load_conversation_messages(&conv_id.to_string()) {
+                                    // Filter to regular messages (exclude summaries and tools)
+                                    let regular_messages: Vec<_> = db_messages.iter()
+                                        .filter(|msg| !msg.is_summary && msg.role != "tool")
+                                        .collect();
+                                    
+                                    let keep_recent_count = 10;
+                                    let messages_to_summarize_count = regular_messages.len().saturating_sub(keep_recent_count);
+                                    
+                                    if messages_to_summarize_count > 0 {
+                                        println!("📝 Will summarize {} messages (keeping last {})", 
+                                            messages_to_summarize_count, keep_recent_count);
+                                        
+                                        // Get IDs to summarize
+                                        let ids_to_summarize: Vec<i64> = regular_messages[..messages_to_summarize_count]
+                                            .iter()
+                                            .map(|msg| msg.id)
+                                            .collect();
+                                        
+                                        // Get full messages to summarize
+                                        let msgs_to_summarize: Vec<_> = db_messages.iter()
+                                            .filter(|msg| ids_to_summarize.contains(&msg.id))
+                                            .cloned()
+                                            .collect();
+                                        
+                                        // Convert to LlmMessage for summarization
+                                        let llm_msgs_to_summarize: Vec<crate::llm::Message> = msgs_to_summarize.iter()
+                                            .filter_map(|msg| {
+                                                let role = match msg.role.as_str() {
+                                                    "user" => crate::llm::Role::User,
+                                                    "assistant" => crate::llm::Role::Assistant,
+                                                    "system" => crate::llm::Role::System,
+                                                    _ => return None,
+                                                };
+                                                Some(crate::llm::Message::new(role, msg.content.clone()))
+                                            })
+                                            .collect();
+                                        
+                                        if !llm_msgs_to_summarize.is_empty() {
+                                            // Generate summary synchronously (blocking but necessary for desktop)
+                                            println!("🤖 Generating summary...");
+                                            let llm_client = self.llm_client.clone();
+                                            let profile_clone = profile.clone();
+                                            
+                                            // Use tokio runtime for async summarization
+                                            let summary_result = tokio::task::block_in_place(|| {
+                                                tokio::runtime::Handle::current().block_on(async {
+                                                    crate::llm::context_manager::SmartContextManager::summarize_messages(
+                                                        llm_msgs_to_summarize,
+                                                        &profile_clone,
+                                                        llm_client.as_ref(),
+                                                    ).await
+                                                })
+                                            });
+                                            
+                                            match summary_result {
+                                                Ok(summary_msg) => {
+                                                    println!("✅ Summary generated: {} chars", summary_msg.content.len());
+                                                    
+                                                    // Perform database summarization
+                                                    if let Err(e) = self.storage.perform_summarization(
+                                                        &conv_id.to_string(),
+                                                        &msgs_to_summarize,
+                                                        &summary_msg.content,
+                                                    ) {
+                                                        eprintln!("❌ Failed to save summary to DB: {}", e);
+                                                    } else {
+                                                        println!("💾 Summary saved to database");
+                                                        
+                                                        // Rebuild llm_messages from the updated database
+                                                        if let Ok(updated_msgs) = self.storage.load_conversation_messages(&conv_id.to_string()) {
+                                                            llm_messages.clear();
+                                                            
+                                                            // Re-add system prompts
+                                                            if let Some(system_prompt) = self.prompt_manager.get_system_prompt() {
+                                                                llm_messages.push(crate::llm::Message::new(
+                                                                    crate::llm::Role::System,
+                                                                    system_prompt.to_string(),
+                                                                ));
+                                                            }
+                                                            if let Some(ref profile_prompt) = profile_prompt {
+                                                                llm_messages.push(crate::llm::Message::new(
+                                                                    crate::llm::Role::System,
+                                                                    profile_prompt.clone(),
+                                                                ));
+                                                            }
+                                                            
+                                                            // Collect valid tool_call_ids
+                                                            let mut valid_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+                                                            for msg in &updated_msgs {
+                                                                if msg.role == "assistant" {
+                                                                    if let Some(ref tcs) = msg.tool_calls {
+                                                                        for tc in tcs {
+                                                                            valid_ids.insert(tc.id.clone());
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            
+                                                            // Add updated messages from DB, skipping orphaned tool results
+                                                            for msg in updated_msgs {
+                                                                let role = match msg.role.as_str() {
+                                                                    "user" => crate::llm::Role::User,
+                                                                    "assistant" => crate::llm::Role::Assistant,
+                                                                    "system" => crate::llm::Role::System,
+                                                                    "tool" => {
+                                                                        // Skip orphaned tool results
+                                                                        if let Some(ref tid) = msg.tool_call_id {
+                                                                            if !valid_ids.contains(tid) { continue; }
+                                                                        } else { continue; }
+                                                                        crate::llm::Role::Tool
+                                                                    }
+                                                                    _ => continue,
+                                                                };
+                                                                
+                                                                let content = if role == crate::llm::Role::Tool {
+                                                                    let mut combined = msg.content.clone();
+                                                                    if let Some(ref result_json) = msg.tool_result_json {
+                                                                        if !combined.is_empty() {
+                                                                            combined.push_str("\n");
+                                                                        }
+                                                                        combined.push_str(&result_json.to_string());
+                                                                    }
+                                                                    combined
+                                                                } else {
+                                                                    msg.content.clone()
+                                                                };
+                                                                
+                                                                let mut llm_msg = crate::llm::Message::new(role.clone(), content);
+                                                                if role == crate::llm::Role::Tool {
+                                                                    llm_msg.tool_call_id = msg.tool_call_id.clone();
+                                                                }
+                                                                llm_msg.reasoning_content = msg.reasoning_content.clone();
+                                                                llm_messages.push(llm_msg);
+                                                            }
+                                                            
+                                                            // Re-add current user message
+                                                            llm_messages.push(current_user_message.clone());
+                                                            
+                                                            let new_tokens: usize = llm_messages.iter()
+                                                                .map(|msg| token_counter.count_message_tokens(msg))
+                                                                .sum();
+                                                            println!("📊 After summarization: {} tokens", new_tokens);
+                                                            
+                                                            // Rebuild UI messages from DB
+                                                            if let Ok(Some(conv)) = self.storage.get_conversation(&conv_id) {
+                                                                self.rebuild_conversation_view(conv);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("❌ Summarization failed: {}", e);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
                     // Debug: Print all messages being sent to LLM
                     println!("🔍 DEBUG: All LLM messages being sent:");
                     for (i, msg) in llm_messages.iter().enumerate() {
                         println!(
-                            "  Message {}: role={:?}, content={}, attachments={:?}",
-                            i, msg.role, msg.content, msg.attachments
+                            "  Message {}: role={:?}, content_len={}, attachments={:?}",
+                            i, msg.role, msg.content.len(), msg.attachments.is_some()
                         );
                     }
 
@@ -1328,6 +1677,9 @@ impl Application for CosmicLlmApp {
                                 metadata,
                             ) {
                                 eprintln!("Failed to add assistant message: {}", e);
+                            } else {
+                                // Update context usage cache after adding message
+                                self.update_context_usage_cache(conv_id);
                             }
                         }
                         self.pending_tool_calls_for_history.clear();
@@ -1483,6 +1835,9 @@ impl Application for CosmicLlmApp {
                                 metadata,
                             ) {
                                 eprintln!("Failed to add tool result: {}", e);
+                            } else {
+                                // Update context usage cache after adding tool message
+                                self.update_context_usage_cache(conv_id);
                             }
                         }
 
@@ -1558,6 +1913,9 @@ impl Application for CosmicLlmApp {
                                 metadata,
                             ) {
                                 eprintln!("Failed to add tool error: {}", e);
+                            } else {
+                                // Update context usage cache after adding tool error message
+                                self.update_context_usage_cache(conv_id);
                             }
                         }
 

@@ -184,11 +184,13 @@ impl TokenCounter {
                 } else if model_lower.contains("deepseek") {
                     // DeepSeek models typically have large context windows
                     if model_lower.contains("reasoner") {
-                        64_000 // DeepSeek Reasoner models
+                        131_072 // DeepSeek Reasoner: 128k context (131,072 tokens)
                     } else if model_lower.contains("chat") || model_lower.contains("v2") {
-                        64_000 // DeepSeek Chat models
+                        131_072 // DeepSeek Chat v2: 128k context
+                    } else if model_lower.contains("v1") {
+                        64_000 // DeepSeek Chat v1: 64k context
                     } else {
-                        32_768 // Default for other DeepSeek models
+                        131_072 // Default for newer DeepSeek models: 128k
                     }
                 } else {
                     4_096 // Default/safe for unknown models

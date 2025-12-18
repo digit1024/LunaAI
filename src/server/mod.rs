@@ -1,4 +1,3 @@
-pub mod context_manager;
 pub mod dto;
 mod handlers;
 mod http;
