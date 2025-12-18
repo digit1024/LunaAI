@@ -401,9 +401,9 @@ impl ServerHandler {
             // IMPORTANT: Exclude summary messages and tool messages from summarization
             let keep_recent_count = 10; // Keep last 10 messages
             
-            // Filter out summary messages and tool messages - we only want regular conversation messages
+            // Filter out summary messages, tool messages, and already summarized messages - we only want regular conversation messages
             let regular_messages: Vec<_> = db_messages.iter()
-                .filter(|msg| !msg.is_summary && msg.role != "tool")
+                .filter(|msg| !msg.is_summary && !msg.is_summarized && msg.role != "tool")
                 .collect();
             
             log::info!(
@@ -563,6 +563,7 @@ impl ServerHandler {
                                             tool_result_json: db_msg.tool_result_json.clone(),
                                             reasoning_content: db_msg.reasoning_content.clone(),
                                             is_summary: db_msg.is_summary,
+                                            is_summarized: db_msg.is_summarized,
                                             summarized_count: db_msg.summarized_count,
                                         })
                                         .collect();
@@ -858,6 +859,11 @@ fn conversation_to_llm(conversation: StoredConversation) -> Vec<LlmMessage> {
         .messages
         .into_iter()
         .filter_map(|msg| {
+            // Skip messages that have been summarized (but keep summary messages themselves)
+            if msg.is_summarized && !msg.is_summary {
+                return None;
+            }
+            
             let role = match msg.role.as_str() {
                 "user" => Role::User,
                 "assistant" => Role::Assistant,

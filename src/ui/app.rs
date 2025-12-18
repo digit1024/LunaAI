@@ -97,6 +97,8 @@ pub enum Message {
     TypingIndicatorTick(cosmic::iced::time::Instant),
     // Refresh conversation list for nav bar
     RefreshConversationList,
+    // Manual summarization
+    ManualSummarize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +125,7 @@ pub enum MenuAction {
     Settings,
     Quit,
     SendMessage,
+    SummarizeConversation,
 }
 
 impl menu::Action for MenuAction {
@@ -135,6 +138,7 @@ impl menu::Action for MenuAction {
             MenuAction::Settings => Message::OpenSettings,
             MenuAction::Quit => Message::Quit,
             MenuAction::SendMessage => Message::SendMessage,
+            MenuAction::SummarizeConversation => Message::ManualSummarize,
         }
     }
 }
@@ -235,6 +239,7 @@ pub struct ChatMessage {
     pub is_error: bool,
     pub reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
     pub is_summary: bool, // True if this message is a summary of previous messages
+    pub is_summarized: bool, // True if this message has been summarized (should be excluded from LLM payload)
     pub summarized_count: Option<usize>, // Count of messages summarized
 }
 
@@ -656,6 +661,7 @@ impl CosmicLlmApp {
                 is_error: false,
                 reasoning_content: stored.reasoning_content.clone(),
                 is_summary: stored.is_summary,
+                is_summarized: stored.is_summarized,
                 summarized_count: stored.summarized_count,
             });
             let anchor_index = self.messages.len().saturating_sub(1);
@@ -695,6 +701,111 @@ impl CosmicLlmApp {
                 &self.prompt_manager,
             );
             self.context_usage_cache.insert(conversation_id, usage_pct);
+        }
+    }
+
+    /// Perform manual summarization on the current conversation
+    fn perform_manual_summarization(&mut self, conv_id: Uuid) {
+        println!("📝 Manual summarization triggered for conversation {}", conv_id);
+        
+        if let Some(profile) = self.config.get_default_profile() {
+            // Load messages from DB for summarization
+            if let Ok(db_messages) = self.storage.load_conversation_messages(&conv_id.to_string()) {
+                // Filter to regular messages (exclude summaries, tools, and already summarized messages)
+                let regular_messages: Vec<_> = db_messages.iter()
+                    .filter(|msg| !msg.is_summary && !msg.is_summarized && msg.role != "tool")
+                    .collect();
+                
+                if regular_messages.is_empty() {
+                    println!("⚠️ No messages available to summarize");
+                    return;
+                }
+                
+                let keep_recent_count = 10;
+                let messages_to_summarize_count = regular_messages.len().saturating_sub(keep_recent_count);
+                
+                if messages_to_summarize_count == 0 {
+                    println!("ℹ️ All messages are recent (keeping last {}), nothing to summarize", keep_recent_count);
+                    return;
+                }
+                
+                println!("📝 Will summarize {} messages (keeping last {})", 
+                    messages_to_summarize_count, keep_recent_count);
+                
+                // Get IDs to summarize
+                let ids_to_summarize: Vec<i64> = regular_messages[..messages_to_summarize_count]
+                    .iter()
+                    .map(|msg| msg.id)
+                    .collect();
+                
+                // Get full messages to summarize
+                let msgs_to_summarize: Vec<_> = db_messages.iter()
+                    .filter(|msg| ids_to_summarize.contains(&msg.id))
+                    .cloned()
+                    .collect();
+                
+                // Convert to LlmMessage for summarization
+                let llm_msgs_to_summarize: Vec<crate::llm::Message> = msgs_to_summarize.iter()
+                    .filter_map(|msg| {
+                        let role = match msg.role.as_str() {
+                            "user" => crate::llm::Role::User,
+                            "assistant" => crate::llm::Role::Assistant,
+                            "system" => crate::llm::Role::System,
+                            _ => return None,
+                        };
+                        Some(crate::llm::Message::new(role, msg.content.clone()))
+                    })
+                    .collect();
+                
+                if !llm_msgs_to_summarize.is_empty() {
+                    // Generate summary synchronously (blocking but necessary for desktop)
+                    println!("🤖 Generating summary...");
+                    let llm_client = self.llm_client.clone();
+                    let profile_clone = profile.clone();
+                    
+                    // Use tokio runtime for async summarization
+                    let summary_result = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(async {
+                            crate::llm::context_manager::SmartContextManager::summarize_messages(
+                                llm_msgs_to_summarize,
+                                &profile_clone,
+                                llm_client.as_ref(),
+                            ).await
+                        })
+                    });
+                    
+                    match summary_result {
+                        Ok(summary_msg) => {
+                            println!("✅ Summary generated: {} chars", summary_msg.content.len());
+                            
+                            // Perform database summarization
+                            if let Err(e) = self.storage.perform_summarization(
+                                &conv_id.to_string(),
+                                &msgs_to_summarize,
+                                &summary_msg.content,
+                            ) {
+                                eprintln!("❌ Failed to save summary to DB: {}", e);
+                            } else {
+                                println!("💾 Summary saved to database");
+                                
+                                // Rebuild UI messages from DB to show the summary
+                                if let Ok(Some(conv)) = self.storage.get_conversation(&conv_id) {
+                                    self.rebuild_conversation_view(conv);
+                                    // Update context usage cache
+                                    self.update_context_usage_cache(conv_id);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Summarization failed: {}", e);
+                        }
+                    }
+                }
+            } else {
+                eprintln!("❌ Failed to load messages from database");
+            }
+        } else {
+            eprintln!("❌ No profile configured for summarization");
         }
     }
 
@@ -872,6 +983,7 @@ impl Application for CosmicLlmApp {
             is_error: false,
             reasoning_content: None,
             is_summary: false,
+            is_summarized: false,
             summarized_count: None,
         });
 
@@ -989,6 +1101,7 @@ impl Application for CosmicLlmApp {
                         is_error: false,
                         reasoning_content: None,
                         is_summary: false,
+            is_summarized: false,
                         summarized_count: None,
                     };
                     self.messages.push(user_msg.clone());
@@ -1092,9 +1205,16 @@ impl Application for CosmicLlmApp {
                                     }
                                 }
                                 
-                                // Second pass: build messages, skipping orphaned tool results
+                                // Second pass: build messages, skipping orphaned tool results and summarized messages
                                 let mut skipped_orphans = 0;
+                                let mut skipped_summarized = 0;
                                 for msg in db_messages {
+                                    // Skip messages that have been summarized (but keep summary messages themselves)
+                                    if msg.is_summarized && !msg.is_summary {
+                                        skipped_summarized += 1;
+                                        continue;
+                                    }
+                                    
                                     let role = match msg.role.as_str() {
                                         "user" => crate::llm::Role::User,
                                         "assistant" => crate::llm::Role::Assistant,
@@ -1151,6 +1271,9 @@ impl Application for CosmicLlmApp {
                                 
                                 if skipped_orphans > 0 {
                                     println!("⚠️ Skipped {} orphaned tool results (no matching tool_call)", skipped_orphans);
+                                }
+                                if skipped_summarized > 0 {
+                                    println!("📄 Skipped {} summarized messages (using summaries instead)", skipped_summarized);
                                 }
                             }
                             Err(e) => {
@@ -1228,9 +1351,9 @@ impl Application for CosmicLlmApp {
                             if let Some(conv_id) = self.current_conversation_id {
                                 // Load messages from DB for summarization
                                 if let Ok(db_messages) = self.storage.load_conversation_messages(&conv_id.to_string()) {
-                                    // Filter to regular messages (exclude summaries and tools)
+                                    // Filter to regular messages (exclude summaries, tools, and already summarized messages)
                                     let regular_messages: Vec<_> = db_messages.iter()
-                                        .filter(|msg| !msg.is_summary && msg.role != "tool")
+                                        .filter(|msg| !msg.is_summary && !msg.is_summarized && msg.role != "tool")
                                         .collect();
                                     
                                     let keep_recent_count = 10;
@@ -1326,8 +1449,13 @@ impl Application for CosmicLlmApp {
                                                                 }
                                                             }
                                                             
-                                                            // Add updated messages from DB, skipping orphaned tool results
+                                                            // Add updated messages from DB, skipping orphaned tool results and summarized messages
                                                             for msg in updated_msgs {
+                                                                // Skip messages that have been summarized (but keep summary messages themselves)
+                                                                if msg.is_summarized && !msg.is_summary {
+                                                                    continue;
+                                                                }
+                                                                
                                                                 let role = match msg.role.as_str() {
                                                                     "user" => crate::llm::Role::User,
                                                                     "assistant" => crate::llm::Role::Assistant,
@@ -1608,6 +1736,7 @@ impl Application for CosmicLlmApp {
                             is_error: false,
                             reasoning_content: None,
                             is_summary: false,
+            is_summarized: false,
                             summarized_count: None,
                         });
                         self.current_ai_message_index = Some(self.messages.len() - 1);
@@ -1649,6 +1778,7 @@ impl Application for CosmicLlmApp {
                                 is_error: false,
                                 reasoning_content: reasoning_content.clone(),
                                 is_summary: false,
+            is_summarized: false,
                                 summarized_count: None,
                             });
                             self.current_ai_message_index = Some(self.messages.len() - 1);
@@ -1971,6 +2101,7 @@ impl Application for CosmicLlmApp {
                             is_error: true,
                             reasoning_content: None,
                             is_summary: false,
+            is_summarized: false,
                             summarized_count: None,
                         });
                     }
@@ -2164,6 +2295,13 @@ impl Application for CosmicLlmApp {
                 }
                 // Load current config values into settings page (this also initializes staged config)
                 self.settings_page.load_from_config(&self.config);
+            }
+            Message::ManualSummarize => {
+                if let Some(conv_id) = self.current_conversation_id {
+                    self.perform_manual_summarization(conv_id);
+                } else {
+                    eprintln!("⚠️ No active conversation to summarize");
+                }
             }
             Message::Quit => {
                 // TODO: Implement proper quit
@@ -2950,7 +3088,10 @@ impl CosmicLlmApp {
                 RcElementWrapper::new(Element::from(root("File"))),
                 items(
                     &self.key_binds,
-                    vec![Item::Button("Quit", None, MenuAction::Quit)],
+                    vec![
+                        Item::Button("Summarize Conversation", None, MenuAction::SummarizeConversation),
+                        Item::Button("Quit", None, MenuAction::Quit),
+                    ],
                 ),
             ),
             Tree::with_children(
