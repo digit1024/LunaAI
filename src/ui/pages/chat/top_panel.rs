@@ -2,6 +2,7 @@ use crate::ui::app::{CosmicLlmApp, Message};
 use crate::llm::{Message as LlmMessage, Role};
 use crate::llm::tokenizer::TokenCounter;
 use crate::storage::conversation_storage::Conversation as StoredConversation;
+use crate::prompts::PromptManager;
 use cosmic::{iced::Length, widget, Element};
 
 pub fn top_panel(app: &CosmicLlmApp) -> Element<Message> {
@@ -31,8 +32,9 @@ pub fn top_panel(app: &CosmicLlmApp) -> Element<Message> {
                 .map(|ci| ci.title)
                 .unwrap_or_else(|| conv.title.clone());
             
-            // Calculate context usage percentage
-            let usage_pct = calculate_context_usage(&conv, &app.config);
+            // Use cached context usage to avoid blocking UI during rendering
+            // Cache is updated when conversation is loaded/changed
+            let usage_pct = app.context_usage_cache.get(&id).copied().flatten();
             (latest_title, Some(created), conv.messages.len(), usage_pct)
         } else {
             ("New Chat".to_string(), None, app.messages.len(), None)
@@ -150,7 +152,11 @@ pub fn top_panel(app: &CosmicLlmApp) -> Element<Message> {
 
 /// Calculate context usage percentage for a conversation
 /// This matches the server-side calculation by including system prompts
-fn calculate_context_usage(conv: &StoredConversation, config: &crate::config::AppConfig) -> Option<u32> {
+pub(crate) fn calculate_context_usage(
+    conv: &StoredConversation, 
+    config: &crate::config::AppConfig,
+    prompt_manager: &PromptManager,
+) -> Option<u32> {
     // Get the profile for this conversation (or use default)
     let profile = conv.profile_name.as_ref()
         .and_then(|name| config.profiles.get(name))
@@ -170,9 +176,17 @@ fn calculate_context_usage(conv: &StoredConversation, config: &crate::config::Ap
         Some(match role {
             Role::Tool => {
                 let tool_call_id = msg.tool_call_id.clone().unwrap_or_else(|| "tool_result".to_string());
+                // Combine content AND tool_result_json (both may contain data)
+                let mut content = msg.content.clone();
+                if let Some(ref result_json) = msg.tool_result_json {
+                    if !content.is_empty() {
+                        content.push_str("\n");
+                    }
+                    content.push_str(&result_json.to_string());
+                }
                 LlmMessage::new_tool_result(
                     tool_call_id,
-                    msg.content.clone(),
+                    content,
                     msg.tool_status.as_deref() == Some("error"),
                 )
             }
@@ -193,20 +207,32 @@ fn calculate_context_usage(conv: &StoredConversation, config: &crate::config::Ap
         })
     }).collect();
     
-    // Count tokens from conversation messages
+    // Add system prompts to match server-side calculation
+    // Add system prompt if available
+    if let Some(system_prompt) = prompt_manager.get_system_prompt() {
+        llm_messages.insert(0, LlmMessage::new(Role::System, system_prompt.to_string()));
+    }
+    
+    // Add profile prompt if configured
+    if let Some(profile_prompt_file) = profile.profile_prompt_file.as_ref() {
+        let resolved_path = crate::config::AppConfig::resolve_config_path(profile_prompt_file);
+        if let Ok(profile_prompt) = prompt_manager.load_profile_prompt(&resolved_path.to_string_lossy()) {
+            llm_messages.insert(0, LlmMessage::new(Role::System, profile_prompt));
+        }
+    }
+    
+    // Count tokens (including system prompts) - matches server calculation
     let token_counter = TokenCounter::new(profile);
-    let conversation_tokens: usize = llm_messages.iter()
+    let total_tokens: usize = llm_messages.iter()
         .map(|msg| token_counter.count_message_tokens(msg))
         .sum();
     
-    // Get context limit (this now correctly detects DeepSeek models with 64k context)
+    // Get context limit (now correctly detects DeepSeek Reasoner with 131k context)
     let context_limit = token_counter.get_context_limit(profile);
     
     // Calculate percentage and cap at 100% to avoid showing over 100%
-    // Note: This doesn't include system prompts, but that's okay for UI display
-    // The server-side calculation includes system prompts, but for UI we show conversation-only usage
     if context_limit > 0 {
-        let percentage = (conversation_tokens as f32 / context_limit as f32) * 100.0;
+        let percentage = (total_tokens as f32 / context_limit as f32) * 100.0;
         Some(percentage.min(100.0) as u32)
     } else {
         None

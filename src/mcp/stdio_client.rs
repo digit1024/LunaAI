@@ -10,6 +10,10 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
+/// Maximum allowed size for a tool result in bytes (32KB)
+/// Results larger than this will return an error to prevent context overflow
+const MAX_TOOL_RESULT_SIZE: usize = 32 * 1024;
+
 pub struct StdioMCPClient {
     pub command: String,
     pub args: Vec<String>,
@@ -164,6 +168,7 @@ impl MCPTransport for StdioMCPClient {
     }
 
     async fn call_tool(&mut self, tool_call: ToolCall) -> Result<ToolResult> {
+        let tool_name = tool_call.name.clone();
         let arguments = tool_call.parameters.clone();
         let request =
             super::protocol::MCPRequest::tools_call(self.request_id, tool_call.name, arguments);
@@ -186,6 +191,25 @@ impl MCPTransport for StdioMCPClient {
                         if let Some(text_content) =
                             first_content.get("text").and_then(|t| t.as_str())
                         {
+                            // Check size limit
+                            if text_content.len() > MAX_TOOL_RESULT_SIZE {
+                                log::warn!(
+                                    "⚠️ Tool '{}' result too large: {} bytes (max: {} bytes)",
+                                    tool_name,
+                                    text_content.len(),
+                                    MAX_TOOL_RESULT_SIZE
+                                );
+                                return Ok(ToolResult {
+                                    content: format!(
+                                        "Error: Tool result too large ({} bytes). Maximum allowed size is {} bytes (~{}KB). \
+                                        Consider using more specific queries or filtering the output.",
+                                        text_content.len(),
+                                        MAX_TOOL_RESULT_SIZE,
+                                        MAX_TOOL_RESULT_SIZE / 1024
+                                    ),
+                                    is_error: true,
+                                });
+                            }
                             return Ok(ToolResult {
                                 content: text_content.to_string(),
                                 is_error: false,
@@ -197,10 +221,31 @@ impl MCPTransport for StdioMCPClient {
 
             // Fallback to simple string parsing
             match serde_json::from_value::<String>(result.clone()) {
-                Ok(content) => Ok(ToolResult {
-                    content,
-                    is_error: false,
-                }),
+                Ok(content) => {
+                    // Check size limit for fallback path too
+                    if content.len() > MAX_TOOL_RESULT_SIZE {
+                        log::warn!(
+                            "⚠️ Tool '{}' result too large: {} bytes (max: {} bytes)",
+                            tool_name,
+                            content.len(),
+                            MAX_TOOL_RESULT_SIZE
+                        );
+                        return Ok(ToolResult {
+                            content: format!(
+                                "Error: Tool result too large ({} bytes). Maximum allowed size is {} bytes (~{}KB). \
+                                Consider using more specific queries or filtering the output.",
+                                content.len(),
+                                MAX_TOOL_RESULT_SIZE,
+                                MAX_TOOL_RESULT_SIZE / 1024
+                            ),
+                            is_error: true,
+                        });
+                    }
+                    Ok(ToolResult {
+                        content,
+                        is_error: false,
+                    })
+                }
                 Err(_) => Ok(ToolResult {
                     content: format!("Unexpected result format: {:?}", result),
                     is_error: true,

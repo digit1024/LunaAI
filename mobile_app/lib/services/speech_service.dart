@@ -3,9 +3,20 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../utils/platform_utils.dart';
+import '../core/config/stt_preferences.dart';
 
 final speechServiceProvider = Provider<SpeechService>((ref) {
   final service = SpeechService();
+  // Initialize with current preferences
+  final currentPrefs = ref.read(sttPreferencesProvider);
+  service.setPauseDuration(currentPrefs.pauseDuration);
+  // Watch STT preferences and update pause duration when they change
+  ref.listen<SttPreferences>(sttPreferencesProvider, (previous, next) {
+    if (previous?.pauseDuration != next.pauseDuration) {
+      debugPrint('SpeechService: Pause duration changed from ${previous?.pauseDuration.inSeconds}s to ${next.pauseDuration.inSeconds}s');
+      service.setPauseDuration(next.pauseDuration);
+    }
+  });
   return service;
 });
 
@@ -31,6 +42,12 @@ class SpeechService {
   /// Set the pause duration for STT pause detection
   void setPauseDuration(Duration duration) {
     _pauseDuration = duration;
+    debugPrint('SpeechService: Pause duration set to ${duration.inSeconds}s');
+    // If currently listening and have pending text, reset the pause timer with new duration
+    if (_isListening && _hasPendingText && _currentText.trim().isNotEmpty && !_pauseAlreadyTriggered) {
+      debugPrint('SpeechService: Resetting pause timer with new duration while listening');
+      _resetPauseTimer();
+    }
   }
 
   /// Initialize speech recognition
@@ -150,6 +167,8 @@ class SpeechService {
 
     debugPrint('SpeechService: Starting speech.listen()');
     
+    debugPrint('SpeechService: Using pauseDuration=${_pauseDuration.inMilliseconds}ms');
+    
     final result = await _speech.listen(
       onResult: (result) {
         _currentText = result.recognizedWords;
@@ -158,13 +177,14 @@ class SpeechService {
         debugPrint('SpeechService: onResult - text="$_currentText", final=${result.finalResult}');
         
         if (result.finalResult) {
-          // Final result received - trigger pause detection after a short delay
-          // This is a backup in case onStatus doesn't fire reliably
+          // Final result received - Android's speech recognition triggered its own pause detection
+          // We still respect our pause duration by waiting before triggering
           debugPrint('SpeechService: Final result received, scheduling pause detection');
           _pauseTimer?.cancel();
           if (_hasPendingText && _currentText.trim().isNotEmpty && !_pauseAlreadyTriggered) {
             final currentSessionId = _sessionId;
-            _pauseTimer = Timer(const Duration(milliseconds: 500), () {
+            // Use a short delay - the actual pause already happened via Android
+            _pauseTimer = Timer(const Duration(milliseconds: 200), () {
               // Verify session is still valid
               if (_sessionId != currentSessionId || !_sessionActive) {
                 debugPrint('SpeechService: Session changed, skipping finalResult timer');
@@ -180,6 +200,7 @@ class SpeechService {
           }
         } else {
           // Partial result, reset pause timer on each update
+          // This timer fires if user stops speaking for pauseDuration
           _resetPauseTimer();
         }
         
@@ -190,6 +211,8 @@ class SpeechService {
         listenMode: stt.ListenMode.dictation,
         cancelOnError: false,
         partialResults: true,
+        // Note: Android's speech recognition has its own pause detection
+        // Our custom pause timer (_resetPauseTimer) handles the configurable delay
       ),
     );
 

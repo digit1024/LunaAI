@@ -8,6 +8,7 @@ import '../../core/config/theme_config.dart';
 import '../../core/config/tts_preferences.dart';
 import '../../core/config/stt_preferences.dart';
 import '../../services/tts_service.dart';
+import '../widgets/language_favorites_dialog.dart';
 
 class SetupScreen extends ConsumerStatefulWidget {
   const SetupScreen({super.key});
@@ -323,6 +324,31 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
                               icon: const Icon(Icons.refresh, size: 18),
                               label: const Text('Load Languages'),
                             ),
+                          const SizedBox(height: 16),
+                          // Favorite Languages - Button to open dialog
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: _availableLanguages != null && _availableLanguages!.isNotEmpty
+                                      ? () => LanguageFavoritesDialog.show(
+                                            context,
+                                            _availableLanguages!,
+                                          )
+                                      : null,
+                                  icon: const Icon(Icons.star),
+                                  label: Text(
+                                    'Favorite Languages (${sttPrefs.favoriteLanguages.length})',
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Languages shown in quick menu',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
                         ],
                       ),
                     ),
@@ -336,16 +362,16 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'Wait time before sending speech (${sttPrefs.pauseDuration.inSeconds}s)',
+                    'Wait time before sending speech (${(sttPrefs.pauseDuration.inMilliseconds / 1000).toStringAsFixed(1)}s)',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                   const SizedBox(height: 8),
                   Slider(
-                    value: sttPrefs.pauseDuration.inSeconds.toDouble(),
+                    value: sttPrefs.pauseDuration.inMilliseconds / 1000,
                     min: 0.5,
                     max: 5.0,
                     divisions: 9,
-                    label: '${sttPrefs.pauseDuration.inSeconds}s',
+                    label: '${(sttPrefs.pauseDuration.inMilliseconds / 1000).toStringAsFixed(1)}s',
                     onChanged: (value) {
                       sttPrefsNotifier.setPauseDuration(
                         Duration(milliseconds: (value * 1000).round()),

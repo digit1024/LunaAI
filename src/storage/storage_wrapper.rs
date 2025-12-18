@@ -78,6 +78,7 @@ impl Storage {
                     tool_result_json: msg.tool_result_json.clone(),
                     reasoning_content: msg.reasoning_content.clone(),
                     is_summary: msg.is_summary,
+                    is_summarized: msg.is_summarized,
                     summarized_count: msg.summarized_count,
                 })
                 .collect();
@@ -142,6 +143,7 @@ impl Storage {
                     tool_result_json: msg.tool_result_json.clone(),
                     reasoning_content: msg.reasoning_content.clone(),
                     is_summary: msg.is_summary,
+                    is_summarized: msg.is_summarized,
                     summarized_count: msg.summarized_count,
                 })
                 .collect();

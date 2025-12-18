@@ -36,6 +36,8 @@ pub struct Message {
     pub reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
     #[serde(default)]
     pub is_summary: bool, // True if this message is a summary of previous messages
+    #[serde(default)]
+    pub is_summarized: bool, // True if this message has been summarized (should be excluded from LLM payload)
     pub summarized_message_ids: Option<Vec<i64>>, // IDs of messages that were summarized
     pub summarized_count: Option<usize>, // Count of messages summarized
 }
@@ -168,6 +170,10 @@ impl SqliteStorage {
         // Migrate existing messages: add summarization columns if they don't exist
         let _ = self.conn.execute(
             "ALTER TABLE messages ADD COLUMN is_summary INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE messages ADD COLUMN is_summarized INTEGER NOT NULL DEFAULT 0",
             [],
         );
         let _ = self.conn.execute(
@@ -314,8 +320,8 @@ impl SqliteStorage {
         };
 
         self.conn.execute(
-            "INSERT INTO messages (conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json, reasoning_content, is_summary, summarized_message_ids, summarized_count) 
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            "INSERT INTO messages (conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json, reasoning_content, is_summary, is_summarized, summarized_message_ids, summarized_count) 
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 conversation_id,
                 role,
@@ -330,6 +336,7 @@ impl SqliteStorage {
                 tool_result_json,
                 metadata.reasoning_content,
                 0, // is_summary = false for regular messages
+                0, // is_summarized = false for regular messages
                 None::<String>, // summarized_message_ids
                 None::<i64>, // summarized_count
             ],
@@ -341,7 +348,7 @@ impl SqliteStorage {
     /// Load all messages for a conversation
     pub fn load_conversation(&self, conversation_id: &str) -> SqliteResult<Vec<Message>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json, reasoning_content, is_summary, summarized_message_ids, summarized_count
+            "SELECT id, conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json, reasoning_content, is_summary, is_summarized, summarized_message_ids, summarized_count
              FROM messages 
              WHERE conversation_id = ?1 
              ORDER BY created_at ASC"
@@ -378,11 +385,12 @@ impl SqliteStorage {
             
             // Read summarization fields
             let is_summary: i64 = row.get(13).unwrap_or(0);
-            let summarized_message_ids_json: Option<String> = row.get(14)?;
+            let is_summarized: i64 = row.get(14).unwrap_or(0);
+            let summarized_message_ids_json: Option<String> = row.get(15)?;
             let summarized_message_ids = summarized_message_ids_json
                 .as_deref()
                 .and_then(|json| serde_json::from_str::<Vec<i64>>(json).ok());
-            let summarized_count: Option<i64> = row.get(15)?;
+            let summarized_count: Option<i64> = row.get(16)?;
             let summarized_count_usize = summarized_count.map(|c| c as usize);
 
             Ok(Message {
@@ -400,6 +408,7 @@ impl SqliteStorage {
                 tool_result_json,
                 reasoning_content,
                 is_summary: is_summary != 0,
+                is_summarized: is_summarized != 0,
                 summarized_message_ids,
                 summarized_count: summarized_count_usize,
             })
@@ -512,7 +521,7 @@ impl SqliteStorage {
         Ok(changes)
     }
 
-    /// Perform summarization: delete old messages and insert summary
+    /// Perform summarization: mark old messages as summarized and insert summary
     pub fn perform_summarization(
         &self,
         conversation_id: &str,
@@ -521,7 +530,7 @@ impl SqliteStorage {
     ) -> SqliteResult<()> {
         let transaction = self.conn.unchecked_transaction()?;
 
-        // Collect IDs of messages to be deleted
+        // Collect IDs of messages to be marked as summarized
         let message_ids: Vec<i64> = messages_to_summarize.iter().map(|m| m.id).collect();
         let summarized_count = message_ids.len();
 
@@ -536,27 +545,28 @@ impl SqliteStorage {
             .min()
             .unwrap_or_else(|| chrono::Utc::now().timestamp());
 
-        // Delete the old messages
+        // Mark messages as summarized instead of deleting them
         let placeholders: String = message_ids.iter()
             .map(|_| "?")
             .collect::<Vec<_>>()
             .join(",");
-        let delete_sql = format!("DELETE FROM messages WHERE id IN ({})", placeholders);
-        transaction.execute(&delete_sql, rusqlite::params_from_iter(message_ids.iter()))?;
+        let update_sql = format!("UPDATE messages SET is_summarized = 1 WHERE id IN ({})", placeholders);
+        transaction.execute(&update_sql, rusqlite::params_from_iter(message_ids.iter()))?;
 
         // Insert the summary message
         let summarized_ids_json = serde_json::to_string(&message_ids)
             .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
 
         transaction.execute(
-            "INSERT INTO messages (conversation_id, role, content, created_at, is_summary, summarized_message_ids, summarized_count) 
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO messages (conversation_id, role, content, created_at, is_summary, is_summarized, summarized_message_ids, summarized_count) 
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 conversation_id,
                 "system",
                 summary_content,
                 earliest_timestamp,
                 1, // is_summary = true
+                0, // is_summarized = false (summary messages are not themselves summarized)
                 summarized_ids_json,
                 summarized_count as i64,
             ],

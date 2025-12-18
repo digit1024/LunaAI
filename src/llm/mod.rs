@@ -171,6 +171,7 @@ pub trait LlmClient: Send + Sync {
 }
 
 pub mod anthropic;
+pub mod context_manager;
 pub mod file_utils;
 pub mod gemini;
 pub mod ollama;
