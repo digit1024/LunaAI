@@ -202,7 +202,7 @@ pub struct CosmicLlmApp {
     pub agent_mode_active: bool,
     // Dialog state
     pub dialog: Option<DialogPage>,
-    pub dialog_text_input_id: widget::Id,
+    pub dialog_text_content: Option<text_editor::Content>,
     // MCP tools cache
     pub available_mcp_tools: Vec<crate::llm::ToolDefinition>,
     // Tool enable/disable state (tool_name -> enabled)
@@ -376,7 +376,7 @@ impl CosmicLlmApp {
             },
             agent_mode_active: true,
             dialog: None,
-            dialog_text_input_id: widget::Id::unique(),
+            dialog_text_content: None,
             available_mcp_tools: Vec::new(),
             tool_states: std::collections::HashMap::new(),
             pending_tool_calls_for_history: Vec::new(),
@@ -2201,12 +2201,10 @@ impl Application for CosmicLlmApp {
                     Err(e) => {
                         eprintln!("Failed to open MCP config file in cosmic-edit: {}", e);
                         // Show error dialog to user
-                        self.dialog = Some(DialogPage::MessageText(
-                            text_editor::Content::with_text(&format!(
-                                "Failed to open MCP config file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
-                                path_str, e
-                            )),
-                        ));
+                        self.dialog = Some(DialogPage::message_text(format!(
+                            "Failed to open MCP config file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
+                            path_str, e
+                        )));
                     }
                 }
             }
@@ -2224,12 +2222,10 @@ impl Application for CosmicLlmApp {
                     }
                     Err(e) => {
                         eprintln!("Failed to open config file in cosmic-edit: {}", e);
-                        self.dialog = Some(DialogPage::MessageText(
-                            text_editor::Content::with_text(&format!(
-                                "Failed to open config file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
-                                path_str, e
-                            )),
-                        ));
+                        self.dialog = Some(DialogPage::message_text(format!(
+                            "Failed to open config file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
+                            path_str, e
+                        )));
                     }
                 }
             }
@@ -2249,21 +2245,17 @@ impl Application for CosmicLlmApp {
                             }
                             Err(e) => {
                                 eprintln!("Failed to open prompt file in cosmic-edit: {}", e);
-                                self.dialog = Some(DialogPage::MessageText(
-                                    text_editor::Content::with_text(&format!(
-                                        "Failed to open prompt file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
-                                        path_str, e
-                                    )),
-                                ));
+                                self.dialog = Some(DialogPage::message_text(format!(
+                                    "Failed to open prompt file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
+                                    path_str, e
+                                )));
                             }
                         }
                     } else {
-                        self.dialog = Some(DialogPage::MessageText(
-                            text_editor::Content::with_text(&format!(
-                                "Profile '{}' does not have a prompt file configured.",
-                                profile_name
-                            )),
-                        ));
+                        self.dialog = Some(DialogPage::message_text(format!(
+                            "Profile '{}' does not have a prompt file configured.",
+                            profile_name
+                        )));
                     }
                 }
             }
@@ -2608,12 +2600,10 @@ impl Application for CosmicLlmApp {
                         // Save to file
                         if let Err(e) = self.config.save() {
                             eprintln!("Failed to save settings: {}", e);
-                            self.dialog = Some(DialogPage::MessageText(
-                                text_editor::Content::with_text(&format!(
-                                    "Failed to save settings:\n{}",
-                                    e
-                                )),
-                            ));
+                            self.dialog = Some(DialogPage::message_text(format!(
+                                "Failed to save settings:\n{}",
+                                e
+                            )));
                         } else {
                             self.settings_page.has_changes = false;
                             self.settings_changed = false;
@@ -2644,28 +2634,52 @@ impl Application for CosmicLlmApp {
             }
             Message::DialogAction(action) => {
                 match action {
+                    DialogAction::Open(page) => {
+                        // Initialize text content when opening MessageText dialog
+                        match &page {
+                            DialogPage::MessageText(text) => {
+                                self.dialog_text_content = Some(text_editor::Content::with_text(text));
+                            }
+                        }
+                        self.dialog = Some(page);
+                    }
+                    DialogAction::Update(page) => {
+                        // Update text content when updating MessageText dialog
+                        match &page {
+                            DialogPage::MessageText(text) => {
+                                self.dialog_text_content = Some(text_editor::Content::with_text(text));
+                            }
+                        }
+                        self.dialog = Some(page);
+                    }
                     DialogAction::Close => {
                         self.dialog = None;
+                        self.dialog_text_content = None;
+                    }
+                    DialogAction::Complete => {
+                        // For MessageText dialog, Complete just closes it
+                        self.dialog = None;
+                        self.dialog_text_content = None;
                     }
                     DialogAction::CopyText => {
                         // Copy the current dialog text to clipboard
-                        if let Some(DialogPage::MessageText(content)) = &self.dialog {
-                            let _ = cli_clipboard::set_contents(content.text());
+                        if let Some(DialogPage::MessageText(text)) = &self.dialog {
+                            let _ = cli_clipboard::set_contents(text.clone());
                         }
                         // Keep dialog open for multiple copies
                     }
                     DialogAction::TextEditorAction(action) => {
                         // Handle text editor actions to enable selection
-                        if let Some(DialogPage::MessageText(content)) = &mut self.dialog {
+                        if let Some(content) = &mut self.dialog_text_content {
                             content.perform(action);
                         }
                     }
                 }
             }
             Message::ShowMessageDialog(content) => {
-                self.dialog = Some(DialogPage::MessageText(text_editor::Content::with_text(
-                    &content,
-                )));
+                let text = content.clone();
+                self.dialog_text_content = Some(text_editor::Content::with_text(&text));
+                self.dialog = Some(DialogPage::message_text(text));
             }
             Message::MCPToolsUpdated(tools) => {
                 self.available_mcp_tools = tools;
@@ -2777,7 +2791,7 @@ impl Application for CosmicLlmApp {
 
     fn view(&self) -> Element<Self::Message> {
         // Main layout with side panel and content area
-        let mut content = cosmic::widget::row::with_capacity(1).push(
+        cosmic::widget::row::with_capacity(1).push(
             // Main content area
             match self.current_page {
                 NavigationPage::Chat => chat::chat_view(self),
@@ -2788,14 +2802,15 @@ impl Application for CosmicLlmApp {
                     .view(&self.config)
                     .map(Message::SettingsMessage),
             },
-        );
+        )
+        .into()
+    }
 
-        // Add dialog overlay if dialog is open
-        if let Some(dialog_page) = &self.dialog {
-            content = content.push(dialog_page.view(&self.dialog_text_input_id));
-        }
-
-        content.into()
+    fn dialog(&self) -> Option<Element<Self::Message>> {
+        let dialog_page = self.dialog.as_ref()?;
+        // Content should always be set when MessageText dialog is open
+        let content = self.dialog_text_content.as_ref()?;
+        Some(dialog_page.view(content).into())
     }
 
     fn header_start(&self) -> Vec<Element<Self::Message>> {

@@ -32,6 +32,7 @@ class ChatScreen extends ConsumerStatefulWidget {
 class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
+  final _focusNode = FocusNode();
   late final AudioPlayer _typingPlayer;
   late final AudioPlayer _donePlayer;
   late final AudioPlayer _sentPlayer;
@@ -137,6 +138,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _speechService?.dispose();
     _controller.dispose();
     _scrollController.dispose();
+    _focusNode.dispose();
     super.dispose();
   }
 
@@ -596,10 +598,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
         _Composer(
           controller: _controller,
+          focusNode: _focusNode,
           attachedFiles: state.attachedFiles,
           onSend: () {
             final text = _controller.text;
             if (text.trim().isNotEmpty || state.attachedFiles.isNotEmpty) {
+              // Hide keyboard immediately
+              _focusNode.unfocus();
               // Play sound immediately (preloaded + LOW_LATENCY mode = instant)
               _sentPlayer.stop();
               unawaited(_sentPlayer.play(AssetSource('audio/sent.mp3')));
@@ -968,6 +973,7 @@ class _EmptyChat extends StatelessWidget {
 class _Composer extends ConsumerStatefulWidget {
   const _Composer({
     required this.controller,
+    required this.focusNode,
     required this.onSend,
     required this.onVoiceMode,
     required this.attachedFiles,
@@ -976,6 +982,7 @@ class _Composer extends ConsumerStatefulWidget {
   });
 
   final TextEditingController controller;
+  final FocusNode focusNode;
   final VoidCallback onSend;
   final VoidCallback onVoiceMode;
   final List<FileAttachment> attachedFiles;
@@ -1050,6 +1057,7 @@ class _ComposerState extends ConsumerState<_Composer> {
           // Input row - full width
           TextField(
             controller: widget.controller,
+            focusNode: widget.focusNode,
             enabled: !isStreaming,
             minLines: 1,
             maxLines: 5,
