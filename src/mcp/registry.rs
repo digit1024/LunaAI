@@ -96,7 +96,11 @@ impl MCPServerRegistry {
     }
 
     pub fn apply_profile_tool_defaults(&mut self, allowed_servers: &[String]) {
+        // If allowed_servers is empty, enable all tools (empty = no restrictions = all enabled)
         if allowed_servers.is_empty() {
+            for tool in &self.all_tools {
+                self.enabled_tools.insert(tool.name.clone(), true);
+            }
             return;
         }
 
@@ -106,10 +110,15 @@ impl MCPServerRegistry {
             .filter(|name| !name.is_empty())
             .collect();
 
+        // If after filtering we have an empty set, enable all tools
         if allowed.is_empty() {
+            for tool in &self.all_tools {
+                self.enabled_tools.insert(tool.name.clone(), true);
+            }
             return;
         }
 
+        // Apply restrictions: only enable tools from allowed servers
         for (tool_name, server_name) in &self.tool_index {
             let enabled = allowed.contains(&server_name.to_lowercase());
             self.enabled_tools.insert(tool_name.clone(), enabled);

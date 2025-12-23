@@ -907,7 +907,8 @@ impl Application for CosmicLlmApp {
             let mut registry = mcp_registry_clone.write().await;
             if let Err(e) = registry.initialize_from_config(&mcp_config).await {
                 eprintln!("Failed to initialize MCP registry: {}", e);
-            } else if !initial_profile_mcp_servers.is_empty() {
+            } else {
+                // Always apply profile defaults, even if empty (empty = enable all)
                 registry.apply_profile_tool_defaults(&initial_profile_mcp_servers);
             }
         });
@@ -3128,10 +3129,8 @@ impl CosmicLlmApp {
 
     fn profile_tool_defaults_task(&self) -> Option<app::Task<Message>> {
         let profile = self.config.get_default_profile()?;
-        if profile.enabled_mcp.is_empty() {
-            return None;
-        }
-
+        // Always apply profile defaults, even if enabled_mcp is empty
+        // (empty list means enable all tools)
         let allowed_servers = profile.enabled_mcp.clone();
         let registry = self.mcp_registry.clone();
 
