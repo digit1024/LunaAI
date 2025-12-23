@@ -34,7 +34,7 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
         .into();
     }
 
-    let mut column = cosmic::widget::column::with_capacity(app.messages.len()).spacing(12);
+    let mut column = cosmic::widget::column::with_capacity(app.messages.len()).spacing(0);
 
     // Add regular chat messages
     for (i, msg) in app.messages.iter().enumerate() {
@@ -128,12 +128,35 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
             }
         }
 
+        // Determine adjacent messages for styling
+        let prev_msg = if i > 0 { app.messages.get(i - 1) } else { None };
+        let next_msg = app.messages.get(i + 1);
+        
+        // Calculate border radius and margins for AI messages
+        let (top_radius, bottom_left_radius, bottom_right_radius, top_margin, bottom_margin) = if msg.is_user {
+            // User messages: bottom-right radius is 0
+            (20.0, 20.0, 0.0, 12.0, 12.0) // top-left, top-right, bottom-left rounded; bottom-right = 0
+        } else {
+            // AI messages: conditional radius and margins
+            let prev_is_user = prev_msg.map(|m| m.is_user).unwrap_or(false);
+            let next_is_user = next_msg.map(|m| m.is_user).unwrap_or(true); // true if no next message
+            let has_next = next_msg.is_some();
+            
+            let top_r = if prev_is_user { 20.0 } else { 0.0 };
+            let bottom_left_r = 0.0; // Always 0 for AI messages
+            let bottom_right_r = if !has_next || next_is_user { 20.0 } else { 0.0 };
+            let top_m = if prev_is_user { 12.0 } else { 0.0 };
+            let bottom_m = if !has_next || next_is_user { 12.0 } else { 0.0 };
+            
+            (top_r, bottom_left_r, bottom_right_r, top_m, bottom_m)
+        };
+
         let message_widget = cosmic::widget::container({
             let content_widget: Element<Message> = if msg.is_user {
                 widget::container(
                     cosmic::widget::text(&msg.content)
                         .size(14)
-                        .class(cosmic::style::Text::Color(cosmic::iced::Color::BLACK)),
+                        .class(cosmic::style::Text::Color(cosmic::theme::active().cosmic().on_bg_color().into())),
                 )
                 .width(Length::Fill)
                 .into()
@@ -237,24 +260,77 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
             )
         })
         .padding(Padding::from([12, 16]))
-        .class(if msg.is_user {
-            cosmic::style::Container::Card
-        } else if msg.is_error {
-            cosmic::style::Container::Card
-        } else {
-            cosmic::style::Container::Card
+        .style(move |theme| {
+            if msg.is_user {
+                // User message: custom background and border radius
+                cosmic::widget::container::Style {
+                    background: Some(cosmic::iced::Background::Color(
+                        theme.cosmic().primary.component.hover.into()
+                    )),
+                    border: cosmic::iced::Border {
+                        width: 0.0,
+                        color: cosmic::iced::Color::TRANSPARENT,
+                        radius: cosmic::iced::border::Radius {
+                            top_left: 20.0,
+                            top_right: 20.0,
+                            bottom_left: 20.0,
+                            bottom_right: 0.0, // Not rounded on right bottom
+                        },
+                    },
+                    ..Default::default()
+                }
+            } else {
+                // AI message: conditional border radius with background
+                cosmic::widget::container::Style {
+                    background: Some(cosmic::iced::Background::Color(
+                        theme.cosmic().background.component.hover.into()
+                    )),
+                    border: cosmic::iced::Border {
+                        width: 0.0,
+                        color: cosmic::iced::Color::TRANSPARENT,
+                        radius: cosmic::iced::border::Radius {
+                            top_left: top_radius,
+                            top_right: top_radius,
+                            bottom_left: bottom_left_radius,
+                            bottom_right: bottom_right_radius,
+                        },
+                    },
+                    ..Default::default()
+                }
+            }
         })
         .width(Length::FillPortion(7)); // 70% width
+
+        // Wrap message widget with margins
+        let message_with_margins = if msg.is_user {
+            cosmic::widget::container(message_widget)
+                .width(Length::FillPortion(7)) // Same width as tool results
+                .padding(cosmic::iced::Padding {
+                    top: 12.0,
+                    bottom: 12.0,
+                    left: 0.0,
+                    right: 0.0,
+                })
+        } else {
+            cosmic::widget::container(message_widget)
+                .width(Length::FillPortion(7)) // Same width as tool results
+                .padding(cosmic::iced::Padding {
+                    top: top_margin,
+                    bottom: bottom_margin,
+                    left: 0.0,
+                    right: 0.0,
+                })
+        };
 
         let message_row = if msg.is_user {
             // User messages: right-aligned
             cosmic::widget::row::with_capacity(2)
                 .push(cosmic::widget::Space::with_width(Length::FillPortion(3)))
-                .push(message_widget)
+                .push(message_with_margins)
         } else {
             // AI messages: left-aligned
             cosmic::widget::row::with_capacity(2)
-                .push(message_widget)
+                .push(message_with_margins)
                 .push(cosmic::widget::Space::with_width(Length::FillPortion(3)))
         };
         // Push the message first
@@ -282,11 +358,32 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                     is_expanded,
                 }));
                 let widget_element = widget
-                    .view()
+                    .content()
                     .map(move |msg| Message::ToolCallWidgetMessage(idx, msg));
+                // Tool results: same width as messages, left-aligned, no margins, radius 0
+                let tool_widget = cosmic::widget::container(widget_element)
+                    .width(Length::FillPortion(7))
+                    .style(move |theme| {
+                        cosmic::widget::container::Style {
+                            background: Some(cosmic::iced::Background::Color(
+                                theme.cosmic().background.component.hover.into()
+                            )),
+                            border: cosmic::iced::Border {
+                                width: 0.0,
+                                color: cosmic::iced::Color::TRANSPARENT,
+                                radius: cosmic::iced::border::Radius {
+                                    top_left: 0.0,
+                                    top_right: 0.0,
+                                    bottom_left: 0.0,
+                                    bottom_right: 0.0,
+                                },
+                            },
+                            ..Default::default()
+                        }
+                    });
                 let tool_call_row = cosmic::widget::row::with_capacity(2)
-                    .push(widget_element)
-                    .push(cosmic::widget::Space::with_width(Length::Fill));
+                    .push(tool_widget)
+                    .push(cosmic::widget::Space::with_width(Length::FillPortion(3)));
                 column = column.push(tool_call_row);
             }
         }
@@ -315,11 +412,32 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                         is_expanded,
                     }));
                     let widget_element = widget
-                        .view()
+                        .content()
                         .map(move |msg| Message::ToolCallWidgetMessage(idx, msg));
+                    // Tool results: same width as messages, left-aligned, no margins, radius 0
+                    let tool_widget = cosmic::widget::container(widget_element)
+                        .width(Length::FillPortion(7))
+                        .style(move |theme| {
+                            cosmic::widget::container::Style {
+                                background: Some(cosmic::iced::Background::Color(
+                                    theme.cosmic().background.component.hover.into()
+                                )),
+                                border: cosmic::iced::Border {
+                                    width: 0.0,
+                                    color: cosmic::iced::Color::TRANSPARENT,
+                                    radius: cosmic::iced::border::Radius {
+                                        top_left: 0.0,
+                                        top_right: 0.0,
+                                        bottom_left: 0.0,
+                                        bottom_right: 0.0,
+                                    },
+                                },
+                                ..Default::default()
+                            }
+                        });
                     let tool_call_row = cosmic::widget::row::with_capacity(2)
-                        .push(widget_element)
-                        .push(cosmic::widget::Space::with_width(Length::Fill));
+                        .push(tool_widget)
+                        .push(cosmic::widget::Space::with_width(Length::FillPortion(3)));
                     column = column.push(tool_call_row);
                 }
                 // If there are no active tool calls yet, but we're streaming, show typing indicator

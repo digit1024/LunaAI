@@ -36,7 +36,7 @@ impl ToolCallWidget {
         }
     }
 
-    pub fn view(&self) -> Element<Message> {
+    pub fn content(&self) -> Element<Message> {
         let (status_icon, status_text, status_color) = match self.status {
             ToolCallStatus::Started => (
                 "...",
@@ -126,9 +126,14 @@ impl ToolCallWidget {
             }
         }
 
-        container(content)
-            .width(Length::Fill)
+        content
             .padding(Padding::from([10, 15]))
+            .into()
+    }
+
+    pub fn view(&self) -> Element<Message> {
+        container(self.content())
+            .width(Length::Fill)
             .class(cosmic::theme::Container::Card)
             .into()
     }
