@@ -7,6 +7,33 @@ use cosmic::{
 };
 
 pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
+    // Show empty state placeholder when there are no messages and not streaming
+    if app.messages.is_empty() && !app.is_streaming {
+        return cosmic::widget::container(
+            cosmic::widget::column()
+                .spacing(8)
+                .push(
+                    cosmic::widget::text("🪄")
+                        .size(48)
+                )
+                .push(
+                    cosmic::widget::text("Ready to help")
+                        .size(18)
+                )
+                .push(
+                    cosmic::widget::text("Start typing below to begin the agentic loop.")
+                        .size(14)
+                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6)))
+                )
+                .align_x(cosmic::iced::Alignment::Center)
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(cosmic::iced::Alignment::Center)
+        .align_y(cosmic::iced::Alignment::Center)
+        .into();
+    }
+
     let mut column = cosmic::widget::column::with_capacity(app.messages.len()).spacing(12);
 
     // Add regular chat messages

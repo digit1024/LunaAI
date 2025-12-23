@@ -978,17 +978,6 @@ impl Application for CosmicLlmApp {
         }
         println!("✅ Finished checking for conversations with 'Generating title...'");
 
-        // Add welcome message
-        app.messages.push(ChatMessage {
-            content: "Welcome to Cosmic AI".to_string(),
-            is_user: false,
-            is_error: false,
-            reasoning_content: None,
-            is_summary: false,
-            is_summarized: false,
-            summarized_count: None,
-        });
-
         // Load recent conversations and update nav model
         app.load_recent_conversations();
         app.update_nav_model();
