@@ -40,6 +40,7 @@ flutter:
     - assets/audio/sent.mp3
     - assets/audio/tool.mp3
     - assets/audio/buble.mp3
+    - assets/luna_avatar.png
 
 flutter_launcher_icons:
   android: true

@@ -3,8 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../application/app_controller.dart';
 import '../../application/app_state.dart';
+import '../../core/config/server_config.dart';
+import '../../core/config/tts_preferences.dart';
+import '../../core/config/stt_preferences.dart';
+import '../../services/tts_service.dart';
 import '../../data/ws/ws_dto.dart';
-import '../widgets/bottom_nav.dart';
 import '../widgets/conversation_card.dart';
 
 class ConversationsScreen extends ConsumerStatefulWidget {
@@ -68,6 +71,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
   Widget build(BuildContext context) {
     final state = ref.watch(appControllerProvider);
     final controller = ref.read(appControllerProvider.notifier);
+    final config = ref.watch(serverConfigProvider);
 
     // Update offset and hasMore when conversations change
     final currentCount = state.conversations.length;
@@ -103,87 +107,99 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
     // Update previous count for next comparison
     _previousConversationCount = currentCount;
 
-    return Column(
-      children: [
-        _Header(
-          status: state.connection,
-          onRefresh: () {
-            setState(() {
-              _currentOffset = 0;
-              _hasMore = true;
-              _isLoadingMore = false;
-              _previousConversationCount = 0;
-            });
-            controller.refreshConversations();
-          },
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: TextField(
-            decoration: const InputDecoration(
-              prefixIcon: Icon(Icons.search),
-              hintText: 'Search history…',
-            ),
-            onSubmitted: controller.search,
+    return Scaffold(
+      drawer: _ChatDrawer(
+        profile: state.currentProfile.isNotEmpty ? state.currentProfile : config.profile,
+        availableProfiles: state.availableProfiles,
+        onProfileChanged: (newProfile) {
+          controller.changeProfile(newProfile);
+        },
+        onStartNew: controller.startNewConversation,
+        onHistory: controller.openConversations,
+        onSetup: controller.openSetup,
+      ),
+      body: Column(
+        children: [
+          _Header(
+            status: state.connection,
+            onRefresh: () {
+              setState(() {
+                _currentOffset = 0;
+                _hasMore = true;
+                _isLoadingMore = false;
+                _previousConversationCount = 0;
+              });
+              controller.refreshConversations();
+            },
           ),
-        ),
-        Expanded(
-          child: _items(state).isEmpty
-              ? const _EmptyPlaceholder()
-              : ListView.separated(
-                  controller: _scrollController,
-                  itemCount: _items(state).length + (_hasMore && !state.searchQuery.isNotEmpty ? 1 : 0),
-                  separatorBuilder: (_, __) => const Divider(height: 0),
-                  itemBuilder: (context, index) {
-                    if (index >= _items(state).length) {
-                      return const Center(
-                        child: Padding(
-                          padding: EdgeInsets.all(16.0),
-                          child: CircularProgressIndicator(),
-                        ),
-                      );
-                    }
-                    final entry = _items(state)[index];
-                    return entry.map(
-                      summary: (summary) {
-                        final selected =
-                            state.activeConversation?.id == summary.id;
-                        return Dismissible(
-                          key: Key(summary.id),
-                          direction: DismissDirection.endToStart,
-                          background: Container(
-                            color: Colors.red,
-                            alignment: Alignment.centerRight,
-                            padding: const EdgeInsets.only(right: 20),
-                            child: const Icon(Icons.delete, color: Colors.white),
-                          ),
-                          onDismissed: (direction) {
-                            controller.deleteConversation(summary.id);
-                          },
-                          child: ConversationCard(
-                            summary: summary,
-                            isSelected: selected,
-                            onTap: () => controller.selectConversation(summary.id),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: TextField(
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.search),
+                hintText: 'Search history…',
+              ),
+              onSubmitted: controller.search,
+            ),
+          ),
+          Expanded(
+            child: _items(state).isEmpty
+                ? const _EmptyPlaceholder()
+                : ListView.separated(
+                    controller: _scrollController,
+                    itemCount: _items(state).length + (_hasMore && !state.searchQuery.isNotEmpty ? 1 : 0),
+                    separatorBuilder: (_, __) => const Divider(height: 0),
+                    itemBuilder: (context, index) {
+                      if (index >= _items(state).length) {
+                        return const Center(
+                          child: Padding(
+                            padding: EdgeInsets.all(16.0),
+                            child: CircularProgressIndicator(),
                           ),
                         );
-                      },
-                      searchResult: (result) => ListTile(
-                        leading: const Icon(Icons.history),
-                        title: Text(result.snippet),
-                        subtitle: Text('Conversation ${result.conversationId}'),
-                        onTap: () =>
-                            controller.selectConversation(result.conversationId),
-                      ),
-                    );
-                  },
-                ),
-        ),
-        LunaBottomBar(
-          onConversations: controller.openConversations,
-          onStartNew: controller.startNewConversation,
-          onSettings: controller.openSettings,
-        ),
-      ],
+                      }
+                      final entry = _items(state)[index];
+                      return entry.map(
+                        summary: (summary) {
+                          final selected =
+                              state.activeConversation?.id == summary.id;
+                          return Dismissible(
+                            key: Key(summary.id),
+                            direction: DismissDirection.endToStart,
+                            background: Container(
+                              color: Colors.red,
+                              alignment: Alignment.centerRight,
+                              padding: const EdgeInsets.only(right: 20),
+                              child: const Icon(Icons.delete, color: Colors.white),
+                            ),
+                            onDismissed: (direction) {
+                              controller.deleteConversation(summary.id);
+                            },
+                            child: ConversationCard(
+                              summary: summary,
+                              isSelected: selected,
+                              onTap: () => controller.selectConversation(summary.id),
+                            ),
+                          );
+                        },
+                        searchResult: (result) => ListTile(
+                          leading: const Icon(Icons.history),
+                          title: Text(result.snippet),
+                          subtitle: Text('Conversation ${result.conversationId}'),
+                          onTap: () =>
+                              controller.selectConversation(result.conversationId),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => controller.startNewConversation(),
+        tooltip: 'New Chat',
+        child: const Icon(Icons.add),
+      ),
     );
   }
 }
@@ -206,6 +222,13 @@ class _Header extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(16, 24, 16, 12),
       child: Row(
         children: [
+          Builder(
+            builder: (context) => IconButton(
+              icon: const Icon(Icons.menu),
+              onPressed: () => Scaffold.of(context).openDrawer(),
+              tooltip: 'Menu',
+            ),
+          ),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -300,5 +323,250 @@ class _SearchItem extends _ConversationItem {
     required T Function(SearchResult result) searchResult,
   }) =>
       searchResult(result);
+}
+
+class _ChatDrawer extends ConsumerStatefulWidget {
+  const _ChatDrawer({
+    required this.profile,
+    required this.availableProfiles,
+    required this.onProfileChanged,
+    required this.onStartNew,
+    required this.onHistory,
+    required this.onSetup,
+  });
+
+  final String profile;
+  final List<String> availableProfiles;
+  final Function(String) onProfileChanged;
+  final VoidCallback onStartNew;
+  final VoidCallback onHistory;
+  final VoidCallback onSetup;
+
+  @override
+  ConsumerState<_ChatDrawer> createState() => _ChatDrawerState();
+}
+
+class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
+  List<dynamic>? _availableLanguages;
+  bool _loadingLanguages = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadLanguages();
+  }
+
+  Future<void> _loadLanguages() async {
+    setState(() {
+      _loadingLanguages = true;
+    });
+    try {
+      final ttsService = ref.read(ttsServiceProvider);
+      final languages = await ttsService.getLanguages();
+      if (mounted) {
+        setState(() {
+          _availableLanguages = languages;
+          _loadingLanguages = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _loadingLanguages = false;
+        });
+      }
+    }
+  }
+
+  String _getLanguageDisplayName(String languageCode) {
+    final parts = languageCode.split('-');
+    final lang = parts[0];
+    final country = parts.length > 1 ? parts[1] : null;
+
+    final languageNames = {
+      'en': 'English',
+      'es': 'Spanish',
+      'fr': 'French',
+      'de': 'German',
+      'it': 'Italian',
+      'pt': 'Portuguese',
+      'ru': 'Russian',
+      'ja': 'Japanese',
+      'ko': 'Korean',
+      'zh': 'Chinese',
+      'ar': 'Arabic',
+      'hi': 'Hindi',
+      'nl': 'Dutch',
+      'pl': 'Polish',
+      'tr': 'Turkish',
+      'sv': 'Swedish',
+      'da': 'Danish',
+      'fi': 'Finnish',
+      'no': 'Norwegian',
+      'cs': 'Czech',
+      'hu': 'Hungarian',
+      'ro': 'Romanian',
+      'el': 'Greek',
+      'he': 'Hebrew',
+      'th': 'Thai',
+      'vi': 'Vietnamese',
+    };
+
+    final langName = languageNames[lang] ?? lang.toUpperCase();
+    if (country != null) {
+      return '$langName ($country)';
+    }
+    return langName;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sttPrefs = ref.watch(sttPreferencesProvider);
+    final sttPrefsNotifier = ref.read(sttPreferencesProvider.notifier);
+    final ttsPrefs = ref.watch(ttsPreferencesProvider);
+    final ttsPrefsNotifier = ref.read(ttsPreferencesProvider.notifier);
+
+    return Drawer(
+      child: ListView(
+        padding: EdgeInsets.zero,
+        children: [
+          DrawerHeader(
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.primaryContainer,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                Text(
+                  'Luna AI',
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onPrimaryContainer,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // New Chat
+          ListTile(
+            leading: const Icon(Icons.add),
+            title: const Text('New Chat'),
+            onTap: () {
+              widget.onStartNew();
+              Navigator.pop(context);
+            },
+          ),
+          const Divider(),
+          // Profile Selection
+          if (widget.availableProfiles.isNotEmpty)
+            ExpansionTile(
+              leading: const Icon(Icons.person),
+              title: const Text('Profile'),
+              subtitle: Text(widget.profile),
+              children: widget.availableProfiles.map((profile) {
+                return ListTile(
+                  title: Text(profile),
+                  selected: profile == widget.profile,
+                  onTap: () {
+                    widget.onProfileChanged(profile);
+                    Navigator.pop(context);
+                  },
+                );
+              }).toList(),
+            ),
+          // TTS Toggle
+          SwitchListTile(
+            secondary: const Icon(Icons.volume_up),
+            title: const Text('Text-to-Speech'),
+            value: ttsPrefs.enabled,
+            onChanged: (value) {
+              ttsPrefsNotifier.setEnabled(value);
+            },
+          ),
+          // Voice Language
+          ListTile(
+            leading: const Icon(Icons.language),
+            title: const Text('Voice Language'),
+            subtitle: _loadingLanguages
+                ? const Text('Loading...')
+                : (_availableLanguages != null && _availableLanguages!.isNotEmpty)
+                    ? Builder(
+                        builder: (context) {
+                          // Filter to only show favorite languages
+                          final favoriteLanguages = sttPrefs.favoriteLanguages;
+                          final favoriteLangItems = _availableLanguages!
+                              .where((lang) {
+                                final langCode = lang.toString();
+                                return favoriteLanguages.contains(langCode);
+                              })
+                              .toList();
+                          
+                          // If current language is not in favorites, add it temporarily
+                          final currentLangCode = ttsPrefs.language;
+                          if (!favoriteLanguages.contains(currentLangCode)) {
+                            favoriteLangItems.insert(0, currentLangCode);
+                          }
+                          
+                          if (favoriteLangItems.isEmpty) {
+                            return TextButton.icon(
+                              onPressed: _loadLanguages,
+                              icon: const Icon(Icons.refresh, size: 18),
+                              label: const Text('Load Languages'),
+                            );
+                          }
+                          
+                          return DropdownButton<String>(
+                            value: ttsPrefs.language,
+                            isExpanded: true,
+                            underline: Container(),
+                            items: favoriteLangItems
+                                .map<DropdownMenuItem<String>>((lang) {
+                              final langCode = lang.toString();
+                              final displayName = _getLanguageDisplayName(langCode);
+                              return DropdownMenuItem<String>(
+                                value: langCode,
+                                child: Text(displayName),
+                              );
+                            }).toList(),
+                            onChanged: (value) {
+                              if (value != null) {
+                                // Set both TTS and STT language
+                                ttsPrefsNotifier.setLanguage(value);
+                                sttPrefsNotifier.setLanguage(value);
+                                ref.read(ttsServiceProvider).setLanguage(value);
+                              }
+                            },
+                          );
+                        },
+                      )
+                    : TextButton.icon(
+                        onPressed: _loadLanguages,
+                        icon: const Icon(Icons.refresh, size: 18),
+                        label: const Text('Load Languages'),
+                      ),
+          ),
+          const Divider(),
+          // History
+          ListTile(
+            leading: const Icon(Icons.history),
+            title: const Text('History'),
+            onTap: () {
+              widget.onHistory();
+              Navigator.pop(context);
+            },
+          ),
+          // Setup
+          ListTile(
+            leading: const Icon(Icons.settings),
+            title: const Text('Setup'),
+            onTap: () {
+              widget.onSetup();
+              Navigator.pop(context);
+            },
+          ),
+        ],
+      ),
+    );
+  }
 }
 

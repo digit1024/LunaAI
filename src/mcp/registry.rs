@@ -96,7 +96,11 @@ impl MCPServerRegistry {
     }
 
     pub fn apply_profile_tool_defaults(&mut self, allowed_servers: &[String]) {
+        // If allowed_servers is empty, enable all tools (empty = no restrictions = all enabled)
         if allowed_servers.is_empty() {
+            for tool in &self.all_tools {
+                self.enabled_tools.insert(tool.name.clone(), true);
+            }
             return;
         }
 
@@ -106,10 +110,15 @@ impl MCPServerRegistry {
             .filter(|name| !name.is_empty())
             .collect();
 
+        // If after filtering we have an empty set, enable all tools
         if allowed.is_empty() {
+            for tool in &self.all_tools {
+                self.enabled_tools.insert(tool.name.clone(), true);
+            }
             return;
         }
 
+        // Apply restrictions: only enable tools from allowed servers
         for (tool_name, server_name) in &self.tool_index {
             let enabled = allowed.contains(&server_name.to_lowercase());
             self.enabled_tools.insert(tool_name.clone(), enabled);
@@ -118,6 +127,27 @@ impl MCPServerRegistry {
 
     pub fn get_tool_states(&self) -> HashMap<String, bool> {
         self.enabled_tools.clone()
+    }
+
+    pub fn set_server_enabled(&mut self, server_name: &str, enabled: bool) {
+        for (tool_name, tool_server_name) in &self.tool_index {
+            if tool_server_name == server_name {
+                self.enabled_tools.insert(tool_name.clone(), enabled);
+            }
+        }
+    }
+
+    pub fn is_server_enabled(&self, server_name: &str) -> bool {
+        // A server is considered enabled if at least one of its tools is enabled
+        // This is a simple heuristic - we could also check if all tools are enabled
+        for (tool_name, tool_server_name) in &self.tool_index {
+            if tool_server_name == server_name {
+                if self.is_tool_enabled(tool_name) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     pub fn get_server_for_tool(&self, tool_name: &str) -> Result<&String> {

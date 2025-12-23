@@ -1,53 +1,60 @@
 use crate::ui::app::{CosmicLlmApp, Message};
 use cosmic::{
-    iced::{keyboard, Length},
-    widget::{self, text_editor},
-    Element,
+    Element, iced::{Background, Color, Length, keyboard}, widget::{self, text_editor}
 };
 
 pub fn input_area(app: &CosmicLlmApp) -> Element<Message> {
     cosmic::widget::container(
-        cosmic::widget::column::with_capacity(3)
+        cosmic::widget::column::with_capacity(2)
             .push(
-                // Attached files display
-                if !app.attached_files.is_empty() {
-                    cosmic::widget::column::with_children(
-                        app.attached_files
-                            .iter()
-                            .map(|file_path| {
-                                let file_name = std::path::Path::new(file_path)
-                                    .file_name()
-                                    .and_then(|name| name.to_str())
-                                    .unwrap_or(file_path);
+                // Text editor for message (multi-line) - full width on top
+                cosmic::widget::container(
+                    text_editor(&app.input_content)
+                    .class(cosmic::theme::iced::TextEditor::Custom(Box::new(
+                        |_theme, _status| text_editor::Style {
+                            background: Background::Color(Color::TRANSPARENT),
+                            border: cosmic::iced::Border {
+                                width: 0.0,
+                                radius: 0.0.into(),
+                                color: Color::TRANSPARENT,
+                            },
+                            icon: cosmic::theme::active().cosmic().on_bg_color().into(),
+                            placeholder: cosmic::theme::active().cosmic().on_bg_color().into(),
+                            value: cosmic::theme::active().cosmic().on_bg_color().into(),
+                            selection: Color::from_rgba(1.0, 1.0, 1.0, 0.3),
+                        }
+                    )))
+                        .id(app.input_id.clone())
+                        .on_action(Message::InputActionPerformed)
+                        .height(Length::Shrink)
+                        .padding(12)
+                        .placeholder("Send message to Luna AI...")
+                        .key_binding(|key_press| {
+                            match key_press.key.as_ref() {
+                                keyboard::Key::Named(keyboard::key::Named::Enter)
+                                    if key_press.modifiers.shift() =>
+                                {
+                                    // Shift+Enter for new line
+                                    text_editor::Binding::from_key_press(key_press)
+                                }
+                                keyboard::Key::Named(keyboard::key::Named::Enter) => {
+                                    // Enter to send message
+                                    Some(text_editor::Binding::Custom(Message::SendMessage))
+                                }
+                                _ => text_editor::Binding::from_key_press(key_press),
+                            }
+                        })
 
-                                cosmic::widget::row::with_children(vec![
-                                    cosmic::widget::text(format!("📎 {}", file_name))
-                                        .size(12)
-                                        .into(),
-                                    cosmic::widget::Space::with_width(Length::Fill).into(),
-                                    cosmic::widget::button::standard("✕")
-                                        .on_press(Message::RemoveFile(file_path.to_string()))
-                                        .padding([4, 8])
-                                        .into(),
-                                ])
-                                .spacing(8)
-                                .align_y(cosmic::iced::Alignment::Center)
-                                .into()
-                            })
-                            .collect(),
-                    )
-                    .spacing(4)
-                } else {
-                    cosmic::widget::column::with_children(vec![cosmic::widget::text("")
-                        .size(12)
-                        .into()])
-                },
+
+                        ,
+                )
+                .width(Length::Fill),
             )
             .push(
-                // Input row with buttons inline
+                // Bottom row: Attachments <----> Send button
                 cosmic::widget::row::with_capacity(3)
                     .push(
-                        // Attach file button (left side)
+                        // Attach file button
                         widget::button::icon(crate::ui::icons::get_handle(
                             "mail-attachment-symbolic",
                             16,
@@ -55,27 +62,38 @@ pub fn input_area(app: &CosmicLlmApp) -> Element<Message> {
                         .on_press(Message::AttachFile),
                     )
                     .push(
-                        // Text editor for message (multi-line)
-                        text_editor(&app.input_content)
-                            .id(app.input_id.clone())
-                            .on_action(Message::InputActionPerformed)
-                            .height(Length::Shrink)
-                            .padding(12)
-                            .key_binding(|key_press| {
-                                match key_press.key.as_ref() {
-                                    keyboard::Key::Named(keyboard::key::Named::Enter)
-                                        if key_press.modifiers.shift() =>
-                                    {
-                                        // Shift+Enter for new line
-                                        text_editor::Binding::from_key_press(key_press)
-                                    }
-                                    keyboard::Key::Named(keyboard::key::Named::Enter) => {
-                                        // Enter to send message
-                                        Some(text_editor::Binding::Custom(Message::SendMessage))
-                                    }
-                                    _ => text_editor::Binding::from_key_press(key_press),
-                                }
-                            }),
+                        // Attached files display (left side, expands to fill)
+                        if !app.attached_files.is_empty() {
+                            cosmic::widget::column::with_children(
+                                app.attached_files
+                                    .iter()
+                                    .map(|file_path| {
+                                        let file_name = std::path::Path::new(file_path)
+                                            .file_name()
+                                            .and_then(|name| name.to_str())
+                                            .unwrap_or(file_path);
+
+                                        cosmic::widget::row::with_children(vec![
+                                            cosmic::widget::text(format!("📎 {}", file_name))
+                                                .size(12)
+                                                .into(),
+                                            cosmic::widget::Space::with_width(Length::Fill).into(),
+                                            cosmic::widget::button::standard("✕")
+                                                .on_press(Message::RemoveFile(file_path.to_string()))
+                                                .padding([4, 8])
+                                                .into(),
+                                        ])
+                                        .spacing(8)
+                                        .align_y(cosmic::iced::Alignment::Center)
+                                        .into()
+                                    })
+                                    .collect(),
+                            )
+                            .spacing(4)
+                        } else {
+                            cosmic::widget::column::with_capacity(0)
+                        }
+                        .width(Length::Fill),
                     )
                     .push(
                         // Send/Stop button (right side)

@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 class TypingBubble extends StatefulWidget {
@@ -9,14 +10,12 @@ class TypingBubble extends StatefulWidget {
 
 class _TypingBubbleState extends State<TypingBubble>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-
-  static const _frames = ['Typing', 'Typing.', 'Typing..', 'Typing...'];
+  late final AnimationController _waveController;
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
+    _waveController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1200),
     )..repeat();
@@ -24,53 +23,35 @@ class _TypingBubbleState extends State<TypingBubble>
 
   @override
   void dispose() {
-    _controller.dispose();
+    _waveController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final bubbleColor = colorScheme.surfaceVariant;
 
     return Align(
       alignment: Alignment.centerLeft,
       child: Card(
-        color: bubbleColor,
+        color: colorScheme.surfaceContainerHighest,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(18),
         ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              AnimatedBuilder(
-                animation: _controller,
-                builder: (context, _) {
-                  final index =
-                      ((_controller.value * _frames.length).floor()) % _frames.length;
-                  return Text(
-                    _frames[index],
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
-                  );
-                },
-              ),
-              const SizedBox(height: 8),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: List.generate(
-                  3,
-                  (index) => _AnimatedDot(
-                    controller: _controller,
-                    offset: index * 0.2,
-                  ),
-                ),
-              ),
-            ],
+        child: SizedBox(
+          width: 72, // Fixed width
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(3, (index) {
+                return _BouncingDot(
+                  controller: _waveController,
+                  index: index,
+                  colorScheme: colorScheme,
+                );
+              }),
+            ),
           ),
         ),
       ),
@@ -78,38 +59,51 @@ class _TypingBubbleState extends State<TypingBubble>
   }
 }
 
-class _AnimatedDot extends StatelessWidget {
-  const _AnimatedDot({
+class _BouncingDot extends StatelessWidget {
+  const _BouncingDot({
     required this.controller,
-    required this.offset,
+    required this.index,
+    required this.colorScheme,
   });
 
   final Animation<double> controller;
-  final double offset;
+  final int index;
+  final ColorScheme colorScheme;
 
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
-        final rawProgress = (controller.value + offset) % 1.0;
-        final progress =
-            rawProgress <= 0.5 ? rawProgress * 2 : (1 - rawProgress) * 2;
-        final scale = 0.7 + (progress * 0.3);
-        final opacity = 0.4 + (progress * 0.6);
+        // Staggered wave
+        final phase = (controller.value + (index * 0.2)) % 1.0;
+        final wave = math.sin(phase * math.pi * 2);
+        
+        // Bounce height
+        final yOffset = wave * 4;
+        
+        // Scale pulse
+        final scale = 0.7 + (0.3 * ((wave + 1) / 2));
+        
+        // Color shift
+        final color = Color.lerp(
+          colorScheme.primary,
+          colorScheme.tertiary,
+          (wave + 1) / 2,
+        )!;
 
         return Padding(
           padding: const EdgeInsets.symmetric(horizontal: 3),
-          child: Opacity(
-            opacity: opacity,
+          child: Transform.translate(
+            offset: Offset(0, yOffset),
             child: Transform.scale(
               scale: scale,
               child: Container(
-                width: 8,
-                height: 8,
+                width: 7,
+                height: 7,
                 decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                   shape: BoxShape.circle,
+                  color: color,
                 ),
               ),
             ),
@@ -119,5 +113,3 @@ class _AnimatedDot extends StatelessWidget {
     );
   }
 }
-
-
