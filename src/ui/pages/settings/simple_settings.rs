@@ -50,6 +50,10 @@ pub struct EditingProfileState {
     pub temperature_str: String,
     pub max_tokens: Option<u32>,
     pub max_tokens_str: String,
+    pub context_window_size: Option<usize>,
+    pub context_window_size_str: String,
+    pub summarize_threshold: f32,
+    pub summarize_threshold_str: String,
     pub profile_prompt_file: Option<String>,
     pub profile_prompt_file_str: String,
     pub enabled_mcp: Vec<String>,
@@ -75,6 +79,8 @@ pub enum SimpleSettingsMessage {
     UpdateProfileField(String, ProfileField, String), // profile_name, field, value
     UpdateProfileTemperature(String, Option<f32>),
     UpdateProfileMaxTokens(String, Option<u32>),
+    UpdateProfileContextWindowSize(String, Option<usize>),
+    UpdateProfileSummarizeThreshold(String, f32),
     // Global settings
     UpdateServerHost(String),
     UpdateServerPort(String),
@@ -571,6 +577,8 @@ impl SimpleSettingsPage {
                     let profile_name_apikey = profile_name_base.clone();
                     let profile_name_temp = profile_name_base.clone();
                     let profile_name_tokens = profile_name_base.clone();
+                    let profile_name_context = profile_name_base.clone();
+                    let profile_name_threshold = profile_name_base.clone();
                     let profile_name_prompt = profile_name_base.clone();
                     let profile_name_mcp = profile_name_base.clone();
                     let profile_name_hidden = profile_name_base.clone();
@@ -669,6 +677,42 @@ impl SimpleSettingsPage {
                                 )
                                 .push(
                                     row()
+                                        .push(text("Context Window Size:").size(12).width(Length::Fixed(120.0)))
+                                        .push(
+                                            text_input("Auto", &edit_state.context_window_size_str)
+                                                .on_input(move |v| {
+                                                    let size = if v.trim().is_empty() {
+                                                        None
+                                                    } else {
+                                                        v.parse::<usize>().ok()
+                                                    };
+                                                    SimpleSettingsMessage::UpdateProfileContextWindowSize(
+                                                        profile_name_context.clone(),
+                                                        size,
+                                                    )
+                                                })
+                                                .width(Length::Fill),
+                                        )
+                                        .spacing(8),
+                                )
+                                .push(
+                                    row()
+                                        .push(text("Summarize Threshold:").size(12).width(Length::Fixed(120.0)))
+                                        .push(
+                                            text_input("0.7", &edit_state.summarize_threshold_str)
+                                                .on_input(move |v| {
+                                                    let threshold = v.parse::<f32>().unwrap_or(0.7);
+                                                    SimpleSettingsMessage::UpdateProfileSummarizeThreshold(
+                                                        profile_name_threshold.clone(),
+                                                        threshold,
+                                                    )
+                                                })
+                                                .width(Length::Fill),
+                                        )
+                                        .spacing(8),
+                                )
+                                .push(
+                                    row()
                                         .push(text("Prompt File:").size(12).width(Length::Fixed(120.0)))
                                         .push(
                                             text_input("prompt.txt", &edit_state.profile_prompt_file_str)
@@ -745,6 +789,14 @@ impl SimpleSettingsPage {
                     "Max Tokens: {}",
                     profile.max_tokens.map(|t| t.to_string()).unwrap_or_else(|| "N/A".to_string())
                 );
+                let context_window_text = format!(
+                    "Context Window Size: {}",
+                    profile.context_window_size.map(|s| s.to_string()).unwrap_or_else(|| "Auto".to_string())
+                );
+                let summarize_threshold_text = format!(
+                    "Summarize Threshold: {:.2}",
+                    profile.summarize_threshold
+                );
                 let prompt_file_text = format!(
                     "Prompt File: {}",
                     profile.profile_prompt_file.as_ref().map(|s| s.as_str()).unwrap_or("None")
@@ -782,6 +834,20 @@ impl SimpleSettingsPage {
                             )
                             .push(
                                 text(tokens_text)
+                                .size(12)
+                                .class(cosmic::style::Text::Color(
+                                    theme::active().cosmic().palette.neutral_6.into(),
+                                )),
+                            )
+                            .push(
+                                text(context_window_text)
+                                .size(12)
+                                .class(cosmic::style::Text::Color(
+                                    theme::active().cosmic().palette.neutral_6.into(),
+                                )),
+                            )
+                            .push(
+                                text(summarize_threshold_text)
                                 .size(12)
                                 .class(cosmic::style::Text::Color(
                                     theme::active().cosmic().palette.neutral_6.into(),

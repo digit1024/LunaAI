@@ -2417,6 +2417,10 @@ impl Application for CosmicLlmApp {
                                     temperature_str: profile.temperature.map(|t| t.to_string()).unwrap_or_default(),
                                     max_tokens: profile.max_tokens,
                                     max_tokens_str: profile.max_tokens.map(|t| t.to_string()).unwrap_or_default(),
+                                    context_window_size: profile.context_window_size,
+                                    context_window_size_str: profile.context_window_size.map(|s| s.to_string()).unwrap_or_default(),
+                                    summarize_threshold: profile.summarize_threshold,
+                                    summarize_threshold_str: profile.summarize_threshold.to_string(),
                                     profile_prompt_file: profile.profile_prompt_file.clone(),
                                     profile_prompt_file_str: profile.profile_prompt_file.as_deref().unwrap_or("").to_string(),
                                     enabled_mcp: profile.enabled_mcp.clone(),
@@ -2438,6 +2442,8 @@ impl Application for CosmicLlmApp {
                                 profile.api_key = edit_state.api_key.clone();
                                 profile.temperature = edit_state.temperature;
                                 profile.max_tokens = edit_state.max_tokens;
+                                profile.context_window_size = edit_state.context_window_size;
+                                profile.summarize_threshold = edit_state.summarize_threshold;
                                 profile.profile_prompt_file = edit_state.profile_prompt_file.clone();
                                 profile.enabled_mcp = edit_state.enabled_mcp.clone();
                                 profile.hidden = edit_state.hidden;
@@ -2476,6 +2482,18 @@ impl Application for CosmicLlmApp {
                         if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
                             edit_state.max_tokens = tokens;
                             edit_state.max_tokens_str = tokens.map(|t| t.to_string()).unwrap_or_default();
+                        }
+                    }
+                    SimpleSettingsMessage::UpdateProfileContextWindowSize(profile_name, size) => {
+                        if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
+                            edit_state.context_window_size = size;
+                            edit_state.context_window_size_str = size.map(|s| s.to_string()).unwrap_or_default();
+                        }
+                    }
+                    SimpleSettingsMessage::UpdateProfileSummarizeThreshold(profile_name, threshold) => {
+                        if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
+                            edit_state.summarize_threshold = threshold;
+                            edit_state.summarize_threshold_str = threshold.to_string();
                         }
                     }
                     SimpleSettingsMessage::UpdateProfilePromptFile(profile_name, prompt_file) => {
