@@ -860,7 +860,9 @@ class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
               ttsPrefsNotifier.setEnabled(value);
             },
           ),
-          // Voice Language
+          const Divider(),
+          // Language Selection (applies to both STT and TTS)
+          // Only show favorite languages in the burger menu
           ListTile(
             leading: const Icon(Icons.language),
             title: const Text('Voice Language'),

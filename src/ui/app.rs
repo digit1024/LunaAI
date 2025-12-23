@@ -978,6 +978,7 @@ impl Application for CosmicLlmApp {
         }
         println!("✅ Finished checking for conversations with 'Generating title...'");
 
+
         // Load recent conversations and update nav model
         app.load_recent_conversations();
         app.update_nav_model();
