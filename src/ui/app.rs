@@ -83,6 +83,7 @@ pub enum Message {
     // Tool toggle actions
     ToggleAllTools(bool),     // true = enable all, false = disable all
     ToggleTool(String, bool), // tool_name, enabled
+    ToggleMCPServerEnabled(String, bool), // server_name, enabled - toggles all tools for a server
     ShowToolsContext,
     HideToolsContext,
     // Markdown link handling
@@ -2729,6 +2730,56 @@ impl Application for CosmicLlmApp {
                     async move {
                         let mut registry = mcp_registry.write().await;
                         registry.set_tool_enabled(&tool_name, enabled);
+                        cosmic::Action::App(Message::RefreshMCPTools)
+                    },
+                    |msg| msg,
+                );
+            }
+            Message::ToggleMCPServerEnabled(server_name, enabled) => {
+                // Update profile's enabled_mcp list synchronously
+                let profile_name = self.config.default.clone();
+                if let Some(profile) = self.config.profiles.get_mut(&profile_name) {
+                    if enabled {
+                        // Add server to enabled list if not present
+                        if !profile.enabled_mcp.iter().any(|s| s.eq_ignore_ascii_case(&server_name)) {
+                            profile.enabled_mcp.push(server_name.clone());
+                        }
+                    } else {
+                        // Remove server from enabled list
+                        profile.enabled_mcp.retain(|s| !s.eq_ignore_ascii_case(&server_name));
+                    }
+                }
+                
+                // Update tool_states synchronously for immediate UI feedback
+                if let Ok(registry) = self.mcp_registry.try_read() {
+                    // Find all tools for this server and update their states
+                    for tool in &self.available_mcp_tools {
+                        if let Ok(tool_server) = registry.get_server_for_tool(&tool.name) {
+                            if tool_server == &server_name {
+                                self.tool_states.insert(tool.name.clone(), enabled);
+                            }
+                        }
+                    }
+                }
+                
+                // Update registry and save config asynchronously
+                let mcp_registry = self.mcp_registry.clone();
+                let server_name_clone = server_name.clone();
+                let config = self.config.clone();
+                
+                return cosmic::Task::perform(
+                    async move {
+                        // Update registry
+                        {
+                            let mut registry = mcp_registry.write().await;
+                            registry.set_server_enabled(&server_name_clone, enabled);
+                        }
+                        
+                        // Save config
+                        if let Err(e) = config.save() {
+                            eprintln!("Failed to save config: {}", e);
+                        }
+                        
                         cosmic::Action::App(Message::RefreshMCPTools)
                     },
                     |msg| msg,

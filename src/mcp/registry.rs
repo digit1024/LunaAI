@@ -120,6 +120,27 @@ impl MCPServerRegistry {
         self.enabled_tools.clone()
     }
 
+    pub fn set_server_enabled(&mut self, server_name: &str, enabled: bool) {
+        for (tool_name, tool_server_name) in &self.tool_index {
+            if tool_server_name == server_name {
+                self.enabled_tools.insert(tool_name.clone(), enabled);
+            }
+        }
+    }
+
+    pub fn is_server_enabled(&self, server_name: &str) -> bool {
+        // A server is considered enabled if at least one of its tools is enabled
+        // This is a simple heuristic - we could also check if all tools are enabled
+        for (tool_name, tool_server_name) in &self.tool_index {
+            if tool_server_name == server_name {
+                if self.is_tool_enabled(tool_name) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub fn get_server_for_tool(&self, tool_name: &str) -> Result<&String> {
         self.tool_index
             .get(tool_name)
