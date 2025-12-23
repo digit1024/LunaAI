@@ -3,8 +3,85 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../application/app_state.dart';
+import '../../services/tts_service.dart';
+
+/// Slide direction for bubble animations
+enum SlideDirection { left, right, center }
+
+/// Animated wrapper that slides bubbles in from left/right
+class _SlideInWrapper extends StatefulWidget {
+  const _SlideInWrapper({
+    required this.child,
+    required this.direction,
+  });
+
+  final Widget child;
+  final SlideDirection direction;
+
+  @override
+  State<_SlideInWrapper> createState() => _SlideInWrapperState();
+}
+
+class _SlideInWrapperState extends State<_SlideInWrapper>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<Offset> _slideAnimation;
+  late Animation<double> _fadeAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 300),
+      vsync: this,
+    );
+
+    // Slide offset based on direction
+    final beginOffset = switch (widget.direction) {
+      SlideDirection.left => const Offset(-0.3, 0),
+      SlideDirection.right => const Offset(0.3, 0),
+      SlideDirection.center => Offset.zero,
+    };
+
+    _slideAnimation = Tween<Offset>(
+      begin: beginOffset,
+      end: Offset.zero,
+    ).animate(CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeOutCubic,
+    ));
+
+    _fadeAnimation = Tween<double>(
+      begin: 0.0,
+      end: 1.0,
+    ).animate(CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeOut,
+    ));
+
+    _controller.forward();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SlideTransition(
+      position: _slideAnimation,
+      child: FadeTransition(
+        opacity: _fadeAnimation,
+        child: widget.child,
+      ),
+    );
+  }
+}
 
 /// Slide direction for bubble animations
 enum SlideDirection { left, right, center }
@@ -86,12 +163,27 @@ class ChatBubble extends StatelessWidget {
   const ChatBubble({
     super.key,
     required this.message,
+    this.prevMessage,
+    this.nextMessage,
   });
 
   final ChatMessage message;
+  final ChatMessage? prevMessage;
+  final ChatMessage? nextMessage;
+
+  bool _isAssistantType(BubbleType? type) {
+    if (type == null) return false;
+    return type == BubbleType.assistant ||
+        type == BubbleType.toolRequest ||
+        type == BubbleType.toolResult;
+  }
 
   @override
   Widget build(BuildContext context) {
+    final isPrevUser = prevMessage?.bubbleType == BubbleType.user;
+    final isPrevAssistant = _isAssistantType(prevMessage?.bubbleType);
+    final isNextAssistant = _isAssistantType(nextMessage?.bubbleType);
+
     switch (message.bubbleType) {
       case BubbleType.user:
         return _SlideInWrapper(
@@ -139,10 +231,15 @@ class _UserBubble extends StatelessWidget {
         constraints: BoxConstraints(maxWidth: maxWidth),
         child: GestureDetector(
           onLongPress: () => _copyToClipboard(context, message.content),
-          child: Card(
-            color: colorScheme.primaryContainer,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(18),
+          child: Container(
+            decoration: BoxDecoration(
+              color: colorScheme.primaryContainer,
+              borderRadius: BorderRadius.only(
+                topLeft: const Radius.circular(18),
+                topRight: const Radius.circular(18),
+                bottomLeft: const Radius.circular(18),
+                bottomRight: const Radius.circular(4), // Smaller right bottom corner
+              ),
             ),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -154,9 +251,11 @@ class _UserBubble extends StatelessWidget {
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
                   const SizedBox(height: 6),
-                  _TimestampRow(
-                    timestamp: message.timestamp,
-                    onCopy: () => _copyToClipboard(context, message.content),
+                  Text(
+                    _formatTimestamp(message.timestamp),
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                        ),
                   ),
                 ],
               ),
@@ -168,16 +267,28 @@ class _UserBubble extends StatelessWidget {
   }
 }
 
-/// Assistant message bubble (left-aligned)
-class _AssistantBubble extends StatelessWidget {
-  const _AssistantBubble({required this.message});
+/// Assistant message bubble (left-aligned) with smart corners
+class _AssistantBubble extends ConsumerWidget {
+  const _AssistantBubble({
+    required this.message,
+    required this.isPrevUser,
+    required this.isPrevAssistant,
+    required this.isNextAssistant,
+  });
 
   final ChatMessage message;
+  final bool isPrevUser;
+  final bool isPrevAssistant;
+  final bool isNextAssistant;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final maxWidth = MediaQuery.of(context).size.width * 0.7;
     final colorScheme = Theme.of(context).colorScheme;
+
+    // Smart corner rounding
+    final topLeftRadius = isPrevAssistant ? 4.0 : 18.0;
+    final bottomLeftRadius = isNextAssistant ? 4.0 : 18.0;
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -185,10 +296,15 @@ class _AssistantBubble extends StatelessWidget {
         constraints: BoxConstraints(maxWidth: maxWidth),
         child: GestureDetector(
           onLongPress: () => _copyToClipboard(context, message.content),
-          child: Card(
-            color: colorScheme.surfaceContainerHighest,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(18),
+          child: Container(
+            decoration: BoxDecoration(
+              color: colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.only(
+                topLeft: Radius.circular(topLeftRadius),
+                topRight: const Radius.circular(18),
+                bottomLeft: Radius.circular(bottomLeftRadius),
+                bottomRight: const Radius.circular(18),
+              ),
             ),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -209,20 +325,42 @@ class _AssistantBubble extends StatelessWidget {
                       ),
                     ),
                   // Reasoning content (collapsible) - show during streaming too
-                  if (message.reasoningContent != null && 
+                  if (message.reasoningContent != null &&
                       message.reasoningContent!.isNotEmpty) ...[
                     const SizedBox(height: 8),
                     _CollapsiblePayload(
                       icon: Icons.psychology,
                       label: '💭 Thinking',
                       payload: message.reasoningContent!,
-                      initiallyExpanded: message.isStreaming, // Expand during streaming
+                      initiallyExpanded: message.isStreaming,
                     ),
                   ],
                   const SizedBox(height: 6),
-                  _TimestampRow(
-                    timestamp: message.timestamp,
-                    onCopy: () => _copyToClipboard(context, message.content),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      Text(
+                        _formatTimestamp(message.timestamp),
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.copy, size: 16),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        tooltip: 'Copy message',
+                        onPressed: () => _copyToClipboard(context, message.content),
+                      ),
+                      if (!message.isStreaming) ...[
+                        const SizedBox(width: 4),
+                        _TtsPlayButton(
+                          text: message.content,
+                          ref: ref,
+                        ),
+                      ],
+                    ],
                   ),
                 ],
               ),
@@ -234,42 +372,94 @@ class _AssistantBubble extends StatelessWidget {
   }
 }
 
-/// Tool request bubble - shows tool name, status, and parameters
-class _ToolRequestBubble extends StatelessWidget {
-  const _ToolRequestBubble({required this.message});
+/// TTS Play button widget
+class _TtsPlayButton extends ConsumerStatefulWidget {
+  const _TtsPlayButton({
+    required this.text,
+    required this.ref,
+  });
 
-  final ChatMessage message;
+  final String text;
+  final WidgetRef ref;
 
-  Color _statusColor(BuildContext context) {
-    switch (message.toolStatus) {
-      case 'done':
-        return Colors.green;
-      case 'error':
-        return Theme.of(context).colorScheme.error;
-      case 'running':
-        return Colors.orange;
-      default:
-        return Theme.of(context).colorScheme.primary;
-    }
-  }
+  @override
+  ConsumerState<_TtsPlayButton> createState() => _TtsPlayButtonState();
+}
 
-  IconData _statusIcon() {
-    switch (message.toolStatus) {
-      case 'done':
-        return Icons.check_circle;
-      case 'error':
-        return Icons.error;
-      case 'running':
-        return Icons.hourglass_top;
-      default:
-        return Icons.schedule;
+class _TtsPlayButtonState extends ConsumerState<_TtsPlayButton> {
+  bool _isPlaying = false;
+
+  Future<void> _toggleTts() async {
+    if (_isPlaying) {
+      final ttsService = ref.read(ttsServiceProvider);
+      await ttsService.stop();
+      setState(() => _isPlaying = false);
+    } else {
+      final ttsService = ref.read(ttsServiceProvider);
+      // Clean text (remove markdown)
+      final cleanText = widget.text
+          .replaceAll(RegExp(r'#+\s+'), '') // Remove headers
+          .replaceAll(RegExp(r'\*\*(.*?)\*\*'), r'$1') // Remove bold
+          .replaceAll(RegExp(r'\*(.*?)\*'), r'$1') // Remove italic
+          .replaceAll(RegExp(r'`(.*?)`'), r'$1') // Remove code
+          .replaceAll(RegExp(r'\[(.*?)\]\(.*?\)'), r'$1') // Remove links
+          .trim();
+
+      if (cleanText.isNotEmpty) {
+        setState(() => _isPlaying = true);
+        await ttsService.speak(cleanText, onComplete: () {
+          if (mounted) {
+            setState(() => _isPlaying = false);
+          }
+        });
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final paramsText = _stringify(message.toolParams);
+    return IconButton(
+      icon: Icon(_isPlaying ? Icons.stop : Icons.play_arrow),
+      iconSize: 18,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(),
+      color: colorScheme.primary,
+      tooltip: _isPlaying ? 'Stop reading' : 'Read aloud',
+      onPressed: _toggleTts,
+    );
+  }
+}
+
+/// Tool request bubble - shows tool name, status, and parameters
+class _ToolRequestBubble extends StatefulWidget {
+  const _ToolRequestBubble({
+    required this.message,
+    required this.isPrevUser,
+    required this.isPrevAssistant,
+    required this.isNextAssistant,
+  });
+
+  final ChatMessage message;
+  final bool isPrevUser;
+  final bool isPrevAssistant;
+  final bool isNextAssistant;
+
+  @override
+  State<_ToolRequestBubble> createState() => _ToolRequestBubbleState();
+}
+
+class _ToolRequestBubbleState extends State<_ToolRequestBubble> {
+  bool _isExpanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final paramsText = _stringify(widget.message.toolParams);
+
+    // Smart corner rounding
+    final topLeftRadius = widget.isPrevAssistant ? 4.0 : 18.0;
+    final bottomLeftRadius = widget.isNextAssistant ? 4.0 : 18.0;
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -277,63 +467,76 @@ class _ToolRequestBubble extends StatelessWidget {
         constraints: BoxConstraints(
           maxWidth: MediaQuery.of(context).size.width * 0.85,
         ),
-        child: Card(
-          color: colorScheme.tertiaryContainer.withOpacity(0.6),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
-            side: BorderSide(
-              color: _statusColor(context).withOpacity(0.4),
-              width: 1,
+        child: Container(
+          decoration: BoxDecoration(
+            color: colorScheme.tertiaryContainer.withOpacity(0.6),
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(topLeftRadius),
+              topRight: const Radius.circular(18),
+              bottomLeft: Radius.circular(bottomLeftRadius),
+              bottomRight: const Radius.circular(18),
             ),
           ),
           child: Padding(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Column(
+              mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Header row
+                // One-line header
                 Row(
                   children: [
                     Icon(
                       Icons.build_circle,
-                      size: 20,
+                      size: 18,
                       color: colorScheme.tertiary,
                     ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        '📤 ${message.toolName ?? 'Tool'}',
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                              fontWeight: FontWeight.bold,
+                        widget.message.toolName ?? 'Tool',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.w500,
                             ),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    _StatusChip(
-                      status: message.toolStatus ?? 'planned',
-                      color: _statusColor(context),
-                      icon: _statusIcon(),
-                    ),
+                    if (paramsText != null && paramsText.isNotEmpty)
+                      IconButton(
+                        icon: Icon(
+                          _isExpanded ? Icons.expand_less : Icons.expand_more,
+                          size: 20,
+                        ),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: () {
+                          setState(() {
+                            _isExpanded = !_isExpanded;
+                          });
+                        },
+                        tooltip: _isExpanded ? 'Collapse' : 'Expand',
+                      ),
                   ],
                 ),
-                
-                // Parameters (collapsible)
-                if (paramsText != null && paramsText.isNotEmpty) ...[
+
+                // Parameters (expandable)
+                if (_isExpanded && paramsText != null && paramsText.isNotEmpty) ...[
                   const SizedBox(height: 8),
-                  _CollapsiblePayload(
-                    icon: Icons.tune,
-                    label: 'Parameters',
-                    payload: paramsText,
-                    initiallyExpanded: message.toolStatus == 'running',
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerHighest.withOpacity(0.4),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: SelectableText(
+                      paramsText,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            fontFamily: 'monospace',
+                          ),
+                    ),
                   ),
                 ],
-                
-                const SizedBox(height: 6),
-                Text(
-                  _formatTimestamp(message.timestamp),
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                ),
               ],
             ),
           ),
@@ -398,18 +601,40 @@ class _SummaryBubble extends StatelessWidget {
 }
 
 /// Tool result bubble - shows tool result or error
-class _ToolResultBubble extends StatelessWidget {
-  const _ToolResultBubble({required this.message});
+class _ToolResultBubble extends StatefulWidget {
+  const _ToolResultBubble({
+    required this.message,
+    required this.isPrevUser,
+    required this.isPrevAssistant,
+    required this.isNextAssistant,
+  });
 
   final ChatMessage message;
+  final bool isPrevUser;
+  final bool isPrevAssistant;
+  final bool isNextAssistant;
 
-  bool get isError => message.toolStatus == 'error' || message.toolError != null;
+  @override
+  State<_ToolResultBubble> createState() => _ToolResultBubbleState();
+}
+
+class _ToolResultBubbleState extends State<_ToolResultBubble> {
+  bool _isExpanded = false;
+
+  bool get isError => widget.message.toolStatus == 'error' || widget.message.toolError != null;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final resultText = _stringify(message.toolResult);
-    final errorText = message.toolError;
+    final resultText = _stringify(widget.message.toolResult);
+    final errorText = widget.message.toolError;
+
+    // Smart corner rounding
+    final topLeftRadius = widget.isPrevAssistant ? 4.0 : 18.0;
+    final bottomLeftRadius = widget.isNextAssistant ? 4.0 : 18.0;
+
+    final hasContent = (resultText != null && resultText.isNotEmpty) ||
+        (errorText != null && errorText.isNotEmpty);
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -417,51 +642,62 @@ class _ToolResultBubble extends StatelessWidget {
         constraints: BoxConstraints(
           maxWidth: MediaQuery.of(context).size.width * 0.85,
         ),
-        child: Card(
-          color: isError
-              ? colorScheme.errorContainer.withOpacity(0.6)
-              : colorScheme.secondaryContainer.withOpacity(0.6),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
-            side: BorderSide(
-              color: isError
-                  ? colorScheme.error.withOpacity(0.4)
-                  : Colors.green.withOpacity(0.4),
-              width: 1,
+        child: Container(
+          decoration: BoxDecoration(
+            color: isError
+                ? colorScheme.errorContainer.withOpacity(0.6)
+                : colorScheme.secondaryContainer.withOpacity(0.6),
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(topLeftRadius),
+              topRight: const Radius.circular(18),
+              bottomLeft: Radius.circular(bottomLeftRadius),
+              bottomRight: const Radius.circular(18),
             ),
           ),
           child: Padding(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Column(
+              mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Header row
+                // One-line header
                 Row(
                   children: [
                     Icon(
                       isError ? Icons.error : Icons.check_circle,
-                      size: 20,
+                      size: 18,
                       color: isError ? colorScheme.error : Colors.green,
                     ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        '📥 ${message.toolName ?? 'Tool'} Result',
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                              fontWeight: FontWeight.bold,
+                        '${widget.message.toolName ?? 'Tool'} Result',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.w500,
                             ),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    _StatusChip(
-                      status: isError ? 'ERROR' : 'DONE',
-                      color: isError ? colorScheme.error : Colors.green,
-                      icon: isError ? Icons.close : Icons.check,
-                    ),
+                    if (hasContent)
+                      IconButton(
+                        icon: Icon(
+                          _isExpanded ? Icons.expand_less : Icons.expand_more,
+                          size: 20,
+                        ),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: () {
+                          setState(() {
+                            _isExpanded = !_isExpanded;
+                          });
+                        },
+                        tooltip: _isExpanded ? 'Collapse' : 'Expand',
+                      ),
                   ],
                 ),
-                
-                // Error message
-                if (errorText != null && errorText.isNotEmpty) ...[
+
+                // Error message (always shown if exists)
+                if (_isExpanded && errorText != null && errorText.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Container(
                     padding: const EdgeInsets.all(8),
@@ -485,67 +721,29 @@ class _ToolResultBubble extends StatelessWidget {
                     ),
                   ),
                 ],
-                
-                // Result (collapsible)
-                if (resultText != null && resultText.isNotEmpty) ...[
+
+                // Result (expandable)
+                if (_isExpanded && resultText != null && resultText.isNotEmpty) ...[
                   const SizedBox(height: 8),
-                  _CollapsiblePayload(
-                    icon: Icons.summarize,
-                    label: 'Result',
-                    payload: resultText,
-                    initiallyExpanded: false,
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerHighest.withOpacity(0.4),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: SelectableText(
+                      resultText,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            fontFamily: 'monospace',
+                          ),
+                    ),
                   ),
                 ],
-                
-                const SizedBox(height: 6),
-                Text(
-                  _formatTimestamp(message.timestamp),
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                ),
               ],
             ),
           ),
         ),
-      ),
-    );
-  }
-}
-
-/// Status chip widget
-class _StatusChip extends StatelessWidget {
-  const _StatusChip({
-    required this.status,
-    required this.color,
-    required this.icon,
-  });
-
-  final String status;
-  final Color color;
-  final IconData icon;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.2),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 12, color: color),
-          const SizedBox(width: 4),
-          Text(
-            status.toUpperCase(),
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: color,
-                  fontWeight: FontWeight.bold,
-                ),
-          ),
-        ],
       ),
     );
   }

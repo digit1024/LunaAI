@@ -18,7 +18,6 @@ import '../../services/speech_service.dart';
 import '../../services/tts_service.dart';
 import '../../utils/text_processing.dart';
 import '../../utils/platform_utils.dart';
-import '../widgets/bottom_nav.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/typing_bubble.dart';
 import '../widgets/voice_mode_overlay.dart';
@@ -33,6 +32,7 @@ class ChatScreen extends ConsumerStatefulWidget {
 class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
+  final _focusNode = FocusNode();
   late final AudioPlayer _typingPlayer;
   late final AudioPlayer _donePlayer;
   late final AudioPlayer _sentPlayer;
@@ -138,6 +138,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _speechService?.dispose();
     _controller.dispose();
     _scrollController.dispose();
+    _focusNode.dispose();
     super.dispose();
   }
 
@@ -531,6 +532,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           onProfileChanged: (newProfile) {
             controller.changeProfile(newProfile);
           },
+          onStartNew: controller.startNewConversation,
+          onHistory: controller.openConversations,
+          onSetup: controller.openSetup,
         ),
         body: Column(
         children: [
@@ -553,9 +557,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   itemBuilder: (context, index) {
                     if (index < state.chatMessages.length) {
                       final message = state.chatMessages[index];
+                      final prevMessage = index > 0
+                          ? state.chatMessages[index - 1]
+                          : null;
+                      final nextMessage = index < state.chatMessages.length - 1
+                          ? state.chatMessages[index + 1]
+                          : null;
+                      
                       return Padding(
                         padding: const EdgeInsets.symmetric(vertical: 6),
-                        child: ChatBubble(message: message),
+                        child: ChatBubble(
+                          message: message,
+                          prevMessage: prevMessage,
+                          nextMessage: nextMessage,
+                        ),
                       );
                     }
                     return const Padding(
@@ -583,10 +598,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
         _Composer(
           controller: _controller,
+          focusNode: _focusNode,
           attachedFiles: state.attachedFiles,
           onSend: () {
             final text = _controller.text;
             if (text.trim().isNotEmpty || state.attachedFiles.isNotEmpty) {
+              // Hide keyboard immediately
+              _focusNode.unfocus();
               // Play sound immediately (preloaded + LOW_LATENCY mode = instant)
               _sentPlayer.stop();
               unawaited(_sentPlayer.play(AssetSource('audio/sent.mp3')));
@@ -610,11 +628,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           onRemoveFile: (fileId) {
             controller.removeAttachedFile(fileId);
           },
-        ),
-        LunaBottomBar(
-          onConversations: controller.openConversations,
-          onStartNew: controller.startNewConversation,
-          onSettings: controller.openSettings,
         ),
       ],
     ),
@@ -694,11 +707,17 @@ class _ChatDrawer extends ConsumerStatefulWidget {
     required this.profile,
     required this.availableProfiles,
     required this.onProfileChanged,
+    required this.onStartNew,
+    required this.onHistory,
+    required this.onSetup,
   });
 
   final String profile;
   final List<String> availableProfiles;
   final Function(String) onProfileChanged;
+  final VoidCallback onStartNew;
+  final VoidCallback onHistory;
+  final VoidCallback onSetup;
 
   @override
   ConsumerState<_ChatDrawer> createState() => _ChatDrawerState();
@@ -797,7 +816,7 @@ class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
                 Text(
-                  'Chat Settings',
+                  'Luna AI',
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                     color: Theme.of(context).colorScheme.onPrimaryContainer,
                   ),
@@ -805,6 +824,16 @@ class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
               ],
             ),
           ),
+          // New Chat
+          ListTile(
+            leading: const Icon(Icons.add),
+            title: const Text('New Chat'),
+            onTap: () {
+              widget.onStartNew();
+              Navigator.pop(context);
+            },
+          ),
+          const Divider(),
           // Profile Selection
           if (widget.availableProfiles.isNotEmpty)
             ExpansionTile(
@@ -822,12 +851,10 @@ class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
                 );
               }).toList(),
             ),
-          const Divider(),
           // TTS Toggle
           SwitchListTile(
             secondary: const Icon(Icons.volume_up),
             title: const Text('Text-to-Speech'),
-            subtitle: const Text('Read assistant messages aloud'),
             value: ttsPrefs.enabled,
             onChanged: (value) {
               ttsPrefsNotifier.setEnabled(value);
@@ -897,6 +924,25 @@ class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
                         label: const Text('Load Languages'),
                       ),
           ),
+          const Divider(),
+          // History
+          ListTile(
+            leading: const Icon(Icons.history),
+            title: const Text('History'),
+            onTap: () {
+              widget.onHistory();
+              Navigator.pop(context);
+            },
+          ),
+          // Setup
+          ListTile(
+            leading: const Icon(Icons.settings),
+            title: const Text('Setup'),
+            onTap: () {
+              widget.onSetup();
+              Navigator.pop(context);
+            },
+          ),
         ],
       ),
     );
@@ -926,9 +972,10 @@ class _EmptyChat extends StatelessWidget {
   }
 }
 
-class _Composer extends ConsumerWidget {
+class _Composer extends ConsumerStatefulWidget {
   const _Composer({
     required this.controller,
+    required this.focusNode,
     required this.onSend,
     required this.onVoiceMode,
     required this.attachedFiles,
@@ -937,6 +984,7 @@ class _Composer extends ConsumerWidget {
   });
 
   final TextEditingController controller;
+  final FocusNode focusNode;
   final VoidCallback onSend;
   final VoidCallback onVoiceMode;
   final List<FileAttachment> attachedFiles;
@@ -944,24 +992,55 @@ class _Composer extends ConsumerWidget {
   final Function(String) onRemoveFile;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_Composer> createState() => _ComposerState();
+}
+
+class _ComposerState extends ConsumerState<_Composer> {
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_onTextChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_onTextChanged);
+    super.dispose();
+  }
+
+  void _onTextChanged() {
+    setState(() {}); // Rebuild to update send button visibility
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final state = ref.watch(appControllerProvider);
     final controller = ref.read(appControllerProvider.notifier);
     final isStreaming = state.streaming;
+    final colorScheme = Theme.of(context).colorScheme;
+    final hasText = widget.controller.text.trim().isNotEmpty;
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
+        borderRadius: const BorderRadius.only(
+          topLeft: Radius.circular(20),
+          topRight: Radius.circular(20),
+        ),
+      ),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Display attached files
-          if (attachedFiles.isNotEmpty)
+          if (widget.attachedFiles.isNotEmpty)
             Container(
               margin: const EdgeInsets.only(bottom: 8),
               child: Wrap(
                 spacing: 8,
                 runSpacing: 8,
-                children: attachedFiles.map<Widget>((attachment) {
+                children: widget.attachedFiles.map<Widget>((attachment) {
                   return Chip(
                     label: Text(
                       attachment.fileName,
@@ -972,59 +1051,84 @@ class _Composer extends ConsumerWidget {
                       size: 18,
                     ),
                     deleteIcon: const Icon(Icons.close, size: 18),
-                    onDeleted: () => onRemoveFile(attachment.fileId),
+                    onDeleted: () => widget.onRemoveFile(attachment.fileId),
                   );
                 }).toList(),
               ),
             ),
-          Row(
-            children: [
-              // Attach file button
-              if (!isStreaming && !state.isDialogModeActive)
-                IconButton(
-                  onPressed: onAttachFile,
-                  icon: const Icon(Icons.attach_file),
-                  tooltip: 'Attach file',
-                ),
-              Expanded(
-                child: TextField(
-                  controller: this.controller,
-                  enabled: !isStreaming,
-                  minLines: 1,
-                  maxLines: 5,
-                  decoration: const InputDecoration(
-                    hintText: '✏ Message…',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
+          // Input row - full width
+          TextField(
+            controller: widget.controller,
+            focusNode: widget.focusNode,
+            enabled: !isStreaming,
+            minLines: 1,
+            maxLines: 5,
+            textInputAction: TextInputAction.newline,
+            style: Theme.of(context).textTheme.bodyMedium,
+            decoration: InputDecoration(
+              hintText: 'Send message to Luna AI ...',
+              hintStyle: TextStyle(
+                color: colorScheme.onSurfaceVariant.withOpacity(0.6),
               ),
-              const SizedBox(width: 8),
-              // Voice mode button only shown on mobile platforms
-              if (isMobile && !isStreaming && !state.isDialogModeActive)
-                IconButton(
-                  onPressed: onVoiceMode,
-                  icon: const Icon(Icons.mic),
-                  tooltip: 'Voice mode',
-                ),
-              const SizedBox(width: 8),
+              filled: true,
+              fillColor: Colors.transparent,
+              border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              disabledBorder: InputBorder.none,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 12,
+              ),
+            ),
+          ),
+          // Buttons row - below input
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              // Left side - Attachment and Mic buttons
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Attach file button (+ icon)
+                  if (!isStreaming && !state.isDialogModeActive)
+                    IconButton(
+                      onPressed: widget.onAttachFile,
+                      icon: const Icon(Icons.add),
+                      tooltip: 'Attach file',
+                    ),
+                  // Voice mode button (mobile only)
+                  if (isMobile && !isStreaming && !state.isDialogModeActive)
+                    IconButton(
+                      onPressed: widget.onVoiceMode,
+                      icon: const Icon(Icons.mic),
+                      tooltip: 'Voice mode',
+                    ),
+                ],
+              ),
+              // Right side - Send/Stop button
               if (isStreaming)
-                FilledButton.icon(
+                IconButton(
                   onPressed: () {
                     controller.stopStreaming(
                       conversationId: state.activeConversation?.id,
                     );
                   },
                   icon: const Icon(Icons.stop),
-                  label: const Text('Stop'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: Theme.of(context).colorScheme.error,
+                  style: IconButton.styleFrom(
+                    backgroundColor: colorScheme.error,
+                    foregroundColor: colorScheme.onError,
                   ),
+                  tooltip: 'Stop',
+                )
+              else if (hasText || widget.attachedFiles.isNotEmpty)
+                IconButton.filled(
+                  onPressed: widget.onSend,
+                  icon: const Icon(Icons.send),
+                  tooltip: 'Send',
                 )
               else
-                FilledButton(
-                  onPressed: onSend,
-                  child: const Text('⏎ Send'),
-                ),
+                const SizedBox.shrink(),
             ],
           ),
         ],

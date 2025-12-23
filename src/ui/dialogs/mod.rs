@@ -8,24 +8,27 @@ use crate::ui::app::Message;
 /// Dialog actions for managing popup dialogs
 #[derive(Debug, Clone)]
 pub enum DialogAction {
+    Open(DialogPage),
+    Update(DialogPage),
     Close,
+    Complete,
     CopyText,
     TextEditorAction(text_editor::Action),
 }
 
 /// Different types of dialogs that can be shown
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DialogPage {
-    MessageText(text_editor::Content),
+    MessageText(String),
 }
 
 impl DialogPage {
     /// Create a dialog for displaying and copying message text
-    pub fn view(&self, text_editor_id: &widget::Id) -> widget::Dialog<Message> {
+    pub fn view<'a>(&'a self, content: &'a text_editor::Content) -> widget::Dialog<Message> {
         let spacing = cosmic::theme::active().cosmic().spacing;
 
         match self {
-            DialogPage::MessageText(content) => {
+            DialogPage::MessageText(_) => {
                 widget::dialog()
                     .title("Message Text")
                     .primary_action(
@@ -45,7 +48,6 @@ impl DialogPage {
                             widget::Space::with_height(Length::Fixed(16.0)).into(),
                             // Text editor with the content
                             text_editor(content)
-                                .id(text_editor_id.clone())
                                 .height(Length::Fixed(300.0))
                                 .on_action(|action| {
                                     Message::DialogAction(DialogAction::TextEditorAction(action))
@@ -55,6 +57,18 @@ impl DialogPage {
                         .spacing(spacing.space_s),
                     )
             }
+        }
+    }
+    
+    /// Create a MessageText dialog from a string
+    pub fn message_text(text: String) -> Self {
+        Self::MessageText(text)
+    }
+    
+    /// Get the text content for MessageText dialog
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            DialogPage::MessageText(text) => Some(text),
         }
     }
 }

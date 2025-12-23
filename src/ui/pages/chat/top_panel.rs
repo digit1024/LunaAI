@@ -15,7 +15,7 @@ pub fn top_panel(app: &CosmicLlmApp) -> Element<Message> {
         .count();
 
     // Conversation info
-    let (title, created_text, msg_count, context_usage) = if let Some(id) = app.current_conversation_id {
+    let (title, created_text, _msg_count, context_usage) = if let Some(id) = app.current_conversation_id {
         if let Ok(Some(conv)) = app.storage.get_conversation(&id) {
             let created = conv.created_at.format("%Y-%m-%d %H:%M").to_string();
             // Prefer the latest title from the on-disk index (updated by background tasks)
@@ -46,24 +46,11 @@ pub fn top_panel(app: &CosmicLlmApp) -> Element<Message> {
     let _created_label = created_text.unwrap_or_else(|| "".to_string());
 
     cosmic::widget::container(
-        cosmic::widget::column::with_capacity(2)
+        cosmic::widget::column::with_capacity(3)
             .push(
-                // Top row: Title, Messages count, New chat icon
-                cosmic::widget::row::with_capacity(3)
+                // First row: Title <-> New chat button
+                cosmic::widget::row::with_capacity(2)
                     .push(cosmic::widget::text(title).size(18))
-                    .push(
-                        cosmic::widget::text(
-                            if let Some(pct) = context_usage {
-                                format!("{} messages ({}% context)", msg_count, pct)
-                            } else {
-                                format!("{} messages", msg_count)
-                            }
-                        )
-                        .size(12)
-                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(
-                            0.4, 0.4, 0.4,
-                        ))),
-                    )
                     .push(cosmic::widget::Space::with_width(Length::Fill))
                     .push(
                         // New chat icon button
@@ -78,75 +65,84 @@ pub fn top_panel(app: &CosmicLlmApp) -> Element<Message> {
                     .align_y(cosmic::iced::Alignment::Center),
             )
             .push(
-                // Bottom row: Model select, Tools summary with icons
-                cosmic::widget::row::with_capacity(4)
-                    .push(
-                        // Profile selection dropdown
-                        {
-                            let mut names: Vec<String> = app.config.profiles
-                                .iter()
-                                .filter(|(_, p)| !p.hidden)
-                                .map(|(name, _)| name.clone())
-                                .collect();
-                            names.sort();
-                            let idx = names.iter().position(|k| k == &app.config.default);
-                            widget::dropdown(names, idx, Message::ChangeDefaultProfile)
-                        },
-                    )
-                    .push(cosmic::widget::Space::with_width(Length::Fill))
-                    .push(
-                        // Tools summary with toggle and configure icons
-                        if total_tools == 0 {
-                            // Show configure button when no tools
-                            cosmic::widget::row::with_capacity(2)
-                                .push(cosmic::widget::text("No tools configured").size(12).class(
-                                    cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(
-                                        0.5, 0.5, 0.5,
-                                    )),
-                                ))
-                                .push(
-                                    widget::button::icon(crate::ui::icons::get_handle(
-                                        "configure-symbolic",
-                                        16,
-                                    ))
-                                    .on_press(Message::ShowToolsContext),
-                                )
-                                .spacing(8)
-                                .align_y(cosmic::iced::Alignment::Center)
-                        } else {
-                            // Tool controls with icons
-                            cosmic::widget::row::with_capacity(4)
-                                .push(
-                                    cosmic::widget::text(format!(
-                                        "{} / {} tools",
-                                        enabled_count, total_tools
-                                    ))
-                                    .size(12),
-                                )
-                                .push(
-                                    // Toggle all tools button (toggler widget)
-                                    cosmic::widget::toggler(enabled_count == total_tools)
-                                        .on_toggle(|enabled| Message::ToggleAllTools(enabled)),
-                                )
-                                .push(
-                                    // Configure tools button (icon)
-                                    widget::button::icon(crate::ui::icons::get_handle(
-                                        "configure-symbolic",
-                                        16,
-                                    ))
-                                    .on_press(Message::ShowToolsContext),
-                                )
-                                .spacing(8)
-                                .align_y(cosmic::iced::Alignment::Center)
-                        },
-                    )
-                    .spacing(12)
-                    .align_y(cosmic::iced::Alignment::Center),
+                // Divider line
+                cosmic::widget::container(cosmic::widget::Space::with_height(Length::Fixed(1.0)))
+                    .width(Length::Fill)
+                    .style(|_theme| cosmic::widget::container::Style {
+                        background: Some(cosmic::iced::Background::Color(
+                            cosmic::iced::Color::from_rgb(0.3, 0.3, 0.3),
+                        )),
+                        ..Default::default()
+                    }),
+            )
+            .push(
+                // Second row: Profile label, dropdown, context %, tools count <-> config icon
+                cosmic::widget::container(
+                    cosmic::widget::row::with_capacity(6)
+                        .push(
+                            cosmic::widget::text("Profile")
+                                .size(12)
+                                
+                        )
+                        .push(
+                            // Profile selection dropdown
+                            {
+                                let mut names: Vec<String> = app.config.profiles
+                                    .iter()
+                                    .filter(|(_, p)| !p.hidden)
+                                    .map(|(name, _)| name.clone())
+                                    .collect();
+                                names.sort();
+                                let idx = names.iter().position(|k| k == &app.config.default);
+                                widget::dropdown(names, idx, Message::ChangeDefaultProfile)
+                            },
+                        )
+                        .push(cosmic::widget::Space::with_width(Length::Fixed(12.0)))
+                        .push(
+                            if let Some(pct) = context_usage {
+                                cosmic::widget::text(format!("{}% context", pct))
+                                    .size(12)
+                                    
+                            } else {
+                                cosmic::widget::text("")
+                                    .size(12)
+                            },
+                        )
+                        .push(cosmic::widget::Space::with_width(Length::Fixed(12.0)))
+                        .push(
+                            if total_tools == 0 {
+                                cosmic::widget::text("No tools")
+                                    .size(12)
+                                    
+                            } else {
+                                cosmic::widget::text(format!("{}/{} tools", enabled_count, total_tools))
+                                    .size(12)
+                                    
+                            },
+                        )
+                        .push(cosmic::widget::Space::with_width(Length::Fill))
+                        .push(
+                            // Config icon (toggles tools)
+                            widget::button::icon(crate::ui::icons::get_handle(
+                                "configure-symbolic",
+                                16,
+                            ))
+                            .on_press(Message::ShowToolsContext),
+                        )
+                        .spacing(8)
+                        .align_y(cosmic::iced::Alignment::Center),
+                )
+                .width(Length::Fill)
+                .padding(cosmic::iced::Padding::from([8, 12]))
+
             )
             .spacing(8),
     )
     .padding(12)
     .class(cosmic::style::Container::Card)
+
+    
+
     .into()
 }
 

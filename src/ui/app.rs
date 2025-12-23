@@ -83,6 +83,7 @@ pub enum Message {
     // Tool toggle actions
     ToggleAllTools(bool),     // true = enable all, false = disable all
     ToggleTool(String, bool), // tool_name, enabled
+    ToggleMCPServerEnabled(String, bool), // server_name, enabled - toggles all tools for a server
     ShowToolsContext,
     HideToolsContext,
     // Markdown link handling
@@ -202,7 +203,7 @@ pub struct CosmicLlmApp {
     pub agent_mode_active: bool,
     // Dialog state
     pub dialog: Option<DialogPage>,
-    pub dialog_text_input_id: widget::Id,
+    pub dialog_text_content: Option<text_editor::Content>,
     // MCP tools cache
     pub available_mcp_tools: Vec<crate::llm::ToolDefinition>,
     // Tool enable/disable state (tool_name -> enabled)
@@ -376,7 +377,7 @@ impl CosmicLlmApp {
             },
             agent_mode_active: true,
             dialog: None,
-            dialog_text_input_id: widget::Id::unique(),
+            dialog_text_content: None,
             available_mcp_tools: Vec::new(),
             tool_states: std::collections::HashMap::new(),
             pending_tool_calls_for_history: Vec::new(),
@@ -906,7 +907,8 @@ impl Application for CosmicLlmApp {
             let mut registry = mcp_registry_clone.write().await;
             if let Err(e) = registry.initialize_from_config(&mcp_config).await {
                 eprintln!("Failed to initialize MCP registry: {}", e);
-            } else if !initial_profile_mcp_servers.is_empty() {
+            } else {
+                // Always apply profile defaults, even if empty (empty = enable all)
                 registry.apply_profile_tool_defaults(&initial_profile_mcp_servers);
             }
         });
@@ -976,16 +978,6 @@ impl Application for CosmicLlmApp {
         }
         println!("✅ Finished checking for conversations with 'Generating title...'");
 
-        // Add welcome message
-        app.messages.push(ChatMessage {
-            content: "Welcome to Cosmic AI".to_string(),
-            is_user: false,
-            is_error: false,
-            reasoning_content: None,
-            is_summary: false,
-            is_summarized: false,
-            summarized_count: None,
-        });
 
         // Load recent conversations and update nav model
         app.load_recent_conversations();
@@ -1055,9 +1047,10 @@ impl Application for CosmicLlmApp {
                 if !self.input.trim().is_empty() || !self.attached_files.is_empty() {
                     // Create new conversation if none exists
                     if self.current_conversation_id.is_none() {
+                        let current_profile_name = Some(self.config.default.as_str());
                         let conv_id = self
                             .storage
-                            .create_conversation("Generating title...".to_string())
+                            .create_conversation_with_profile("Generating title...".to_string(), current_profile_name)
                             .unwrap_or_else(|e| {
                                 eprintln!("Failed to create conversation: {}", e);
                                 Uuid::new_v4()
@@ -1688,7 +1681,55 @@ impl Application for CosmicLlmApp {
                 self.current_conversation_id = Some(id);
                 self.current_page = NavigationPage::Chat;
                 if let Ok(Some(conv)) = self.storage.get_conversation(&id) {
+                    // Switch to the conversation's profile, or default if not set/present
+                    let profile_name_to_use = conv.profile_name.as_deref()
+                        .and_then(|name| {
+                            if self.config.profiles.contains_key(name) {
+                                Some(name)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(&self.config.default);
+                    
+                    // Only switch if different from current default
+                    let profile_changed = if profile_name_to_use != &self.config.default {
+                        if let Some(profile) = self.config.get_profile(profile_name_to_use).cloned() {
+                            let masked = if profile.api_key.len() > 6 {
+                                format!(
+                                    "{}...{}",
+                                    &profile.api_key[..3],
+                                    &profile.api_key[profile.api_key.len().saturating_sub(3)..]
+                                )
+                            } else {
+                                "***".to_string()
+                            };
+                            println!("🔄 Switching to conversation's profile '{}' model='{}' endpoint='{}' api_key='{}'", profile_name_to_use, profile.model, profile.endpoint, masked);
+                            self.config.default = profile_name_to_use.to_string();
+                            self.llm_client = llm::build_llm_client(&profile);
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        // Ensure LLM client is using the current default profile
+                        if let Some(profile) = self.config.get_default_profile().cloned() {
+                            self.llm_client = llm::build_llm_client(&profile);
+                        }
+                        false
+                    };
+                    
                     self.rebuild_conversation_view(conv);
+                    
+                    // Return profile tool defaults task if profile changed
+                    if profile_changed {
+                        if let Some(task) = self.profile_tool_defaults_task() {
+                            // Update nav model to reflect current conversation
+                            self.load_recent_conversations();
+                            self.update_nav_model();
+                            return task;
+                        }
+                    }
                 }
                 // Update nav model to reflect current conversation
                 self.load_recent_conversations();
@@ -2201,12 +2242,10 @@ impl Application for CosmicLlmApp {
                     Err(e) => {
                         eprintln!("Failed to open MCP config file in cosmic-edit: {}", e);
                         // Show error dialog to user
-                        self.dialog = Some(DialogPage::MessageText(
-                            text_editor::Content::with_text(&format!(
-                                "Failed to open MCP config file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
-                                path_str, e
-                            )),
-                        ));
+                        self.dialog = Some(DialogPage::message_text(format!(
+                            "Failed to open MCP config file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
+                            path_str, e
+                        )));
                     }
                 }
             }
@@ -2224,12 +2263,10 @@ impl Application for CosmicLlmApp {
                     }
                     Err(e) => {
                         eprintln!("Failed to open config file in cosmic-edit: {}", e);
-                        self.dialog = Some(DialogPage::MessageText(
-                            text_editor::Content::with_text(&format!(
-                                "Failed to open config file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
-                                path_str, e
-                            )),
-                        ));
+                        self.dialog = Some(DialogPage::message_text(format!(
+                            "Failed to open config file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
+                            path_str, e
+                        )));
                     }
                 }
             }
@@ -2249,21 +2286,17 @@ impl Application for CosmicLlmApp {
                             }
                             Err(e) => {
                                 eprintln!("Failed to open prompt file in cosmic-edit: {}", e);
-                                self.dialog = Some(DialogPage::MessageText(
-                                    text_editor::Content::with_text(&format!(
-                                        "Failed to open prompt file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
-                                        path_str, e
-                                    )),
-                                ));
+                                self.dialog = Some(DialogPage::message_text(format!(
+                                    "Failed to open prompt file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
+                                    path_str, e
+                                )));
                             }
                         }
                     } else {
-                        self.dialog = Some(DialogPage::MessageText(
-                            text_editor::Content::with_text(&format!(
-                                "Profile '{}' does not have a prompt file configured.",
-                                profile_name
-                            )),
-                        ));
+                        self.dialog = Some(DialogPage::message_text(format!(
+                            "Profile '{}' does not have a prompt file configured.",
+                            profile_name
+                        )));
                     }
                 }
             }
@@ -2434,6 +2467,10 @@ impl Application for CosmicLlmApp {
                                     temperature_str: profile.temperature.map(|t| t.to_string()).unwrap_or_default(),
                                     max_tokens: profile.max_tokens,
                                     max_tokens_str: profile.max_tokens.map(|t| t.to_string()).unwrap_or_default(),
+                                    context_window_size: profile.context_window_size,
+                                    context_window_size_str: profile.context_window_size.map(|s| s.to_string()).unwrap_or_default(),
+                                    summarize_threshold: profile.summarize_threshold,
+                                    summarize_threshold_str: profile.summarize_threshold.to_string(),
                                     profile_prompt_file: profile.profile_prompt_file.clone(),
                                     profile_prompt_file_str: profile.profile_prompt_file.as_deref().unwrap_or("").to_string(),
                                     enabled_mcp: profile.enabled_mcp.clone(),
@@ -2455,6 +2492,8 @@ impl Application for CosmicLlmApp {
                                 profile.api_key = edit_state.api_key.clone();
                                 profile.temperature = edit_state.temperature;
                                 profile.max_tokens = edit_state.max_tokens;
+                                profile.context_window_size = edit_state.context_window_size;
+                                profile.summarize_threshold = edit_state.summarize_threshold;
                                 profile.profile_prompt_file = edit_state.profile_prompt_file.clone();
                                 profile.enabled_mcp = edit_state.enabled_mcp.clone();
                                 profile.hidden = edit_state.hidden;
@@ -2493,6 +2532,18 @@ impl Application for CosmicLlmApp {
                         if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
                             edit_state.max_tokens = tokens;
                             edit_state.max_tokens_str = tokens.map(|t| t.to_string()).unwrap_or_default();
+                        }
+                    }
+                    SimpleSettingsMessage::UpdateProfileContextWindowSize(profile_name, size) => {
+                        if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
+                            edit_state.context_window_size = size;
+                            edit_state.context_window_size_str = size.map(|s| s.to_string()).unwrap_or_default();
+                        }
+                    }
+                    SimpleSettingsMessage::UpdateProfileSummarizeThreshold(profile_name, threshold) => {
+                        if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
+                            edit_state.summarize_threshold = threshold;
+                            edit_state.summarize_threshold_str = threshold.to_string();
                         }
                     }
                     SimpleSettingsMessage::UpdateProfilePromptFile(profile_name, prompt_file) => {
@@ -2608,12 +2659,10 @@ impl Application for CosmicLlmApp {
                         // Save to file
                         if let Err(e) = self.config.save() {
                             eprintln!("Failed to save settings: {}", e);
-                            self.dialog = Some(DialogPage::MessageText(
-                                text_editor::Content::with_text(&format!(
-                                    "Failed to save settings:\n{}",
-                                    e
-                                )),
-                            ));
+                            self.dialog = Some(DialogPage::message_text(format!(
+                                "Failed to save settings:\n{}",
+                                e
+                            )));
                         } else {
                             self.settings_page.has_changes = false;
                             self.settings_changed = false;
@@ -2644,28 +2693,52 @@ impl Application for CosmicLlmApp {
             }
             Message::DialogAction(action) => {
                 match action {
+                    DialogAction::Open(page) => {
+                        // Initialize text content when opening MessageText dialog
+                        match &page {
+                            DialogPage::MessageText(text) => {
+                                self.dialog_text_content = Some(text_editor::Content::with_text(text));
+                            }
+                        }
+                        self.dialog = Some(page);
+                    }
+                    DialogAction::Update(page) => {
+                        // Update text content when updating MessageText dialog
+                        match &page {
+                            DialogPage::MessageText(text) => {
+                                self.dialog_text_content = Some(text_editor::Content::with_text(text));
+                            }
+                        }
+                        self.dialog = Some(page);
+                    }
                     DialogAction::Close => {
                         self.dialog = None;
+                        self.dialog_text_content = None;
+                    }
+                    DialogAction::Complete => {
+                        // For MessageText dialog, Complete just closes it
+                        self.dialog = None;
+                        self.dialog_text_content = None;
                     }
                     DialogAction::CopyText => {
                         // Copy the current dialog text to clipboard
-                        if let Some(DialogPage::MessageText(content)) = &self.dialog {
-                            let _ = cli_clipboard::set_contents(content.text());
+                        if let Some(DialogPage::MessageText(text)) = &self.dialog {
+                            let _ = cli_clipboard::set_contents(text.clone());
                         }
                         // Keep dialog open for multiple copies
                     }
                     DialogAction::TextEditorAction(action) => {
                         // Handle text editor actions to enable selection
-                        if let Some(DialogPage::MessageText(content)) = &mut self.dialog {
+                        if let Some(content) = &mut self.dialog_text_content {
                             content.perform(action);
                         }
                     }
                 }
             }
             Message::ShowMessageDialog(content) => {
-                self.dialog = Some(DialogPage::MessageText(text_editor::Content::with_text(
-                    &content,
-                )));
+                let text = content.clone();
+                self.dialog_text_content = Some(text_editor::Content::with_text(&text));
+                self.dialog = Some(DialogPage::message_text(text));
             }
             Message::MCPToolsUpdated(tools) => {
                 self.available_mcp_tools = tools;
@@ -2715,6 +2788,56 @@ impl Application for CosmicLlmApp {
                     async move {
                         let mut registry = mcp_registry.write().await;
                         registry.set_tool_enabled(&tool_name, enabled);
+                        cosmic::Action::App(Message::RefreshMCPTools)
+                    },
+                    |msg| msg,
+                );
+            }
+            Message::ToggleMCPServerEnabled(server_name, enabled) => {
+                // Update profile's enabled_mcp list synchronously
+                let profile_name = self.config.default.clone();
+                if let Some(profile) = self.config.profiles.get_mut(&profile_name) {
+                    if enabled {
+                        // Add server to enabled list if not present
+                        if !profile.enabled_mcp.iter().any(|s| s.eq_ignore_ascii_case(&server_name)) {
+                            profile.enabled_mcp.push(server_name.clone());
+                        }
+                    } else {
+                        // Remove server from enabled list
+                        profile.enabled_mcp.retain(|s| !s.eq_ignore_ascii_case(&server_name));
+                    }
+                }
+                
+                // Update tool_states synchronously for immediate UI feedback
+                if let Ok(registry) = self.mcp_registry.try_read() {
+                    // Find all tools for this server and update their states
+                    for tool in &self.available_mcp_tools {
+                        if let Ok(tool_server) = registry.get_server_for_tool(&tool.name) {
+                            if tool_server == &server_name {
+                                self.tool_states.insert(tool.name.clone(), enabled);
+                            }
+                        }
+                    }
+                }
+                
+                // Update registry and save config asynchronously
+                let mcp_registry = self.mcp_registry.clone();
+                let server_name_clone = server_name.clone();
+                let config = self.config.clone();
+                
+                return cosmic::Task::perform(
+                    async move {
+                        // Update registry
+                        {
+                            let mut registry = mcp_registry.write().await;
+                            registry.set_server_enabled(&server_name_clone, enabled);
+                        }
+                        
+                        // Save config
+                        if let Err(e) = config.save() {
+                            eprintln!("Failed to save config: {}", e);
+                        }
+                        
                         cosmic::Action::App(Message::RefreshMCPTools)
                     },
                     |msg| msg,
@@ -2777,7 +2900,7 @@ impl Application for CosmicLlmApp {
 
     fn view(&self) -> Element<Self::Message> {
         // Main layout with side panel and content area
-        let mut content = cosmic::widget::row::with_capacity(1).push(
+        cosmic::widget::row::with_capacity(1).push(
             // Main content area
             match self.current_page {
                 NavigationPage::Chat => chat::chat_view(self),
@@ -2788,14 +2911,15 @@ impl Application for CosmicLlmApp {
                     .view(&self.config)
                     .map(Message::SettingsMessage),
             },
-        );
+        )
+        .into()
+    }
 
-        // Add dialog overlay if dialog is open
-        if let Some(dialog_page) = &self.dialog {
-            content = content.push(dialog_page.view(&self.dialog_text_input_id));
-        }
-
-        content.into()
+    fn dialog(&self) -> Option<Element<Self::Message>> {
+        let dialog_page = self.dialog.as_ref()?;
+        // Content should always be set when MessageText dialog is open
+        let content = self.dialog_text_content.as_ref()?;
+        Some(dialog_page.view(content).into())
     }
 
     fn header_start(&self) -> Vec<Element<Self::Message>> {
@@ -2812,6 +2936,17 @@ impl Application for CosmicLlmApp {
     ) -> app::Task<Self::Message> {
         if let Some(nav_item) = self.nav_model.data::<NavItem>(entity) {
             match nav_item {
+                NavItem::Page(NavigationPage::Chat) => {
+                    // "New Chat" clicked - trigger NewConversation if we have an active conversation
+                    if self.current_conversation_id.is_some() {
+                        return app::Task::perform(
+                            async move { cosmic::Action::App(Message::NewConversation) },
+                            |action| action,
+                        );
+                    }
+                    // Already in new chat, just navigate to Chat page
+                    self.current_page = NavigationPage::Chat;
+                }
                 NavItem::Page(page) => {
                     self.current_page = *page;
                 }
@@ -2882,46 +3017,58 @@ impl CosmicLlmApp {
         // Clear and rebuild the nav model
         let mut model = widget::segmented_button::ModelBuilder::default().build();
         
-        // Get current conversation title
-        let current_title = if let Some(conv_id) = self.current_conversation_id {
-            self.recent_conversations
-                .iter()
-                .find(|(id, _)| *id == conv_id)
-                .map(|(_, title)| title.clone())
-                .or_else(|| {
-                    // Try to get from storage if not in recent list
-                    self.storage
-                        .get_conversation(&conv_id)
-                        .ok()
-                        .flatten()
-                        .map(|c| c.title)
-                })
-                .unwrap_or_else(|| "New Chat".to_string())
-        } else {
-            "New Chat".to_string()
-        };
+        let current_conv_id = self.current_conversation_id;
         
-        // Add current chat title (non-selectable, just for display)
-        model
-            .insert()
-            .text(current_title.clone())
-            .icon(crate::ui::icons::get_icon("chat-symbolic", 16))
-            .data(NavItem::Page(NavigationPage::Chat));
-        
-        // Add separator
-        // Add recent conversations (up to 10)
-        let recent_conv_ids: Vec<(Uuid, String)> = self.recent_conversations
-            .iter()
-            .filter(|(conv_id, _)| Some(*conv_id) != self.current_conversation_id)
-            .map(|(id, title)| (*id, title.clone()))
-            .collect();
-        
-        for (conv_id, title) in recent_conv_ids {
+        // Add "New Chat" as first item when there's no active conversation
+        if current_conv_id.is_none() {
             model
                 .insert()
-                .text(title)
+                .text("New Chat")
+                .icon(crate::ui::icons::get_icon("chat-symbolic", 16))
+                .data(NavItem::Page(NavigationPage::Chat));
+        }
+        
+        // Ensure active conversation is always visible (in case it's not in top 11 yet)
+        // We'll add it first if it's not in the recent list
+        let mut added_conv_ids = std::collections::HashSet::new();
+        let active_conv_title = if let Some(active_conv_id) = current_conv_id {
+            // Check if active conversation is in recent list
+            let is_in_recent = self.recent_conversations.iter()
+                .any(|(id, _)| *id == active_conv_id);
+            
+            if !is_in_recent {
+                // Fetch the active conversation's title from storage
+                self.storage.get_conversation(&active_conv_id)
+                    .ok()
+                    .flatten()
+                    .map(|conv| (active_conv_id, conv.title))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        
+        // Add active conversation first if it wasn't in recent list
+        if let Some((active_conv_id, active_title)) = active_conv_title {
+            added_conv_ids.insert(active_conv_id);
+            model
+                .insert()
+                .text(active_title)
                 .icon(crate::ui::icons::get_icon("chat-bubble-text-symbolic", 16))
-                .data(NavItem::Conversation(conv_id));
+                .data(NavItem::Conversation(active_conv_id));
+        }
+        
+        // Add all recent conversations (including active one if it was in the list, up to 11 items)
+        for (conv_id, title) in &self.recent_conversations {
+            if !added_conv_ids.contains(conv_id) {
+                added_conv_ids.insert(*conv_id);
+                model
+                    .insert()
+                    .text(title.clone())
+                    .icon(crate::ui::icons::get_icon("chat-bubble-text-symbolic", 16))
+                    .data(NavItem::Conversation(*conv_id));
+            }
         }
         
         // Add "More history" (replaces History)
@@ -2947,10 +3094,8 @@ impl CosmicLlmApp {
             .data(NavItem::Page(NavigationPage::Settings))
             .divider_above(true);
         
-        // Activate the current page or conversation
-        let current_conv_id = self.current_conversation_id;
+        // Activate the current conversation or "New Chat" if no active conversation
         let mut active_entity_opt = None;
-        let mut chat_entity_opt = None;
         let mut first_entity_opt = None;
         
         for entity in model.iter() {
@@ -2960,11 +3105,6 @@ impl CosmicLlmApp {
             
             if let Some(nav_item) = model.data::<NavItem>(entity) {
                 match nav_item {
-                    NavItem::Page(NavigationPage::Chat) => {
-                        if chat_entity_opt.is_none() {
-                            chat_entity_opt = Some(entity);
-                        }
-                    }
                     NavItem::Conversation(id) => {
                         if let Some(conv_id) = current_conv_id {
                             if id == &conv_id {
@@ -2973,15 +3113,19 @@ impl CosmicLlmApp {
                             }
                         }
                     }
+                    NavItem::Page(NavigationPage::Chat) => {
+                        // "New Chat" item - activate if no active conversation
+                        if current_conv_id.is_none() && active_entity_opt.is_none() {
+                            active_entity_opt = Some(entity);
+                        }
+                    }
                     _ => {}
                 }
             }
         }
         
-        // Activate the found entity or fallback to Chat or first
+        // Activate the found entity or fallback to first
         if let Some(entity) = active_entity_opt {
-            model.activate(entity);
-        } else if let Some(entity) = chat_entity_opt {
             model.activate(entity);
         } else if let Some(entity) = first_entity_opt {
             model.activate(entity);
@@ -2990,9 +3134,9 @@ impl CosmicLlmApp {
         self.nav_model = model;
     }
     
-    /// Load recent conversations from storage (last 10)
+    /// Load recent conversations from storage (last 11 to accommodate active conversation)
     fn load_recent_conversations(&mut self) {
-        match self.storage.list_conversations_paginated(None, Some(10)) {
+        match self.storage.list_conversations_paginated(None, Some(11)) {
             Ok(conversations) => {
                 self.recent_conversations = conversations
                     .into_iter()
@@ -3062,10 +3206,8 @@ impl CosmicLlmApp {
 
     fn profile_tool_defaults_task(&self) -> Option<app::Task<Message>> {
         let profile = self.config.get_default_profile()?;
-        if profile.enabled_mcp.is_empty() {
-            return None;
-        }
-
+        // Always apply profile defaults, even if enabled_mcp is empty
+        // (empty list means enable all tools)
         let allowed_servers = profile.enabled_mcp.clone();
         let registry = self.mcp_registry.clone();
 
