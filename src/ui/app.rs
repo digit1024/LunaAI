@@ -2935,6 +2935,17 @@ impl Application for CosmicLlmApp {
     ) -> app::Task<Self::Message> {
         if let Some(nav_item) = self.nav_model.data::<NavItem>(entity) {
             match nav_item {
+                NavItem::Page(NavigationPage::Chat) => {
+                    // "New Chat" clicked - trigger NewConversation if we have an active conversation
+                    if self.current_conversation_id.is_some() {
+                        return app::Task::perform(
+                            async move { cosmic::Action::App(Message::NewConversation) },
+                            |action| action,
+                        );
+                    }
+                    // Already in new chat, just navigate to Chat page
+                    self.current_page = NavigationPage::Chat;
+                }
                 NavItem::Page(page) => {
                     self.current_page = *page;
                 }
@@ -3005,46 +3016,58 @@ impl CosmicLlmApp {
         // Clear and rebuild the nav model
         let mut model = widget::segmented_button::ModelBuilder::default().build();
         
-        // Get current conversation title
-        let current_title = if let Some(conv_id) = self.current_conversation_id {
-            self.recent_conversations
-                .iter()
-                .find(|(id, _)| *id == conv_id)
-                .map(|(_, title)| title.clone())
-                .or_else(|| {
-                    // Try to get from storage if not in recent list
-                    self.storage
-                        .get_conversation(&conv_id)
-                        .ok()
-                        .flatten()
-                        .map(|c| c.title)
-                })
-                .unwrap_or_else(|| "New Chat".to_string())
-        } else {
-            "New Chat".to_string()
-        };
+        let current_conv_id = self.current_conversation_id;
         
-        // Add current chat title (non-selectable, just for display)
-        model
-            .insert()
-            .text(current_title.clone())
-            .icon(crate::ui::icons::get_icon("chat-symbolic", 16))
-            .data(NavItem::Page(NavigationPage::Chat));
-        
-        // Add separator
-        // Add recent conversations (up to 10)
-        let recent_conv_ids: Vec<(Uuid, String)> = self.recent_conversations
-            .iter()
-            .filter(|(conv_id, _)| Some(*conv_id) != self.current_conversation_id)
-            .map(|(id, title)| (*id, title.clone()))
-            .collect();
-        
-        for (conv_id, title) in recent_conv_ids {
+        // Add "New Chat" as first item when there's no active conversation
+        if current_conv_id.is_none() {
             model
                 .insert()
-                .text(title)
+                .text("New Chat")
+                .icon(crate::ui::icons::get_icon("chat-symbolic", 16))
+                .data(NavItem::Page(NavigationPage::Chat));
+        }
+        
+        // Ensure active conversation is always visible (in case it's not in top 11 yet)
+        // We'll add it first if it's not in the recent list
+        let mut added_conv_ids = std::collections::HashSet::new();
+        let active_conv_title = if let Some(active_conv_id) = current_conv_id {
+            // Check if active conversation is in recent list
+            let is_in_recent = self.recent_conversations.iter()
+                .any(|(id, _)| *id == active_conv_id);
+            
+            if !is_in_recent {
+                // Fetch the active conversation's title from storage
+                self.storage.get_conversation(&active_conv_id)
+                    .ok()
+                    .flatten()
+                    .map(|conv| (active_conv_id, conv.title))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        
+        // Add active conversation first if it wasn't in recent list
+        if let Some((active_conv_id, active_title)) = active_conv_title {
+            added_conv_ids.insert(active_conv_id);
+            model
+                .insert()
+                .text(active_title)
                 .icon(crate::ui::icons::get_icon("chat-bubble-text-symbolic", 16))
-                .data(NavItem::Conversation(conv_id));
+                .data(NavItem::Conversation(active_conv_id));
+        }
+        
+        // Add all recent conversations (including active one if it was in the list, up to 11 items)
+        for (conv_id, title) in &self.recent_conversations {
+            if !added_conv_ids.contains(conv_id) {
+                added_conv_ids.insert(*conv_id);
+                model
+                    .insert()
+                    .text(title.clone())
+                    .icon(crate::ui::icons::get_icon("chat-bubble-text-symbolic", 16))
+                    .data(NavItem::Conversation(*conv_id));
+            }
         }
         
         // Add "More history" (replaces History)
@@ -3070,10 +3093,8 @@ impl CosmicLlmApp {
             .data(NavItem::Page(NavigationPage::Settings))
             .divider_above(true);
         
-        // Activate the current page or conversation
-        let current_conv_id = self.current_conversation_id;
+        // Activate the current conversation or "New Chat" if no active conversation
         let mut active_entity_opt = None;
-        let mut chat_entity_opt = None;
         let mut first_entity_opt = None;
         
         for entity in model.iter() {
@@ -3083,11 +3104,6 @@ impl CosmicLlmApp {
             
             if let Some(nav_item) = model.data::<NavItem>(entity) {
                 match nav_item {
-                    NavItem::Page(NavigationPage::Chat) => {
-                        if chat_entity_opt.is_none() {
-                            chat_entity_opt = Some(entity);
-                        }
-                    }
                     NavItem::Conversation(id) => {
                         if let Some(conv_id) = current_conv_id {
                             if id == &conv_id {
@@ -3096,15 +3112,19 @@ impl CosmicLlmApp {
                             }
                         }
                     }
+                    NavItem::Page(NavigationPage::Chat) => {
+                        // "New Chat" item - activate if no active conversation
+                        if current_conv_id.is_none() && active_entity_opt.is_none() {
+                            active_entity_opt = Some(entity);
+                        }
+                    }
                     _ => {}
                 }
             }
         }
         
-        // Activate the found entity or fallback to Chat or first
+        // Activate the found entity or fallback to first
         if let Some(entity) = active_entity_opt {
-            model.activate(entity);
-        } else if let Some(entity) = chat_entity_opt {
             model.activate(entity);
         } else if let Some(entity) = first_entity_opt {
             model.activate(entity);
@@ -3113,9 +3133,9 @@ impl CosmicLlmApp {
         self.nav_model = model;
     }
     
-    /// Load recent conversations from storage (last 10)
+    /// Load recent conversations from storage (last 11 to accommodate active conversation)
     fn load_recent_conversations(&mut self) {
-        match self.storage.list_conversations_paginated(None, Some(10)) {
+        match self.storage.list_conversations_paginated(None, Some(11)) {
             Ok(conversations) => {
                 self.recent_conversations = conversations
                     .into_iter()
