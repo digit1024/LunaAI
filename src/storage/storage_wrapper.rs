@@ -244,12 +244,14 @@ impl Storage {
                 rusqlite::Error::InvalidParameterName(format!("Invalid UUID: {}", e))
             })?;
 
+            // Use last_message for updated_at if available, otherwise use created_at
+            let updated_at_timestamp = db_conv.last_message.unwrap_or(db_conv.created_at);
             index.push(super::conversation_storage::ConversationIndex {
                 id,
                 title: db_conv.title,
                 created_at: DateTime::from_timestamp(db_conv.created_at, 0)
                     .unwrap_or_else(Utc::now),
-                updated_at: DateTime::from_timestamp(db_conv.created_at, 0)
+                updated_at: DateTime::from_timestamp(updated_at_timestamp, 0)
                     .unwrap_or_else(Utc::now),
             });
         }

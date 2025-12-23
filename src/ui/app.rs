@@ -1046,9 +1046,10 @@ impl Application for CosmicLlmApp {
                 if !self.input.trim().is_empty() || !self.attached_files.is_empty() {
                     // Create new conversation if none exists
                     if self.current_conversation_id.is_none() {
+                        let current_profile_name = Some(self.config.default.as_str());
                         let conv_id = self
                             .storage
-                            .create_conversation("Generating title...".to_string())
+                            .create_conversation_with_profile("Generating title...".to_string(), current_profile_name)
                             .unwrap_or_else(|e| {
                                 eprintln!("Failed to create conversation: {}", e);
                                 Uuid::new_v4()
@@ -1679,7 +1680,55 @@ impl Application for CosmicLlmApp {
                 self.current_conversation_id = Some(id);
                 self.current_page = NavigationPage::Chat;
                 if let Ok(Some(conv)) = self.storage.get_conversation(&id) {
+                    // Switch to the conversation's profile, or default if not set/present
+                    let profile_name_to_use = conv.profile_name.as_deref()
+                        .and_then(|name| {
+                            if self.config.profiles.contains_key(name) {
+                                Some(name)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(&self.config.default);
+                    
+                    // Only switch if different from current default
+                    let profile_changed = if profile_name_to_use != &self.config.default {
+                        if let Some(profile) = self.config.get_profile(profile_name_to_use).cloned() {
+                            let masked = if profile.api_key.len() > 6 {
+                                format!(
+                                    "{}...{}",
+                                    &profile.api_key[..3],
+                                    &profile.api_key[profile.api_key.len().saturating_sub(3)..]
+                                )
+                            } else {
+                                "***".to_string()
+                            };
+                            println!("🔄 Switching to conversation's profile '{}' model='{}' endpoint='{}' api_key='{}'", profile_name_to_use, profile.model, profile.endpoint, masked);
+                            self.config.default = profile_name_to_use.to_string();
+                            self.llm_client = llm::build_llm_client(&profile);
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        // Ensure LLM client is using the current default profile
+                        if let Some(profile) = self.config.get_default_profile().cloned() {
+                            self.llm_client = llm::build_llm_client(&profile);
+                        }
+                        false
+                    };
+                    
                     self.rebuild_conversation_view(conv);
+                    
+                    // Return profile tool defaults task if profile changed
+                    if profile_changed {
+                        if let Some(task) = self.profile_tool_defaults_task() {
+                            // Update nav model to reflect current conversation
+                            self.load_recent_conversations();
+                            self.update_nav_model();
+                            return task;
+                        }
+                    }
                 }
                 // Update nav model to reflect current conversation
                 self.load_recent_conversations();

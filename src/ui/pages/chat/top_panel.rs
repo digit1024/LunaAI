@@ -140,16 +140,7 @@ pub fn top_panel(app: &CosmicLlmApp) -> Element<Message> {
     )
     .padding(12)
     .class(cosmic::style::Container::Card)
-    // .style(|_theme| cosmic::widget::container::Style {
-        
-    //     border: cosmic::iced::Border{width:0.0 , color: cosmic::iced::Color::from_rgba(0.0, 0.0, 0.0, 0.05) , 
-    //         radius: cosmic::iced::border::Radius{ top_left: 20.0, top_right: 20.0, bottom_left: 0.0, bottom_right: 0.0 }
-    //     },
-    //     background: Some(cosmic::iced::Background::Color(cosmic::theme::active().cosmic().background.component.hover.into())),
-        
-        
-    //     ..Default::default()
-    // })
+
     
 
     .into()

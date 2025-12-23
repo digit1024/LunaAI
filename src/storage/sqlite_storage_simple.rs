@@ -16,6 +16,7 @@ pub struct Conversation {
     pub created_at: i64,
     pub title_generated: bool,
     pub profile_name: Option<String>,
+    pub last_message: Option<i64>,
 }
 
 /// Represents a message in the database
@@ -129,7 +130,8 @@ impl SqliteStorage {
                 title TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 title_generated INTEGER NOT NULL DEFAULT 0,
-                profile_name TEXT
+                profile_name TEXT,
+                last_message INTEGER
             )",
             [],
         )?;
@@ -137,6 +139,12 @@ impl SqliteStorage {
         // Migrate existing conversations: add profile_name column if it doesn't exist
         let _ = self.conn.execute(
             "ALTER TABLE conversations ADD COLUMN profile_name TEXT",
+            [],
+        );
+        
+        // Migrate existing conversations: add last_message column if it doesn't exist
+        let _ = self.conn.execute(
+            "ALTER TABLE conversations ADD COLUMN last_message INTEGER",
             [],
         );
 
@@ -247,8 +255,8 @@ impl SqliteStorage {
         let created_at = Utc::now().timestamp();
 
         self.conn.execute(
-            "INSERT INTO conversations (id, title, created_at, title_generated, profile_name) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, title, created_at, 0, profile_name],
+            "INSERT INTO conversations (id, title, created_at, title_generated, profile_name, last_message) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, title, created_at, 0, profile_name, None::<i64>],
         )?;
 
         Ok(id)
@@ -340,6 +348,12 @@ impl SqliteStorage {
                 None::<String>, // summarized_message_ids
                 None::<i64>, // summarized_count
             ],
+        )?;
+
+        // Update conversation's last_message timestamp
+        self.conn.execute(
+            "UPDATE conversations SET last_message = ?1 WHERE id = ?2",
+            params![created_at, conversation_id],
         )?;
 
         Ok(())
@@ -500,6 +514,13 @@ impl SqliteStorage {
             ],
         )?;
 
+        // Update conversation's last_message timestamp to now (when summary is created)
+        let now = Utc::now().timestamp();
+        self.conn.execute(
+            "UPDATE conversations SET last_message = ?1 WHERE id = ?2",
+            params![now, conversation_id],
+        )?;
+
         Ok(())
     }
 
@@ -572,6 +593,13 @@ impl SqliteStorage {
             ],
         )?;
 
+        // Update conversation's last_message timestamp to now (when summary is created)
+        let now = Utc::now().timestamp();
+        transaction.execute(
+            "UPDATE conversations SET last_message = ?1 WHERE id = ?2",
+            params![now, conversation_id],
+        )?;
+
         transaction.commit()?;
         Ok(())
     }
@@ -580,7 +608,7 @@ impl SqliteStorage {
     pub fn get_conversation(&self, conversation_id: &str) -> SqliteResult<Option<Conversation>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, title, created_at, title_generated, profile_name FROM conversations WHERE id = ?1")?;
+            .prepare("SELECT id, title, created_at, title_generated, profile_name, last_message FROM conversations WHERE id = ?1")?;
 
         stmt.query_row(params![conversation_id], |row| {
             Ok(Conversation {
@@ -589,6 +617,7 @@ impl SqliteStorage {
                 created_at: row.get(2)?,
                 title_generated: row.get::<_, i32>(3)? != 0,
                 profile_name: row.get(4)?,
+                last_message: row.get(5)?,
             })
         })
         .optional()
@@ -605,7 +634,9 @@ impl SqliteStorage {
         offset: Option<usize>,
         limit: Option<usize>,
     ) -> SqliteResult<Vec<Conversation>> {
-        let mut query = "SELECT id, title, created_at, title_generated, profile_name FROM conversations ORDER BY created_at DESC".to_string();
+        // Order by last_message DESC first (most recently updated), then created_at DESC
+        // Conversations with NULL last_message (no messages yet) appear at the end
+        let mut query = "SELECT id, title, created_at, title_generated, profile_name, last_message FROM conversations ORDER BY (last_message IS NULL), last_message DESC, created_at DESC".to_string();
         
         if let Some(lim) = limit {
             query.push_str(&format!(" LIMIT {}", lim));
@@ -623,6 +654,7 @@ impl SqliteStorage {
                 created_at: row.get(2)?,
                 title_generated: row.get::<_, i32>(3)? != 0,
                 profile_name: row.get(4)?,
+                last_message: row.get(5)?,
             })
         })?;
 
@@ -653,7 +685,7 @@ impl SqliteStorage {
     pub fn get_conversations_without_title(&self) -> SqliteResult<Vec<Conversation>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, title, created_at, title_generated, profile_name FROM conversations WHERE title_generated = 0 ORDER BY created_at ASC")?;
+            .prepare("SELECT id, title, created_at, title_generated, profile_name, last_message FROM conversations WHERE title_generated = 0 ORDER BY created_at ASC")?;
 
         let conversation_iter = stmt.query_map([], |row| {
             Ok(Conversation {
@@ -662,6 +694,7 @@ impl SqliteStorage {
                 created_at: row.get(2)?,
                 title_generated: row.get::<_, i32>(3)? != 0,
                 profile_name: row.get(4)?,
+                last_message: row.get(5)?,
             })
         })?;
 
