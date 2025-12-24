@@ -83,81 +83,6 @@ class _SlideInWrapperState extends State<_SlideInWrapper>
   }
 }
 
-/// Slide direction for bubble animations
-enum SlideDirection { left, right, center }
-
-/// Animated wrapper that slides bubbles in from left/right
-class _SlideInWrapper extends StatefulWidget {
-  const _SlideInWrapper({
-    required this.child,
-    required this.direction,
-  });
-
-  final Widget child;
-  final SlideDirection direction;
-
-  @override
-  State<_SlideInWrapper> createState() => _SlideInWrapperState();
-}
-
-class _SlideInWrapperState extends State<_SlideInWrapper>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<Offset> _slideAnimation;
-  late Animation<double> _fadeAnimation;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 300),
-      vsync: this,
-    );
-
-    // Slide offset based on direction
-    final beginOffset = switch (widget.direction) {
-      SlideDirection.left => const Offset(-0.3, 0),
-      SlideDirection.right => const Offset(0.3, 0),
-      SlideDirection.center => Offset.zero,
-    };
-
-    _slideAnimation = Tween<Offset>(
-      begin: beginOffset,
-      end: Offset.zero,
-    ).animate(CurvedAnimation(
-      parent: _controller,
-      curve: Curves.easeOutCubic,
-    ));
-
-    _fadeAnimation = Tween<double>(
-      begin: 0.0,
-      end: 1.0,
-    ).animate(CurvedAnimation(
-      parent: _controller,
-      curve: Curves.easeOut,
-    ));
-
-    _controller.forward();
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SlideTransition(
-      position: _slideAnimation,
-      child: FadeTransition(
-        opacity: _fadeAnimation,
-        child: widget.child,
-      ),
-    );
-  }
-}
-
 /// Main chat bubble widget - routes to appropriate bubble type
 class ChatBubble extends StatelessWidget {
   const ChatBubble({
@@ -193,17 +118,32 @@ class ChatBubble extends StatelessWidget {
       case BubbleType.assistant:
         return _SlideInWrapper(
           direction: SlideDirection.left,
-          child: _AssistantBubble(message: message),
+          child: _AssistantBubble(
+            message: message,
+            isPrevUser: isPrevUser,
+            isPrevAssistant: isPrevAssistant,
+            isNextAssistant: isNextAssistant,
+          ),
         );
       case BubbleType.toolRequest:
         return _SlideInWrapper(
           direction: SlideDirection.left,
-          child: _ToolRequestBubble(message: message),
+          child: _ToolRequestBubble(
+            message: message,
+            isPrevUser: isPrevUser,
+            isPrevAssistant: isPrevAssistant,
+            isNextAssistant: isNextAssistant,
+          ),
         );
       case BubbleType.toolResult:
         return _SlideInWrapper(
           direction: SlideDirection.left,
-          child: _ToolResultBubble(message: message),
+          child: _ToolResultBubble(
+            message: message,
+            isPrevUser: isPrevUser,
+            isPrevAssistant: isPrevAssistant,
+            isNextAssistant: isNextAssistant,
+          ),
         );
       case BubbleType.summary:
         return _SlideInWrapper(
@@ -232,6 +172,7 @@ class _UserBubble extends StatelessWidget {
         child: GestureDetector(
           onLongPress: () => _copyToClipboard(context, message.content),
           child: Container(
+            margin: const EdgeInsets.symmetric(vertical: 6),
             decoration: BoxDecoration(
               color: colorScheme.primaryContainer,
               borderRadius: BorderRadius.only(
@@ -283,12 +224,14 @@ class _AssistantBubble extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final maxWidth = MediaQuery.of(context).size.width * 0.7;
+    final maxWidth = MediaQuery.of(context).size.width * 0.85;
     final colorScheme = Theme.of(context).colorScheme;
 
-    // Smart corner rounding
-    final topLeftRadius = isPrevAssistant ? 4.0 : 18.0;
-    final bottomLeftRadius = isNextAssistant ? 4.0 : 18.0;
+    // Smart corner rounding - 0 when adjacent to AI/tool messages
+    final topLeftRadius = isPrevAssistant ? 0.0 : 18.0;
+    final topRightRadius = isPrevAssistant ? 0.0 : 18.0;
+    final bottomLeftRadius = isNextAssistant ? 0.0 : 18.0;
+    final bottomRightRadius = isNextAssistant ? 0.0 : 18.0;
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -297,13 +240,17 @@ class _AssistantBubble extends ConsumerWidget {
         child: GestureDetector(
           onLongPress: () => _copyToClipboard(context, message.content),
           child: Container(
+            margin: EdgeInsets.only(
+              top: isPrevAssistant ? 0 : 6,
+              bottom: isNextAssistant ? 0 : 6,
+            ),
             decoration: BoxDecoration(
               color: colorScheme.surfaceContainerHighest,
               borderRadius: BorderRadius.only(
                 topLeft: Radius.circular(topLeftRadius),
-                topRight: const Radius.circular(18),
+                topRight: Radius.circular(topRightRadius),
                 bottomLeft: Radius.circular(bottomLeftRadius),
-                bottomRight: const Radius.circular(18),
+                bottomRight: Radius.circular(bottomRightRadius),
               ),
             ),
             child: Padding(
@@ -457,9 +404,11 @@ class _ToolRequestBubbleState extends State<_ToolRequestBubble> {
     final colorScheme = Theme.of(context).colorScheme;
     final paramsText = _stringify(widget.message.toolParams);
 
-    // Smart corner rounding
-    final topLeftRadius = widget.isPrevAssistant ? 4.0 : 18.0;
-    final bottomLeftRadius = widget.isNextAssistant ? 4.0 : 18.0;
+    // Smart corner rounding - 0 when adjacent to AI/tool messages
+    final topLeftRadius = widget.isPrevAssistant ? 0.0 : 18.0;
+    final topRightRadius = widget.isPrevAssistant ? 0.0 : 18.0;
+    final bottomLeftRadius = widget.isNextAssistant ? 0.0 : 18.0;
+    final bottomRightRadius = widget.isNextAssistant ? 0.0 : 18.0;
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -468,13 +417,17 @@ class _ToolRequestBubbleState extends State<_ToolRequestBubble> {
           maxWidth: MediaQuery.of(context).size.width * 0.85,
         ),
         child: Container(
+          margin: EdgeInsets.only(
+            top: widget.isPrevAssistant ? 0 : 6,
+            bottom: widget.isNextAssistant ? 0 : 6,
+          ),
           decoration: BoxDecoration(
-            color: colorScheme.tertiaryContainer.withOpacity(0.6),
+            color: colorScheme.surfaceContainerHighest,
             borderRadius: BorderRadius.only(
               topLeft: Radius.circular(topLeftRadius),
-              topRight: const Radius.circular(18),
+              topRight: Radius.circular(topRightRadius),
               bottomLeft: Radius.circular(bottomLeftRadius),
-              bottomRight: const Radius.circular(18),
+              bottomRight: Radius.circular(bottomRightRadius),
             ),
           ),
           child: Padding(
@@ -563,15 +516,17 @@ class _SummaryBubble extends StatelessWidget {
         constraints: BoxConstraints(
           maxWidth: MediaQuery.of(context).size.width * 0.95,
         ),
-        child: Card(
-          color: colorScheme.surfaceContainerHighest.withOpacity(0.7),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
-            side: BorderSide(
-              color: colorScheme.primary.withOpacity(0.3),
-              width: 1,
+        child: Container(
+          margin: const EdgeInsets.symmetric(vertical: 6),
+          child: Card(
+            color: colorScheme.surfaceContainerHighest.withOpacity(0.7),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+              side: BorderSide(
+                color: colorScheme.primary.withOpacity(0.3),
+                width: 1,
+              ),
             ),
-          ),
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: Column(
@@ -594,6 +549,7 @@ class _SummaryBubble extends StatelessWidget {
               ],
             ),
           ),
+        ),
         ),
       ),
     );
@@ -629,9 +585,11 @@ class _ToolResultBubbleState extends State<_ToolResultBubble> {
     final resultText = _stringify(widget.message.toolResult);
     final errorText = widget.message.toolError;
 
-    // Smart corner rounding
-    final topLeftRadius = widget.isPrevAssistant ? 4.0 : 18.0;
-    final bottomLeftRadius = widget.isNextAssistant ? 4.0 : 18.0;
+    // Smart corner rounding - 0 when adjacent to AI/tool messages
+    final topLeftRadius = widget.isPrevAssistant ? 0.0 : 18.0;
+    final topRightRadius = widget.isPrevAssistant ? 0.0 : 18.0;
+    final bottomLeftRadius = widget.isNextAssistant ? 0.0 : 18.0;
+    final bottomRightRadius = widget.isNextAssistant ? 0.0 : 18.0;
 
     final hasContent = (resultText != null && resultText.isNotEmpty) ||
         (errorText != null && errorText.isNotEmpty);
@@ -643,15 +601,17 @@ class _ToolResultBubbleState extends State<_ToolResultBubble> {
           maxWidth: MediaQuery.of(context).size.width * 0.85,
         ),
         child: Container(
+          margin: EdgeInsets.only(
+            top: widget.isPrevAssistant ? 0 : 6,
+            bottom: widget.isNextAssistant ? 0 : 6,
+          ),
           decoration: BoxDecoration(
-            color: isError
-                ? colorScheme.errorContainer.withOpacity(0.6)
-                : colorScheme.secondaryContainer.withOpacity(0.6),
+            color: colorScheme.surfaceContainerHighest,
             borderRadius: BorderRadius.only(
               topLeft: Radius.circular(topLeftRadius),
-              topRight: const Radius.circular(18),
+              topRight: Radius.circular(topRightRadius),
               bottomLeft: Radius.circular(bottomLeftRadius),
-              bottomRight: const Radius.circular(18),
+              bottomRight: Radius.circular(bottomRightRadius),
             ),
           ),
           child: Padding(
@@ -745,41 +705,6 @@ class _ToolResultBubbleState extends State<_ToolResultBubble> {
           ),
         ),
       ),
-    );
-  }
-}
-
-/// Timestamp row with copy button
-class _TimestampRow extends StatelessWidget {
-  const _TimestampRow({
-    required this.timestamp,
-    required this.onCopy,
-  });
-
-  final DateTime timestamp;
-  final VoidCallback onCopy;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          _formatTimestamp(timestamp),
-          style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: colorScheme.onSurfaceVariant,
-              ),
-        ),
-        const SizedBox(width: 8),
-        IconButton(
-          icon: const Icon(Icons.copy, size: 16),
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(),
-          tooltip: 'Copy message',
-          onPressed: onCopy,
-        ),
-      ],
     );
   }
 }
