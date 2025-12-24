@@ -256,25 +256,27 @@ class _AssistantBubble extends ConsumerWidget {
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               child: Column(
+                mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (message.isStreaming)
-                    SelectableText(
-                      message.content,
-                      style: Theme.of(context).textTheme.bodyMedium,
-                    )
-                  else
-                    MarkdownBody(
-                      data: message.content,
-                      shrinkWrap: true,
-                      styleSheet: MarkdownStyleSheet(
-                        p: Theme.of(context).textTheme.bodyMedium,
+                  if (message.content.isNotEmpty)
+                    if (message.isStreaming)
+                      SelectableText(
+                        message.content,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      )
+                    else
+                      MarkdownBody(
+                        data: message.content,
+                        shrinkWrap: true,
+                        styleSheet: MarkdownStyleSheet(
+                          p: Theme.of(context).textTheme.bodyMedium,
+                        ),
                       ),
-                    ),
                   // Reasoning content (collapsible) - show during streaming too
                   if (message.reasoningContent != null &&
                       message.reasoningContent!.isNotEmpty) ...[
-                    const SizedBox(height: 8),
+                    if (message.content.isNotEmpty) const SizedBox(height: 8),
                     _CollapsiblePayload(
                       icon: Icons.psychology,
                       label: '💭 Thinking',
@@ -282,33 +284,40 @@ class _AssistantBubble extends ConsumerWidget {
                       initiallyExpanded: message.isStreaming,
                     ),
                   ],
-                  const SizedBox(height: 6),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      Text(
-                        _formatTimestamp(message.timestamp),
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                              color: colorScheme.onSurfaceVariant,
-                            ),
-                      ),
-                      const SizedBox(width: 8),
-                      IconButton(
-                        icon: const Icon(Icons.copy, size: 16),
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(),
-                        tooltip: 'Copy message',
-                        onPressed: () => _copyToClipboard(context, message.content),
-                      ),
-                      if (!message.isStreaming) ...[
-                        const SizedBox(width: 4),
-                        _TtsPlayButton(
-                          text: message.content,
-                          ref: ref,
+                  // Only show timestamp and actions if message has content
+                  if (message.content.isNotEmpty ||
+                      (message.reasoningContent != null &&
+                          message.reasoningContent!.isNotEmpty)) ...[
+                    const SizedBox(height: 6),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        Text(
+                          _formatTimestamp(message.timestamp),
+                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                color: colorScheme.onSurfaceVariant,
+                              ),
                         ),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          icon: const Icon(Icons.copy, size: 16),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          tooltip: 'Copy message',
+                          onPressed: () => _copyToClipboard(context, message.content),
+                        ),
+                        if (!message.isStreaming && message.content.isNotEmpty) ...[
+                          const SizedBox(width: 4),
+                          _TtsPlayButton(
+                            text: message.content,
+                            ref: ref,
+                          ),
+                        ],
                       ],
-                    ],
-                  ),
+                    ),
+                  ] else
+                    // Minimal placeholder to maintain width when completely empty
+                    const SizedBox(height: 1, width: double.infinity),
                 ],
               ),
             ),
@@ -431,7 +440,7 @@ class _ToolRequestBubbleState extends State<_ToolRequestBubble> {
             ),
           ),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -441,14 +450,14 @@ class _ToolRequestBubbleState extends State<_ToolRequestBubble> {
                   children: [
                     Icon(
                       Icons.build_circle,
-                      size: 18,
+                      size: 16,
                       color: colorScheme.tertiary,
                     ),
-                    const SizedBox(width: 8),
+                    const SizedBox(width: 6),
                     Expanded(
                       child: Text(
                         widget.message.toolName ?? 'Tool',
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
                               fontWeight: FontWeight.w500,
                             ),
                         overflow: TextOverflow.ellipsis,
@@ -458,7 +467,7 @@ class _ToolRequestBubbleState extends State<_ToolRequestBubble> {
                       IconButton(
                         icon: Icon(
                           _isExpanded ? Icons.expand_less : Icons.expand_more,
-                          size: 20,
+                          size: 18,
                         ),
                         padding: EdgeInsets.zero,
                         constraints: const BoxConstraints(),
@@ -474,10 +483,10 @@ class _ToolRequestBubbleState extends State<_ToolRequestBubble> {
 
                 // Parameters (expandable)
                 if (_isExpanded && paramsText != null && paramsText.isNotEmpty) ...[
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 6),
                   Container(
                     width: double.infinity,
-                    padding: const EdgeInsets.all(8),
+                    padding: const EdgeInsets.all(6),
                     decoration: BoxDecoration(
                       color: colorScheme.surfaceContainerHighest.withOpacity(0.4),
                       borderRadius: BorderRadius.circular(8),
@@ -615,7 +624,7 @@ class _ToolResultBubbleState extends State<_ToolResultBubble> {
             ),
           ),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -625,14 +634,14 @@ class _ToolResultBubbleState extends State<_ToolResultBubble> {
                   children: [
                     Icon(
                       isError ? Icons.error : Icons.check_circle,
-                      size: 18,
+                      size: 16,
                       color: isError ? colorScheme.error : Colors.green,
                     ),
-                    const SizedBox(width: 8),
+                    const SizedBox(width: 6),
                     Expanded(
                       child: Text(
                         '${widget.message.toolName ?? 'Tool'} Result',
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
                               fontWeight: FontWeight.w500,
                             ),
                         overflow: TextOverflow.ellipsis,
@@ -642,7 +651,7 @@ class _ToolResultBubbleState extends State<_ToolResultBubble> {
                       IconButton(
                         icon: Icon(
                           _isExpanded ? Icons.expand_less : Icons.expand_more,
-                          size: 20,
+                          size: 18,
                         ),
                         padding: EdgeInsets.zero,
                         constraints: const BoxConstraints(),
@@ -658,17 +667,17 @@ class _ToolResultBubbleState extends State<_ToolResultBubble> {
 
                 // Error message (always shown if exists)
                 if (_isExpanded && errorText != null && errorText.isNotEmpty) ...[
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 6),
                   Container(
-                    padding: const EdgeInsets.all(8),
+                    padding: const EdgeInsets.all(6),
                     decoration: BoxDecoration(
                       color: colorScheme.error.withOpacity(0.1),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Row(
                       children: [
-                        Icon(Icons.warning, size: 16, color: colorScheme.error),
-                        const SizedBox(width: 8),
+                        Icon(Icons.warning, size: 14, color: colorScheme.error),
+                        const SizedBox(width: 6),
                         Expanded(
                           child: Text(
                             errorText,
@@ -684,10 +693,10 @@ class _ToolResultBubbleState extends State<_ToolResultBubble> {
 
                 // Result (expandable)
                 if (_isExpanded && resultText != null && resultText.isNotEmpty) ...[
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 6),
                   Container(
                     width: double.infinity,
-                    padding: const EdgeInsets.all(8),
+                    padding: const EdgeInsets.all(6),
                     decoration: BoxDecoration(
                       color: colorScheme.surfaceContainerHighest.withOpacity(0.4),
                       borderRadius: BorderRadius.circular(8),
