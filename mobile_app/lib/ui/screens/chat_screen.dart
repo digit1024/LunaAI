@@ -564,13 +564,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           ? state.chatMessages[index + 1]
                           : null;
                       
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 6),
-                        child: ChatBubble(
-                          message: message,
-                          prevMessage: prevMessage,
-                          nextMessage: nextMessage,
-                        ),
+                      return ChatBubble(
+                        message: message,
+                        prevMessage: prevMessage,
+                        nextMessage: nextMessage,
                       );
                     }
                     return const Padding(
