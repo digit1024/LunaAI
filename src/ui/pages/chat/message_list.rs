@@ -252,12 +252,51 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                 }
             }
 
-            cosmic::widget::row::with_capacity(2).push(column).push(
-                cosmic::widget::button::text("📋")
-                    .on_press(Message::ShowMessageDialog(content))
-                    .padding(4)
-                    .class(cosmic::style::Button::Text),
-            )
+            {
+                // Add buttons at bottom left: Copy and Play/Stop (if TTS available)
+                let mut button_row = cosmic::widget::row::with_capacity(3)
+                    .push(
+                        cosmic::widget::button::icon(crate::ui::icons::get_handle(
+                            "edit-copy-symbolic",
+                            16,
+                        ))
+                        .on_press(Message::ShowMessageDialog(content.clone()))
+                    );
+                
+                // Add Play/Stop button for TTS (only for non-user messages and if feature enabled)
+                #[cfg(feature = "ttsandstt")]
+                {
+                    if !msg.is_user && app.dbus_ttsstt_available {
+                        let is_playing = app.playing_message_id == Some(i);
+                        if is_playing {
+                            button_row = button_row.push(
+                                cosmic::widget::button::icon(crate::ui::icons::get_handle(
+                                    "process-stop-symbolic",
+                                    16,
+                                ))
+                                .on_press(Message::StopMessageTts)
+                            );
+                        } else {
+                            button_row = button_row.push(
+                                cosmic::widget::button::icon(crate::ui::icons::get_handle(
+                                    "media-playback-start-symbolic",
+                                    16,
+                                ))
+                                .on_press(Message::PlayMessageTts(i))
+                            );
+                        }
+                    }
+                }
+                
+                // Wrap content and buttons in a column, with buttons at bottom left
+                cosmic::widget::column::with_capacity(2)
+                    .push(column)
+                    .push(
+                        cosmic::widget::row::with_capacity(1)
+                            .push(cosmic::widget::Space::with_width(Length::Fill))
+                            .push(button_row.spacing(4))
+                    )
+            }
         })
         .padding(Padding::from([12, 16]))
         .style(move |theme| {

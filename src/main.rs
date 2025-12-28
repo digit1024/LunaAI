@@ -1,5 +1,6 @@
 mod agentic;
 mod config;
+mod dbus;
 mod llm;
 mod mcp;
 mod prompts;
