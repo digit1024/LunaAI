@@ -308,7 +308,7 @@ impl LlmClient for OpenAIClient {
         };
 
         if let Ok(payload) = serde_json::to_string(&request) {
-            tracing::debug!("⬆️ OpenAI stream request: {}", payload);
+            tracing::debug!(payload = %payload, "OpenAI stream request");
         }
 
         let response = self
@@ -320,7 +320,7 @@ impl LlmClient for OpenAIClient {
             .send()
             .await?;
 
-        tracing::debug!("⬇️ OpenAI stream status: {}", response.status());
+        tracing::debug!(status = %response.status(), "OpenAI stream response");
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
@@ -420,7 +420,7 @@ impl LlmClient for OpenAIClient {
         };
 
         if let Ok(payload) = serde_json::to_string(&request) {
-            tracing::debug!("⬆️ OpenAI tool request: {}", payload);
+            tracing::debug!(payload = %payload, "OpenAI tool request");
         }
 
         let response = self
@@ -432,7 +432,7 @@ impl LlmClient for OpenAIClient {
             .send()
             .await?;
 
-        tracing::debug!("⬇️ OpenAI tool response status: {}", response.status());
+        tracing::debug!(status = %response.status(), "OpenAI tool response");
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
@@ -527,7 +527,7 @@ impl LlmClient for OpenAIClient {
         };
 
         if let Ok(payload) = serde_json::to_string(&request) {
-            tracing::debug!("⬆️ OpenAI streaming tool request: {}", payload);
+            tracing::debug!(payload = %payload, "OpenAI streaming tool request");
         }
 
         let response = self

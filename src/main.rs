@@ -63,7 +63,7 @@ pub fn main() -> cosmic::iced::Result {
     let cli = Cli::parse();
 
     if cli.server {
-        info!("🛰️ Launching Luna server mode...");
+        info!("Launching Luna server mode");
         if let Err(err) = server::run(server::ServerOptions {
             config_path: cli.config,
         }) {
@@ -72,7 +72,7 @@ pub fn main() -> cosmic::iced::Result {
         }
         Ok(())
     } else {
-        info!("🚀 Starting cosmic_llm UI...");
+        info!("Starting cosmic_llm UI");
         // Run the cosmic application
         cosmic::app::run::<ui::CosmicLlmApp>(ui::settings(), ui::flags())
     }

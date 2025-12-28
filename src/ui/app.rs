@@ -600,7 +600,11 @@ impl CosmicLlmApp {
                         let new_tokens: usize = truncated.iter()
                             .map(|msg| token_counter.count_message_tokens(msg))
                             .sum();
-                        println!("✂️ Truncated to {} tokens ({} messages)", new_tokens, truncated.len());
+                        tracing::debug!(
+                            total_tokens = new_tokens,
+                            message_count = truncated.len(),
+                            "Truncated messages"
+                        );
                         
                         truncated
                     } else {
@@ -751,7 +755,7 @@ impl CosmicLlmApp {
 
     /// Perform manual summarization on the current conversation
     fn perform_manual_summarization(&mut self, conv_id: Uuid) {
-        println!("📝 Manual summarization triggered for conversation {}", conv_id);
+        tracing::debug!(conversation_id = %conv_id, "Manual summarization triggered");
         
         if let Some(profile) = self.config.get_default_profile() {
             // Load messages from DB for summarization
@@ -762,7 +766,7 @@ impl CosmicLlmApp {
                     .collect();
                 
                 if regular_messages.is_empty() {
-                    println!("⚠️ No messages available to summarize");
+                    tracing::warn!(conversation_id = %conv_id, "No messages available to summarize");
                     return;
                 }
                 
@@ -770,12 +774,20 @@ impl CosmicLlmApp {
                 let messages_to_summarize_count = regular_messages.len().saturating_sub(keep_recent_count);
                 
                 if messages_to_summarize_count == 0 {
-                    println!("ℹ️ All messages are recent (keeping last {}), nothing to summarize", keep_recent_count);
+                    tracing::debug!(
+                        conversation_id = %conv_id,
+                        keep_recent_count,
+                        "All messages are recent, nothing to summarize"
+                    );
                     return;
                 }
                 
-                println!("📝 Will summarize {} messages (keeping last {})", 
-                    messages_to_summarize_count, keep_recent_count);
+                tracing::debug!(
+                    conversation_id = %conv_id,
+                    messages_to_summarize = messages_to_summarize_count,
+                    keep_recent_count,
+                    "Will summarize messages"
+                );
                 
                 // Get IDs to summarize
                 let ids_to_summarize: Vec<i64> = regular_messages[..messages_to_summarize_count]
@@ -804,7 +816,7 @@ impl CosmicLlmApp {
                 
                 if !llm_msgs_to_summarize.is_empty() {
                     // Generate summary synchronously (blocking but necessary for desktop)
-                    println!("🤖 Generating summary...");
+                    tracing::debug!("Generating summary");
                     let llm_client = self.llm_client.clone();
                     let profile_clone = profile.clone();
                     
@@ -821,7 +833,10 @@ impl CosmicLlmApp {
                     
                     match summary_result {
                         Ok(summary_msg) => {
-                            println!("✅ Summary generated: {} chars", summary_msg.content.len());
+                            tracing::info!(
+                                summary_length = summary_msg.content.len(),
+                                "Summary generated"
+                            );
                             
                             // Perform database summarization
                             if let Err(e) = self.storage.perform_summarization(
@@ -829,9 +844,12 @@ impl CosmicLlmApp {
                                 &msgs_to_summarize,
                                 &summary_msg.content,
                             ) {
-                                eprintln!("❌ Failed to save summary to DB: {}", e);
+                                tracing::error!(
+                                    error = %e,
+                                    "Failed to save summary to DB"
+                                );
                             } else {
-                                println!("💾 Summary saved to database");
+                                tracing::debug!("Summary saved to database");
                                 
                                 // Rebuild UI messages from DB to show the summary
                                 if let Ok(Some(conv)) = self.storage.get_conversation(&conv_id) {
@@ -842,15 +860,19 @@ impl CosmicLlmApp {
                             }
                         }
                         Err(e) => {
-                            eprintln!("❌ Summarization failed: {}", e);
+                            tracing::error!(
+                                conversation_id = %conv_id,
+                                error = %e,
+                                "Summarization failed"
+                            );
                         }
                     }
                 }
             } else {
-                eprintln!("❌ Failed to load messages from database");
+                tracing::error!(conversation_id = %conv_id, "Failed to load messages from database");
             }
         } else {
-            eprintln!("❌ No profile configured for summarization");
+            tracing::warn!("No profile configured for summarization");
         }
     }
 
@@ -884,9 +906,9 @@ impl Application for CosmicLlmApp {
         // Initialize config and storage
         let config = AppConfig::load().unwrap_or_else(|_| AppConfig::default());
         if let Ok(cwd) = std::env::current_dir() {
-            println!("🗂️ Config load cwd: {}", cwd.display());
+            tracing::debug!(cwd = %cwd.display(), "Config load current directory");
         }
-        println!("⚙️ Loaded default profile key: '{}'", config.default);
+        tracing::debug!(default_profile = %config.default, "Loaded default profile key");
         if let Some(p) = config.get_default_profile() {
             let masked = if p.api_key.len() > 6 {
                 format!(
@@ -897,12 +919,14 @@ impl Application for CosmicLlmApp {
             } else {
                 "***".to_string()
             };
-            println!(
-                "🔧 Default profile details → model='{}' endpoint='{}' api_key='{}'",
-                p.model, p.endpoint, masked
+            tracing::debug!(
+                model = %p.model,
+                endpoint = %p.endpoint,
+                api_key_masked = %masked,
+                "Default profile details"
             );
         } else {
-            println!("❗ No default profile found; using fallback defaults");
+            tracing::warn!("No default profile found; using fallback defaults");
         }
         let initial_profile_mcp_servers = config
             .get_default_profile()
@@ -911,7 +935,7 @@ impl Application for CosmicLlmApp {
         let sqlite_settings = SqliteSettings::from(&config.server);
         let storage =
             Storage::new_default_with_settings(sqlite_settings.clone()).unwrap_or_else(|e| {
-                eprintln!("Failed to initialize SQLite storage: {}", e);
+                tracing::error!(error = %e, "Failed to initialize SQLite storage");
                 // Fallback to a temporary database
                 Storage::new_with_settings(
                     std::env::temp_dir().join("cosmic_llm_temp.db"),
@@ -926,7 +950,7 @@ impl Application for CosmicLlmApp {
         // Initialize prompt manager
         let prompt_manager = crate::prompts::PromptManager::load_from_config(&config.prompts)
             .unwrap_or_else(|e| {
-                eprintln!("Failed to load prompts: {}", e);
+                tracing::error!(error = %e, "Failed to load prompts");
                 crate::prompts::PromptManager::load_from_config(
                     &crate::prompts::PromptConfig::default(),
                 )
@@ -940,20 +964,19 @@ impl Application for CosmicLlmApp {
         // Try to load MCP config from JSON file (new Claude Desktop format)
         // Falls back to embedded TOML format if JSON doesn't exist
         let mcp_config = crate::config::MCPConfig::load_from_json().unwrap_or_else(|e| {
-            println!("📝 No mcp_config.json found (or error loading): {}", e);
-            println!("📝 Falling back to embedded TOML config");
+            tracing::debug!(error = %e, "No mcp_config.json found, falling back to embedded TOML config");
             config.mcp.clone()
         });
 
-        println!("🔧 MCP Servers configured: {}", mcp_config.servers.len());
+        tracing::debug!(server_count = mcp_config.servers.len(), "MCP Servers configured");
         for (name, _) in &mcp_config.servers {
-            println!("  • {}", name);
+            tracing::debug!(server_name = %name, "MCP server configured");
         }
 
         tokio::spawn(async move {
             let mut registry = mcp_registry_clone.write().await;
             if let Err(e) = registry.initialize_from_config(&mcp_config).await {
-                eprintln!("Failed to initialize MCP registry: {}", e);
+                tracing::error!(error = %e, "Failed to initialize MCP registry");
             } else {
                 // Always apply profile defaults, even if empty (empty = enable all)
                 registry.apply_profile_tool_defaults(&initial_profile_mcp_servers);
@@ -1062,9 +1085,9 @@ impl Application for CosmicLlmApp {
             let dbus_client = app.dbus_ttsstt_client.clone();
             let dbus_check_task = cosmic::Task::perform(
                 async move {
-                    println!("🔍 Checking D-Bus TTS/STT service availability...");
+                    tracing::debug!("Checking D-Bus TTS/STT service availability");
                     let available = dbus_client.check_availability().await;
-                    println!("🔍 D-Bus service check result: {}", available);
+                    tracing::debug!(available, "D-Bus service check result");
                     cosmic::Action::App(Message::DbusServiceAvailable(available))
                 },
                 |msg| msg,
@@ -1251,7 +1274,7 @@ impl Application for CosmicLlmApp {
                             .storage
                             .create_conversation_with_profile("Generating title...".to_string(), current_profile_name)
                             .unwrap_or_else(|e| {
-                                eprintln!("Failed to create conversation: {}", e);
+                                tracing::error!(error = %e, "Failed to create conversation");
                                 Uuid::new_v4()
                             });
                         self.current_conversation_id = Some(conv_id);
@@ -1285,9 +1308,10 @@ impl Application for CosmicLlmApp {
                                 "Failed to update conversation title"
                             );
                         }
-                        println!(
-                            "💾 Saved title to storage for conversation {}: {}",
-                            conv_id, fallback_title
+                        tracing::debug!(
+                            conversation_id = %conv_id,
+                            title = %fallback_title,
+                            "Saved title to storage"
                         );
                     }
 
@@ -1319,7 +1343,7 @@ impl Application for CosmicLlmApp {
                             "user".to_string(),
                             self.input.clone(),
                         ) {
-                            eprintln!("Failed to add message to conversation: {}", e);
+                            tracing::error!(error = %e, "Failed to add message to conversation");
                         } else {
                             // Update context usage cache after adding message
                             self.update_context_usage_cache(conv_id);
@@ -1379,7 +1403,7 @@ impl Application for CosmicLlmApp {
                             }
                         }
                     }
-                    println!("🔍 DEBUG: Final attachments count: {}", attachments.len());
+                    tracing::debug!(attachment_count = attachments.len(), "Final attachments count");
 
                     // Convert messages to LLM format
                     let profile_prompt = self.load_active_profile_prompt();
@@ -1481,14 +1505,23 @@ impl Application for CosmicLlmApp {
                                 }
                                 
                                 if skipped_orphans > 0 {
-                                    println!("⚠️ Skipped {} orphaned tool results (no matching tool_call)", skipped_orphans);
+                                    tracing::warn!(
+                                        skipped_count = skipped_orphans,
+                                        "Skipped orphaned tool results (no matching tool_call)"
+                                    );
                                 }
                                 if skipped_summarized > 0 {
-                                    println!("📄 Skipped {} summarized messages (using summaries instead)", skipped_summarized);
+                                    tracing::debug!(
+                                        skipped_count = skipped_summarized,
+                                        "Skipped summarized messages (using summaries instead)"
+                                    );
                                 }
                             }
                             Err(e) => {
-                                eprintln!("Failed to load messages from DB, falling back to UI messages: {}", e);
+                                tracing::warn!(
+                                    error = %e,
+                                    "Failed to load messages from DB, falling back to UI messages"
+                                );
                                 // Fallback to UI messages
                                 for msg in &self.messages {
                                     let role = if msg.is_user {
@@ -1524,9 +1557,11 @@ impl Application for CosmicLlmApp {
                     };
 
                     // Debug: Print the final message that will be sent to LLM
-                    println!(
-                        "🔍 DEBUG: Final LLM message with attachments: {:?}",
-                        current_user_message
+                    tracing::debug!(
+                        message_role = ?current_user_message.role,
+                        content_length = current_user_message.content.len(),
+                        attachment_count = current_user_message.attachments.as_ref().map(|a| a.len()).unwrap_or(0),
+                        "Final LLM message with attachments"
                     );
 
                     llm_messages.push(current_user_message.clone());
@@ -1549,15 +1584,25 @@ impl Application for CosmicLlmApp {
                         let safe_limit = token_counter.get_safe_context_limit(profile);
                         
                         let percentage = (total_tokens as f32 / context_limit as f32) * 100.0;
-                        println!("📊 Desktop context: {} tokens ({:.1}% of {} limit)", 
-                            total_tokens, percentage, context_limit);
-                        println!("   Summarize threshold: {} tokens, Safe limit: {} tokens", 
-                            summarize_threshold_tokens, safe_limit);
+                        tracing::debug!(
+                            total_tokens,
+                            usage_percent = (total_tokens as f32 / context_limit as f32 * 100.0),
+                            context_limit,
+                            "Desktop context usage"
+                        );
+                        tracing::debug!(
+                            summarize_threshold = summarize_threshold_tokens,
+                            safe_limit,
+                            "Context limits"
+                        );
                         
                         // Check if summarization is needed
                         if total_tokens > summarize_threshold_tokens {
-                            println!("🔄 Summarization threshold exceeded! ({} > {})", 
-                                total_tokens, summarize_threshold_tokens);
+                            tracing::info!(
+                                total_tokens,
+                                summarize_threshold_tokens,
+                                "Summarization threshold exceeded"
+                            );
                             
                             if let Some(conv_id) = self.current_conversation_id {
                                 // Load messages from DB for summarization
@@ -1571,8 +1616,11 @@ impl Application for CosmicLlmApp {
                                     let messages_to_summarize_count = regular_messages.len().saturating_sub(keep_recent_count);
                                     
                                     if messages_to_summarize_count > 0 {
-                                        println!("📝 Will summarize {} messages (keeping last {})", 
-                                            messages_to_summarize_count, keep_recent_count);
+                                        tracing::debug!(
+                                            messages_to_summarize = messages_to_summarize_count,
+                                            keep_recent_count,
+                                            "Will summarize messages"
+                                        );
                                         
                                         // Get IDs to summarize
                                         let ids_to_summarize: Vec<i64> = regular_messages[..messages_to_summarize_count]
@@ -1601,7 +1649,7 @@ impl Application for CosmicLlmApp {
                                         
                                         if !llm_msgs_to_summarize.is_empty() {
                                             // Generate summary synchronously (blocking but necessary for desktop)
-                                            println!("🤖 Generating summary...");
+                                            tracing::debug!("Generating summary");
                                             let llm_client = self.llm_client.clone();
                                             let profile_clone = profile.clone();
                                             
@@ -1618,7 +1666,10 @@ impl Application for CosmicLlmApp {
                                             
                                             match summary_result {
                                                 Ok(summary_msg) => {
-                                                    println!("✅ Summary generated: {} chars", summary_msg.content.len());
+                                                    tracing::info!(
+                                summary_length = summary_msg.content.len(),
+                                "Summary generated"
+                            );
                                                     
                                                     // Perform database summarization
                                                     if let Err(e) = self.storage.perform_summarization(
@@ -1626,9 +1677,12 @@ impl Application for CosmicLlmApp {
                                                         &msgs_to_summarize,
                                                         &summary_msg.content,
                                                     ) {
-                                                        eprintln!("❌ Failed to save summary to DB: {}", e);
+                                                        tracing::error!(
+                                    error = %e,
+                                    "Failed to save summary to DB"
+                                );
                                                     } else {
-                                                        println!("💾 Summary saved to database");
+                                                        tracing::debug!("Summary saved to database");
                                                         
                                                         // Rebuild llm_messages from the updated database
                                                         if let Ok(updated_msgs) = self.storage.load_conversation_messages(&conv_id.to_string()) {
@@ -1708,7 +1762,10 @@ impl Application for CosmicLlmApp {
                                                             let new_tokens: usize = llm_messages.iter()
                                                                 .map(|msg| token_counter.count_message_tokens(msg))
                                                                 .sum();
-                                                            println!("📊 After summarization: {} tokens", new_tokens);
+                                                            tracing::debug!(
+                                                                total_tokens = new_tokens,
+                                                                "After summarization"
+                                                            );
                                                             
                                                             // Rebuild UI messages from DB
                                                             if let Ok(Some(conv)) = self.storage.get_conversation(&conv_id) {
@@ -1718,7 +1775,10 @@ impl Application for CosmicLlmApp {
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    eprintln!("❌ Summarization failed: {}", e);
+                                                    tracing::error!(
+                                                        error = %e,
+                                                        "Summarization failed"
+                                                    );
                                                 }
                                             }
                                         }
@@ -1729,11 +1789,14 @@ impl Application for CosmicLlmApp {
                     }
                     
                     // Debug: Print all messages being sent to LLM
-                    println!("🔍 DEBUG: All LLM messages being sent:");
+                    tracing::debug!("All LLM messages being sent");
                     for (i, msg) in llm_messages.iter().enumerate() {
-                        println!(
-                            "  Message {}: role={:?}, content_len={}, attachments={:?}",
-                            i, msg.role, msg.content.len(), msg.attachments.is_some()
+                        tracing::debug!(
+                            message_index = i,
+                            role = ?msg.role,
+                            content_length = msg.content.len(),
+                            has_attachments = msg.attachments.is_some(),
+                            "LLM message details"
                         );
                     }
 
@@ -1800,7 +1863,7 @@ impl Application for CosmicLlmApp {
                 }
             }
             Message::AttachFile => {
-                println!("🔍 DEBUG: AttachFile message received");
+                tracing::debug!("AttachFile message received");
                 // Use libcosmic's file chooser
                 return cosmic::task::future(async move {
                     // Create file filters for supported file types
@@ -1861,15 +1924,15 @@ impl Application for CosmicLlmApp {
                 });
             }
             Message::FileSelected(file_path) => {
-                println!("🔍 DEBUG: File selected: {}", file_path);
+                tracing::debug!(file_path = %file_path, "File selected");
                 if !self.attached_files.contains(&file_path) {
                     self.attached_files.push(file_path);
-                    println!(
-                        "🔍 DEBUG: File added to attached_files. Current count: {}",
-                        self.attached_files.len()
+                    tracing::debug!(
+                        file_count = self.attached_files.len(),
+                        "File added to attached_files"
                     );
                 } else {
-                    println!("🔍 DEBUG: File already in attached_files");
+                    tracing::debug!("File already in attached_files");
                 }
             }
             Message::RemoveFile(file_path) => {
@@ -1922,7 +1985,14 @@ impl Application for CosmicLlmApp {
                             } else {
                                 "***".to_string()
                             };
-                            println!("🔄 Switching to conversation's profile '{}' model='{}' endpoint='{}' api_key='{}'", profile_name_to_use, profile.model, profile.endpoint, masked);
+                            tracing::debug!(
+                                conversation_id = %id,
+                                profile_name = %profile_name_to_use,
+                                model = %profile.model,
+                                endpoint = %profile.endpoint,
+                                api_key_masked = %masked,
+                                "Switching to conversation's profile"
+                            );
                             self.config.default = profile_name_to_use.to_string();
                             self.llm_client = llm::build_llm_client(&profile);
                             true
@@ -2065,7 +2135,7 @@ impl Application for CosmicLlmApp {
                                 None,
                                 metadata,
                             ) {
-                                eprintln!("Failed to add assistant message: {}", e);
+                                tracing::error!(error = %e, "Failed to add assistant message");
                             } else {
                                 // Update context usage cache after adding message
                                 self.update_context_usage_cache(conv_id);
@@ -2223,7 +2293,7 @@ impl Application for CosmicLlmApp {
                                 None,
                                 metadata,
                             ) {
-                                eprintln!("Failed to add tool result: {}", e);
+                                tracing::error!(error = %e, "Failed to add tool result");
                             } else {
                                 // Update context usage cache after adding tool message
                                 self.update_context_usage_cache(conv_id);
@@ -2301,7 +2371,7 @@ impl Application for CosmicLlmApp {
                                 None,
                                 metadata,
                             ) {
-                                eprintln!("Failed to add tool error: {}", e);
+                                tracing::error!(error = %e, "Failed to add tool error");
                             } else {
                                 // Update context usage cache after adding tool error message
                                 self.update_context_usage_cache(conv_id);
@@ -2455,10 +2525,10 @@ impl Application for CosmicLlmApp {
                     .spawn()
                 {
                     Ok(_) => {
-                        println!("Opened MCP config file in cosmic-edit: {}", path_str);
+                        tracing::debug!(path = %path_str, "Opened MCP config file in cosmic-edit");
                     }
                     Err(e) => {
-                        eprintln!("Failed to open MCP config file in cosmic-edit: {}", e);
+                        tracing::error!(error = %e, "Failed to open MCP config file in cosmic-edit");
                         // Show error dialog to user
                         self.dialog = Some(DialogPage::message_text(format!(
                             "Failed to open MCP config file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
@@ -2477,10 +2547,10 @@ impl Application for CosmicLlmApp {
                     .spawn()
                 {
                     Ok(_) => {
-                        println!("Opened config file in cosmic-edit: {}", path_str);
+                        tracing::debug!(path = %path_str, "Opened config file in cosmic-edit");
                     }
                     Err(e) => {
-                        eprintln!("Failed to open config file in cosmic-edit: {}", e);
+                        tracing::error!(error = %e, "Failed to open config file in cosmic-edit");
                         self.dialog = Some(DialogPage::message_text(format!(
                             "Failed to open config file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
                             path_str, e
@@ -2500,10 +2570,10 @@ impl Application for CosmicLlmApp {
                             .spawn()
                         {
                             Ok(_) => {
-                                println!("Opened prompt file in cosmic-edit: {}", path_str);
+                                tracing::debug!(path = %path_str, "Opened prompt file in cosmic-edit");
                             }
                             Err(e) => {
-                                eprintln!("Failed to open prompt file in cosmic-edit: {}", e);
+                                tracing::error!(error = %e, "Failed to open prompt file in cosmic-edit");
                                 self.dialog = Some(DialogPage::message_text(format!(
                                     "Failed to open prompt file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
                                     path_str, e
@@ -2551,7 +2621,7 @@ impl Application for CosmicLlmApp {
                 if let Some(conv_id) = self.current_conversation_id {
                     self.perform_manual_summarization(conv_id);
                 } else {
-                    eprintln!("⚠️ No active conversation to summarize");
+                    tracing::warn!("No active conversation to summarize");
                 }
             }
             #[cfg(feature = "ttsandstt")]
@@ -2559,10 +2629,10 @@ impl Application for CosmicLlmApp {
                 let was_available = self.dbus_ttsstt_available;
                 self.dbus_ttsstt_available = available;
                 if available && !was_available {
-                    println!("✅ D-Bus TTS/STT service is now available");
+                    tracing::info!("D-Bus TTS/STT service is now available");
                     // Signal subscription will automatically start listening when available
                 } else if !available && was_available {
-                    println!("❌ D-Bus TTS/STT service is no longer available");
+                    tracing::warn!("D-Bus TTS/STT service is no longer available");
                     let mut guard = self.dbus_ttsstt_status.blocking_write();
                     guard.clear();
                     self.stt_listening_initiated = false;
@@ -2573,7 +2643,11 @@ impl Application for CosmicLlmApp {
                 // Update the display status (this triggers UI re-render)
                 let old_status = self.dbus_ttsstt_status_display.clone();
                 if old_status != status {
-                    println!("🔄 UI: D-Bus status changed: '{}' -> '{}' (buttons will update)", old_status, status);
+                    tracing::debug!(
+                        old_status = %old_status,
+                        new_status = %status,
+                        "D-Bus status changed, buttons will update"
+                    );
                     self.dbus_ttsstt_status_display = status.clone();
                     
                     // Reset listening initiated flag when status goes to idle
@@ -2627,7 +2701,7 @@ impl Application for CosmicLlmApp {
                     return cosmic::Task::perform(
                         async move {
                             if let Err(e) = client.call_tts(&text, "en-US").await {
-                                eprintln!("Failed to call TTS: {}", e);
+                                tracing::error!(error = %e, "Failed to call TTS");
                             }
                             cosmic::Action::App(Message::DismissError)
                         },
@@ -2643,7 +2717,7 @@ impl Application for CosmicLlmApp {
                 return cosmic::Task::perform(
                     async move {
                         if let Err(e) = client.stop().await {
-                            eprintln!("Failed to stop TTS: {}", e);
+                            tracing::error!(error = %e, "Failed to stop TTS");
                         }
                         cosmic::Action::App(Message::DismissError)
                     },
@@ -2660,7 +2734,7 @@ impl Application for CosmicLlmApp {
                         match client.call_stt("en-US", 2.0).await {
                             Ok(text) => cosmic::Action::App(Message::SttResult(text)),
                             Err(e) => {
-                                eprintln!("Failed to call STT: {}", e);
+                                tracing::error!(error = %e, "Failed to call STT");
                                 cosmic::Action::App(Message::DismissError)
                             }
                         }
@@ -2676,7 +2750,7 @@ impl Application for CosmicLlmApp {
                 return cosmic::Task::perform(
                     async move {
                         if let Err(e) = client.stop().await {
-                            eprintln!("Failed to stop STT: {}", e);
+                            tracing::error!(error = %e, "Failed to stop STT");
                         }
                         cosmic::Action::App(Message::DismissError)
                     },
@@ -2733,15 +2807,25 @@ impl Application for CosmicLlmApp {
                         } else {
                             "***".to_string()
                         };
-                        println!("🔄 Switching default profile to '{}' model='{}' endpoint='{}' api_key='{}'", self.config.default, profile.model, profile.endpoint, masked);
+                        tracing::debug!(
+                            profile_name = %self.config.default,
+                            model = %profile.model,
+                            endpoint = %profile.endpoint,
+                            api_key_masked = %masked,
+                            "Switching default profile"
+                        );
                         self.llm_client = llm::build_llm_client(&profile);
                         
                         // Update active conversation's profile in database if there is one
                         if let Some(conv_id) = self.current_conversation_id {
                             if let Err(e) = self.storage.update_conversation_profile(&conv_id, Some(&new_profile)) {
-                                eprintln!("Failed to update conversation profile: {}", e);
+                                tracing::error!(error = %e, "Failed to update conversation profile");
                             } else {
-                                println!("✅ Updated conversation {} profile to '{}'", conv_id, new_profile);
+                                tracing::debug!(
+                                    conversation_id = %conv_id,
+                                    profile_name = %new_profile,
+                                    "Updated conversation profile"
+                                );
                             }
                         }
                     }
@@ -2752,10 +2836,10 @@ impl Application for CosmicLlmApp {
             }
             Message::SaveSettings => {
                 if let Err(e) = self.config.save() {
-                    eprintln!("Failed to save settings: {}", e);
+                    tracing::error!(error = %e, "Failed to save settings");
                 } else {
                     self.settings_changed = false;
-                    println!("Settings saved successfully");
+                    tracing::debug!("Settings saved successfully");
                 }
             }
             Message::ResetSettings => {
@@ -3027,7 +3111,7 @@ impl Application for CosmicLlmApp {
                         
                         // Save to file
                         if let Err(e) = self.config.save() {
-                            eprintln!("Failed to save settings: {}", e);
+                            tracing::error!(error = %e, "Failed to save settings");
                             self.dialog = Some(DialogPage::message_text(format!(
                                 "Failed to save settings:\n{}",
                                 e
@@ -3043,9 +3127,13 @@ impl Application for CosmicLlmApp {
                             // Update active conversation's profile in database if there is one
                             if let Some(conv_id) = self.current_conversation_id {
                                 if let Err(e) = self.storage.update_conversation_profile(&conv_id, Some(&profile_changed)) {
-                                    eprintln!("Failed to update conversation profile: {}", e);
+                                    tracing::error!(error = %e, "Failed to update conversation profile");
                                 } else {
-                                    println!("✅ Updated conversation {} profile to '{}'", conv_id, profile_changed);
+                                    tracing::debug!(
+                                        conversation_id = %conv_id,
+                                        profile_name = %profile_changed,
+                                        "Updated conversation profile"
+                                    );
                                 }
                             }
                             if let Some(task) = self.profile_tool_defaults_task() {
@@ -3120,12 +3208,12 @@ impl Application for CosmicLlmApp {
                 // Try to get tools synchronously from registry
                 if let Ok(registry) = self.mcp_registry.try_read() {
                     let tools = registry.get_available_tools();
-                    println!("🔄 RefreshMCPTools: Found {} tools", tools.len());
+                    tracing::debug!(tool_count = tools.len(), "RefreshMCPTools: Found tools");
                     self.available_mcp_tools = tools;
                     // Also sync tool states
                     self.tool_states = registry.get_tool_states();
                 } else {
-                    println!("🔄 RefreshMCPTools: Failed to get registry read lock");
+                    tracing::error!("RefreshMCPTools: Failed to get registry read lock");
                 }
             }
             Message::ToggleAllTools(enabled) => {
@@ -3204,7 +3292,7 @@ impl Application for CosmicLlmApp {
                         
                         // Save config
                         if let Err(e) = config.save() {
-                            eprintln!("Failed to save config: {}", e);
+                            tracing::error!(error = %e, "Failed to save config");
                         }
                         
                         cosmic::Action::App(Message::RefreshMCPTools)
@@ -3233,7 +3321,7 @@ impl Application for CosmicLlmApp {
                             self.search_results = results;
                         }
                         Err(e) => {
-                            eprintln!("Search error: {}", e);
+                            tracing::error!(error = %e, "Search error");
                             self.search_results.clear();
                         }
                     }
@@ -3513,7 +3601,7 @@ impl CosmicLlmApp {
                     .collect();
             }
             Err(e) => {
-                eprintln!("Failed to load recent conversations: {}", e);
+                tracing::error!(error = %e, "Failed to load recent conversations");
                 self.recent_conversations.clear();
             }
         }

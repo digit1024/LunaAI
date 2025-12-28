@@ -194,10 +194,10 @@ impl MCPTransport for StdioMCPClient {
                             // Check size limit
                             if text_content.len() > MAX_TOOL_RESULT_SIZE {
                                 tracing::warn!(
-                                    "⚠️ Tool '{}' result too large: {} bytes (max: {} bytes)",
-                                    tool_name,
-                                    text_content.len(),
-                                    MAX_TOOL_RESULT_SIZE
+                                    tool_name = %tool_name,
+                                    content_size = text_content.len(),
+                                    max_size = MAX_TOOL_RESULT_SIZE,
+                                    "Tool result too large"
                                 );
                                 return Ok(ToolResult {
                                     content: format!(

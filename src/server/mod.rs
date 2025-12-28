@@ -75,7 +75,7 @@ async fn launch(options: ServerOptions) -> Result<()> {
         .await
         .context("failed to bind HTTP server")?;
     
-    tracing::info!("📡 HTTP server for file attachments listening on http://{}", http_addr);
+    tracing::info!(address = %http_addr, "HTTP server for file attachments listening");
     
     // Spawn HTTP server in background
     tokio::spawn(async move {

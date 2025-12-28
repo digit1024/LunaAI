@@ -515,9 +515,10 @@ impl ServerHandler {
                             llm_client.as_ref(),
                         ).await {
                             Ok(summary_message) => {
-                                tracing::info!("✅ Generated summary ({} chars), replacing {} messages", 
-                                    summary_message.content.len(),
-                                    messages_to_summarize_db.len()
+                                tracing::info!(
+                                    summary_length = summary_message.content.len(),
+                                    messages_replaced = messages_to_summarize_db.len(),
+                                    "Generated summary"
                                 );
                                 
                                 // Perform database summarization
@@ -597,7 +598,7 @@ impl ServerHandler {
                                 }
                             }
                             Err(e) => {
-                                tracing::error!("❌ Failed to generate summary: {}", e);
+                                tracing::error!(error = %e, "Failed to generate summary");
                                 // Continue without summarization - will fall back to context selection
                             }
                         }
@@ -654,7 +655,7 @@ impl ServerHandler {
             // Notify user about truncation
             let _ = self.outbound.send(ServerEvent::Error {
                 message: format!(
-                    "⚠️ Context exceeded limit! Truncated: {} messages -> {} messages ({} tokens)",
+                    "Context exceeded limit! Truncated: {} messages -> {} messages ({} tokens)",
                     original_count,
                     selected_count,
                     selected_tokens
@@ -699,9 +700,9 @@ impl ServerHandler {
         
         if final_tokens > hard_limit {
             tracing::error!(
-                "❌ FATAL: After truncation, still over limit! {} tokens > {} limit. This should not happen!",
-                final_tokens,
-                hard_limit
+                total_tokens = final_tokens,
+                context_limit = hard_limit,
+                "FATAL: After truncation, still over limit (this should not happen)"
             );
             // Emergency fallback: keep only system messages and most recent messages
             let system_count = agent_messages.iter()

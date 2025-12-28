@@ -18,7 +18,7 @@ pub async fn serve(ctx: Arc<ServerContext>) -> Result<()> {
     let listener = TcpListener::bind(&bind_addr)
         .await
         .with_context(|| format!("failed to bind to {}", bind_addr))?;
-    tracing::info!("📡 Luna server listening on ws://{}", bind_addr);
+    tracing::info!(address = %bind_addr, "Luna server listening");
 
     loop {
         let (stream, addr) = listener.accept().await?;
