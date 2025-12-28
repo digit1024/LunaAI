@@ -451,7 +451,7 @@ impl SqliteStorage {
              LIMIT ?2",
         )?;
 
-        let snippet_iter = stmt.query_map(params![query, limit], |row| {
+        let snippet_iter = stmt.query_map(params![query, limit as i64], |row| {
             Ok(Snippet {
                 conversation_id: row.get(0)?,
                 content: row.get(1)?,

@@ -278,7 +278,7 @@ impl SmartContextManager {
     /// Returns a summary message that can replace the original messages
     pub async fn summarize_messages(
         messages_to_summarize: Vec<Message>,
-        profile: &LlmProfile,
+        _profile: &LlmProfile,
         llm_client: &dyn LlmClient,
     ) -> Result<Message, LlmError> {
         if messages_to_summarize.is_empty() {
