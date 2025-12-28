@@ -52,15 +52,59 @@ pub fn input_area(app: &CosmicLlmApp) -> Element<Message> {
             )
             .push(
                 // Bottom row: Attachments <----> Send button
-                cosmic::widget::row::with_capacity(3)
-                    .push(
-                        // Attach file button
+                {
+                    let mut row = cosmic::widget::row::with_capacity(4);
+                    // Attach file button
+                    row = row.push(
                         widget::button::icon(crate::ui::icons::get_handle(
                             "mail-attachment-symbolic",
                             16,
                         ))
                         .on_press(Message::AttachFile),
-                    )
+                    );
+                    // Microphone/Stop button for STT (only if feature enabled and D-Bus service is available)
+                    #[cfg(feature = "ttsandstt")]
+                    {
+                        let service_available = app.dbus_ttsstt_available;
+                        let status = &app.dbus_ttsstt_status_display;
+                        let we_initiated = app.stt_listening_initiated;
+                        let is_listening = status == "listening";
+                        let is_processing = status == "processing";
+                        
+                        // Disable button if:
+                        // - Service not available
+                        // - Streaming
+                        // - Service is listening/processing but we didn't initiate it (another app is using it)
+                        let button_enabled = service_available 
+                            && !app.is_streaming 
+                            && !((is_listening || is_processing) && !we_initiated);
+                        
+                        if button_enabled {
+                            if is_listening && we_initiated {
+                                // Show stop button when we're listening
+                                row = row.push(
+                                    widget::button::icon(crate::ui::icons::get_handle(
+                                        "process-stop-symbolic",
+                                        16,
+                                    ))
+                                    .on_press(Message::StopStt),
+                                );
+                            } else {
+                                // Show microphone button when not listening or when we can start
+                                let mic_button = widget::button::icon(crate::ui::icons::get_handle(
+                                    "audio-input-microphone-symbolic",
+                                    16,
+                                ))
+                                .on_press(Message::StartStt);
+                                
+                                row = row.push(mic_button);
+                            }
+                        }
+                        // Note: When service is busy for another app, we simply don't show the button
+                        // This is cleaner than showing a disabled button
+                    }
+                    row
+                }
                     .push(
                         // Attached files display (left side, expands to fill)
                         if !app.attached_files.is_empty() {

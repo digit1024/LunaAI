@@ -130,7 +130,8 @@ zbus_xmlgen = "5.1.0"
 tokio-test = "0.4"
 
 [features]
-default = ["openai", "anthropic"]
+default = ["openai", "anthropic", "ttsandstt"]
 openai = []
 anthropic = []
 deepseek = []
+ttsandstt = []

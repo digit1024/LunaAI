@@ -100,6 +100,15 @@ pub enum Message {
     RefreshConversationList,
     // Manual summarization
     ManualSummarize,
+    // D-Bus TTS/STT messages
+    DbusServiceAvailable(bool), // Service availability changed
+    CheckDbusService,            // Check service availability
+    PlayMessageTts(usize),       // Play TTS for message at index
+    StopMessageTts,              // Stop TTS playback
+    StartStt,                    // Start STT recording
+    StopStt,                     // Stop STT recording
+    SttResult(String),           // STT transcription result
+    DbusStatusChanged(String),    // Status changed signal from D-Bus service (idle/speaking/listening/processing)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,6 +240,19 @@ pub struct CosmicLlmApp {
     pub typing_indicator_start_time: Option<cosmic::iced::time::Instant>,
     // Recent conversations for nav bar (last 10)
     pub recent_conversations: Vec<(Uuid, String)>, // (id, title)
+    // D-Bus TTS/STT service
+    #[cfg(feature = "ttsandstt")]
+    pub dbus_ttsstt_available: bool,
+    #[cfg(feature = "ttsandstt")]
+    pub dbus_ttsstt_client: Arc<crate::dbus::DbusTtsSttClient>,
+    #[cfg(feature = "ttsandstt")]
+    pub dbus_ttsstt_status: Arc<RwLock<String>>, // Current status: idle/speaking/listening/processing (shared for signal updates)
+    #[cfg(feature = "ttsandstt")]
+    pub dbus_ttsstt_status_display: String, // Current status for UI display (updated via messages)
+    #[cfg(feature = "ttsandstt")]
+    pub stt_listening_initiated: bool, // True if we initiated the listening (to distinguish from other apps)
+    #[cfg(feature = "ttsandstt")]
+    pub playing_message_id: Option<usize>, // Index of message currently playing TTS
 }
 
 #[derive(Debug, Clone)]
@@ -393,6 +415,18 @@ impl CosmicLlmApp {
             typing_indicator_start_time: None,
             recent_conversations: Vec::new(),
             context_usage_cache: std::collections::HashMap::new(),
+            #[cfg(feature = "ttsandstt")]
+            dbus_ttsstt_available: false,
+            #[cfg(feature = "ttsandstt")]
+            dbus_ttsstt_client: Arc::new(crate::dbus::DbusTtsSttClient::new()),
+            #[cfg(feature = "ttsandstt")]
+            dbus_ttsstt_status: Arc::new(RwLock::new(String::new())), // Current status: idle/speaking/listening/processing
+            #[cfg(feature = "ttsandstt")]
+            dbus_ttsstt_status_display: String::new(), // Current status for UI display
+            #[cfg(feature = "ttsandstt")]
+            stt_listening_initiated: false, // True if we initiated the listening
+            #[cfg(feature = "ttsandstt")]
+            playing_message_id: None, // Index of message currently playing TTS
         }
     }
 
@@ -995,6 +1029,22 @@ impl Application for CosmicLlmApp {
         );
 
         let mut tasks = vec![load_tools_task];
+        
+        // Check D-Bus TTS/STT service availability at startup (only if feature enabled)
+        #[cfg(feature = "ttsandstt")]
+        {
+            let dbus_client = app.dbus_ttsstt_client.clone();
+            let dbus_check_task = cosmic::Task::perform(
+                async move {
+                    println!("🔍 Checking D-Bus TTS/STT service availability...");
+                    let available = dbus_client.check_availability().await;
+                    println!("🔍 D-Bus service check result: {}", available);
+                    cosmic::Action::App(Message::DbusServiceAvailable(available))
+                },
+                |msg| msg,
+            );
+            tasks.push(dbus_check_task);
+        }
         if let Some(task) = app.profile_tool_defaults_task() {
             tasks.push(task);
         }
@@ -1025,7 +1075,116 @@ impl Application for CosmicLlmApp {
         let conversation_refresh_sub = time::every(time::Duration::from_secs(15))
             .map(|_| Message::RefreshConversationList);
         
-        Subscription::batch(vec![streaming_sub, animation_sub, conversation_refresh_sub])
+        // Periodically check D-Bus service availability (every 5 seconds) - only if feature enabled
+        #[cfg(feature = "ttsandstt")]
+        let dbus_check_sub = time::every(time::Duration::from_secs(5))
+            .map(|_| Message::CheckDbusService);
+        #[cfg(not(feature = "ttsandstt"))]
+        let dbus_check_sub = Subscription::none();
+        
+        // D-Bus status signal subscription - listen directly to D-Bus signals
+        // Following the Go implementation pattern: AddMatchSignal then listen to signal channel
+        // Use a stable ID so the subscription isn't recreated on every state change
+        #[cfg(feature = "ttsandstt")]
+        let dbus_status_sub = if self.dbus_ttsstt_available {
+            use cosmic::iced_futures::stream;
+            use cosmic::iced_futures::futures::SinkExt;
+            use futures::StreamExt;
+            use zbus::{MessageStream, message::Type};
+            
+            let client = self.dbus_ttsstt_client.clone();
+            
+            // Use a stable UUID so cosmic doesn't recreate the subscription on every state change
+            // Generate a constant UUID for the D-Bus subscription (same ID every time)
+            // This ensures cosmic reuses the same subscription instead of creating new ones
+            let dbus_sub_id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+            
+            Subscription::run_with_id(
+                dbus_sub_id,
+                stream::channel(100, move |mut output| async move {
+                    println!("📡 Starting D-Bus signal subscription...");
+                    
+                    // Get connection
+                    let conn = match client.get_connection_for_signals().await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("📡 ❌ Failed to get connection: {}", e);
+                            return;
+                        }
+                    };
+                    
+                    // Add match rule using org.freedesktop.DBus.AddMatch (like Go's AddMatchSignal)
+                    // Call the AddMatch method directly on the connection
+                    let match_rule_str = format!(
+                        "type='signal',path='{}',interface='{}',member='StatusChanged'",
+                        crate::dbus::SERVICE_PATH, crate::dbus::SERVICE_INTERFACE
+                    );
+                    
+                    use zbus::names::BusName;
+                    use zbus::zvariant::ObjectPath;
+                    let dbus_name: BusName = "org.freedesktop.DBus".try_into().unwrap();
+                    let dbus_path: ObjectPath = "/org/freedesktop/DBus".try_into().unwrap();
+                    
+                    // Call AddMatch method
+                    match conn.call_method(
+                        Some(&dbus_name),
+                        &dbus_path,
+                        Some("org.freedesktop.DBus"),
+                        "AddMatch",
+                        &(match_rule_str.clone()),
+                    ).await {
+                        Ok(_) => println!("📡 ✅ Added match rule for StatusChanged signals"),
+                        Err(e) => {
+                            eprintln!("📡 ⚠️ Failed to add match rule (will filter manually): {}", e);
+                            // Continue anyway, we'll filter manually
+                        }
+                    }
+                    
+                    // Create message stream (like Go's conn.Signal(signalChan))
+                    let mut stream = MessageStream::from(conn);
+                    println!("📡 MessageStream created, listening for StatusChanged signals...");
+                    
+                    // Listen for signals
+                    while let Some(msg_result) = stream.next().await {
+                        match msg_result {
+                            Ok(message) => {
+                                let header = message.header();
+                                
+                                // Verify it's our signal
+                                if header.message_type() == Type::Signal {
+                                    if let Some(interface) = header.interface() {
+                                        if interface.as_str() == crate::dbus::SERVICE_INTERFACE {
+                                            if let Some(member) = header.member() {
+                                                if member.as_str() == "StatusChanged" {
+                                                    // Deserialize status
+                                                    if let Ok((status,)) = message.body().deserialize::<(String,)>() {
+                                                        println!("📡 ✅ Received StatusChanged signal: {}", status);
+                                                        let _ = output.send(Message::DbusStatusChanged(status)).await;
+                                                    } else {
+                                                        eprintln!("📡 ❌ Failed to deserialize StatusChanged signal");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("📡 ❌ Error receiving D-Bus message: {}", e);
+                            }
+                        }
+                    }
+                    
+                    eprintln!("📡 ⚠️ Signal stream ended");
+                })
+            )
+        } else {
+            Subscription::none()
+        };
+        #[cfg(not(feature = "ttsandstt"))]
+        let dbus_status_sub = Subscription::none();
+        
+        Subscription::batch(vec![streaming_sub, animation_sub, conversation_refresh_sub, dbus_check_sub, dbus_status_sub])
     }
 
     fn update(&mut self, message: Self::Message) -> app::Task<Self::Message> {
@@ -2335,6 +2494,157 @@ impl Application for CosmicLlmApp {
                 } else {
                     eprintln!("⚠️ No active conversation to summarize");
                 }
+            }
+            #[cfg(feature = "ttsandstt")]
+            Message::DbusServiceAvailable(available) => {
+                let was_available = self.dbus_ttsstt_available;
+                self.dbus_ttsstt_available = available;
+                if available && !was_available {
+                    println!("✅ D-Bus TTS/STT service is now available");
+                    // Signal subscription will automatically start listening when available
+                } else if !available && was_available {
+                    println!("❌ D-Bus TTS/STT service is no longer available");
+                    let mut guard = self.dbus_ttsstt_status.blocking_write();
+                    guard.clear();
+                    self.stt_listening_initiated = false;
+                }
+            }
+            #[cfg(feature = "ttsandstt")]
+            Message::DbusStatusChanged(status) => {
+                // Update the display status (this triggers UI re-render)
+                let old_status = self.dbus_ttsstt_status_display.clone();
+                if old_status != status {
+                    println!("🔄 UI: D-Bus status changed: '{}' -> '{}' (buttons will update)", old_status, status);
+                    self.dbus_ttsstt_status_display = status.clone();
+                    
+                    // Reset listening initiated flag when status goes to idle
+                    if status == "idle" {
+                        self.stt_listening_initiated = false;
+                        // Also clear playing message ID when TTS stops
+                        self.playing_message_id = None;
+                    }
+                    
+                    // Update shared status for signal updates
+                    {
+                        let mut guard = self.dbus_ttsstt_status.blocking_write();
+                        *guard = status;
+                    }
+                }
+            }
+            #[cfg(feature = "ttsandstt")]
+            Message::CheckDbusService => {
+                let client = self.dbus_ttsstt_client.clone();
+                return cosmic::Task::perform(
+                    async move {
+                        let available = client.check_availability().await;
+                        cosmic::Action::App(Message::DbusServiceAvailable(available))
+                    },
+                    |msg| msg,
+                );
+            }
+            #[cfg(feature = "ttsandstt")]
+            Message::PlayMessageTts(message_idx) => {
+                // Get message content
+                if let Some(msg) = self.messages.get(message_idx) {
+                    // Mark this message as playing
+                    self.playing_message_id = Some(message_idx);
+                    
+                    // Strip markdown from content for TTS (simple regex-based approach)
+                    let text = msg.content
+                        .lines()
+                        .filter_map(|line| {
+                            let trimmed = line.trim();
+                            // Skip markdown headers, code blocks, links, etc.
+                            if trimmed.starts_with('#') || trimmed.starts_with("```") || trimmed.starts_with('[') {
+                                None
+                            } else {
+                                Some(trimmed)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    
+                    let client = self.dbus_ttsstt_client.clone();
+                    return cosmic::Task::perform(
+                        async move {
+                            if let Err(e) = client.call_tts(&text, "en-US").await {
+                                eprintln!("Failed to call TTS: {}", e);
+                            }
+                            cosmic::Action::App(Message::DismissError)
+                        },
+                        |msg| msg,
+                    );
+                }
+            }
+            #[cfg(feature = "ttsandstt")]
+            Message::StopMessageTts => {
+                // Clear playing message ID
+                self.playing_message_id = None;
+                let client = self.dbus_ttsstt_client.clone();
+                return cosmic::Task::perform(
+                    async move {
+                        if let Err(e) = client.stop().await {
+                            eprintln!("Failed to stop TTS: {}", e);
+                        }
+                        cosmic::Action::App(Message::DismissError)
+                    },
+                    |msg| msg,
+                );
+            }
+            #[cfg(feature = "ttsandstt")]
+            Message::StartStt => {
+                // Mark that we initiated listening
+                self.stt_listening_initiated = true;
+                let client = self.dbus_ttsstt_client.clone();
+                return cosmic::Task::perform(
+                    async move {
+                        match client.call_stt("en-US", 2.0).await {
+                            Ok(text) => cosmic::Action::App(Message::SttResult(text)),
+                            Err(e) => {
+                                eprintln!("Failed to call STT: {}", e);
+                                cosmic::Action::App(Message::DismissError)
+                            }
+                        }
+                    },
+                    |msg| msg,
+                );
+            }
+            #[cfg(feature = "ttsandstt")]
+            Message::StopStt => {
+                // Reset listening initiated flag
+                self.stt_listening_initiated = false;
+                let client = self.dbus_ttsstt_client.clone();
+                return cosmic::Task::perform(
+                    async move {
+                        if let Err(e) = client.stop().await {
+                            eprintln!("Failed to stop STT: {}", e);
+                        }
+                        cosmic::Action::App(Message::DismissError)
+                    },
+                    |msg| msg,
+                );
+            }
+            #[cfg(feature = "ttsandstt")]
+            Message::SttResult(text) => {
+                // Reset listening initiated flag when we get the result
+                self.stt_listening_initiated = false;
+                // Insert STT result into input field
+                // Use perform_action to insert text
+                self.input_content.perform(text_editor::Action::Edit(
+                    text_editor::Edit::Paste(Arc::new(text.clone())),
+                ));
+                self.input = self.input_content.text();
+            }
+            #[cfg(not(feature = "ttsandstt"))]
+            Message::DbusServiceAvailable(_) | 
+            Message::DbusStatusChanged(_) | 
+            Message::CheckDbusService | 
+            Message::PlayMessageTts(_) | 
+            Message::StopTts | 
+            Message::StartStt | 
+            Message::StopStt | 
+            Message::SttResult(_) => {
+                // No-op when feature is disabled
             }
             Message::Quit => {
                 // TODO: Implement proper quit
