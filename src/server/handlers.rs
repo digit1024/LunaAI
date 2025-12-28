@@ -860,6 +860,8 @@ fn to_conversation_view(conv: &StoredConversation) -> ConversationView {
 }
 
 fn conversation_to_llm(conversation: StoredConversation) -> Vec<LlmMessage> {
+    use crate::storage::sqlite_storage_simple::Message as StorageMessage;
+    
     conversation
         .messages
         .into_iter()
@@ -869,49 +871,30 @@ fn conversation_to_llm(conversation: StoredConversation) -> Vec<LlmMessage> {
                 return None;
             }
             
-            let role = match msg.role.as_str() {
-                "user" => Role::User,
-                "assistant" => Role::Assistant,
-                "system" => Role::System,
-                "tool" => Role::Tool,
-                _ => return None,
+            // Convert storage message to LLM message using From trait from types module
+            // Convert StoredMessage to sqlite_storage_simple::Message format for conversion
+            let storage_msg = StorageMessage {
+                id: 0, // Not used in conversion
+                conversation_id: String::new(), // Not used in conversion
+                role: msg.role,
+                content: msg.content,
+                embedding: None,
+                created_at: msg.timestamp.timestamp(),
+                tool_calls: msg.tool_calls,
+                tool_call_id: msg.tool_call_id,
+                tool_name: msg.tool_name,
+                tool_status: msg.tool_status,
+                tool_params_json: msg.tool_params_json,
+                tool_result_json: msg.tool_result_json,
+                reasoning_content: msg.reasoning_content,
+                is_summary: msg.is_summary,
+                is_summarized: msg.is_summarized,
+                summarized_message_ids: None,
+                summarized_count: msg.summarized_count,
             };
-            Some(match role {
-                Role::Tool => {
-                    let tool_call_id = msg
-                        .tool_call_id
-                        .unwrap_or_else(|| "tool_result".to_string());
-                    // Combine content AND tool_result_json (both may contain data)
-                    let mut content = msg.content;
-                    if let Some(ref result_json) = msg.tool_result_json {
-                        if !content.is_empty() {
-                            content.push_str("\n");
-                        }
-                        content.push_str(&result_json.to_string());
-                    }
-                    LlmMessage::new_tool_result(
-                        tool_call_id,
-                        content,
-                        msg.tool_status.as_deref() == Some("error"),
-                    )
-                }
-                Role::Assistant => {
-                    // Include tool_calls if present on assistant messages
-                    let mut assistant_msg = if let Some(tool_calls) = msg.tool_calls {
-                        if !tool_calls.is_empty() {
-                            LlmMessage::new_with_tool_calls(role, msg.content, tool_calls)
-                        } else {
-                            LlmMessage::new(role, msg.content)
-                        }
-                    } else {
-                        LlmMessage::new(role, msg.content)
-                    };
-                    // Preserve reasoning_content from stored message
-                    assistant_msg.reasoning_content = msg.reasoning_content.clone();
-                    assistant_msg
-                }
-                _ => LlmMessage::new(role, msg.content),
-            })
+            
+            // Use the From trait implementation from types module
+            Some(<LlmMessage as From<&StorageMessage>>::from(&storage_msg))
         })
         .collect()
 }

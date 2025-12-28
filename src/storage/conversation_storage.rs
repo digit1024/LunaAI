@@ -109,13 +109,16 @@ impl Conversation {
     }
 
     pub fn rebuild_llm_messages(&self) -> Vec<crate::llm::Message> {
+        use crate::llm::Role;
+        
         let mut llm_messages = Vec::new();
 
-        // Add user messages
+        // Add user messages - use Role::from() for conversion
         for msg in &self.messages {
-            if msg.role == "user" {
+            let role = Role::from(msg.role.as_str());
+            if role == Role::User {
                 llm_messages.push(crate::llm::Message::new(
-                    crate::llm::Role::User,
+                    role,
                     msg.content.clone(),
                 ));
             }
@@ -125,7 +128,7 @@ impl Conversation {
         for turn in &self.turns {
             if !turn.text.trim().is_empty() {
                 let msg = crate::llm::Message::new(
-                    crate::llm::Role::Assistant,
+                    Role::Assistant,
                     turn.text.clone(),
                 );
                 // Note: reasoning_content is not stored in turns, would need to be added to Turn struct if needed

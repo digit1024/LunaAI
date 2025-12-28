@@ -6,4 +6,5 @@ pub mod mcp;
 pub mod prompts;
 pub mod resources;
 pub mod storage;
+pub mod types;
 pub mod ui;

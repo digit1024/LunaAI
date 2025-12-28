@@ -28,11 +28,13 @@ pub async fn generate_title_from_messages(
     let mut char_count = 0;
 
     for msg in &filtered_messages {
-        let role_label = match msg.role.as_str() {
-            "user" => "User",
-            "assistant" => "Assistant",
-            "system" => "System",
-            _ => continue,
+        use crate::llm::Role;
+        let role = Role::from(msg.role.as_str());
+        let role_label = match role {
+            Role::User => "User",
+            Role::Assistant => "Assistant",
+            Role::System => "System",
+            Role::Tool => continue, // Skip tool messages in title generation
         };
 
         let content = msg.content.trim();

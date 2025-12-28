@@ -7,6 +7,7 @@ mod prompts;
 mod resources;
 mod server;
 mod storage;
+mod types;
 mod ui;
 
 use clap::Parser;
