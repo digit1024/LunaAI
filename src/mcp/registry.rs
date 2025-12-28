@@ -1,7 +1,7 @@
 use crate::config::MCPConfig;
 use crate::llm::{ToolCall, ToolDefinition, ToolResult};
 use crate::mcp::transport::MCPTransport;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tracing::{error, info};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

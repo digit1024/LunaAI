@@ -35,7 +35,7 @@ impl Default for PromptConfig {
 
 #[derive(Clone)]
 pub struct PromptManager {
-    system_prompt: Option<String>,
+    pub(crate) system_prompt: Option<String>,
 }
 
 impl PromptManager {

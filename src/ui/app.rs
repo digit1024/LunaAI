@@ -956,7 +956,9 @@ impl Application for CosmicLlmApp {
                 )
                 .unwrap_or_else(|e| {
                     tracing::error!(error = %e, "Failed to load default prompt config, using empty PromptManager");
-                    crate::prompts::PromptManager::new()
+                    crate::prompts::PromptManager {
+                        system_prompt: None,
+                    }
                 })
             });
 
@@ -1586,7 +1588,6 @@ impl Application for CosmicLlmApp {
                         let summarize_threshold_tokens = token_counter.get_summarize_threshold_tokens(profile);
                         let safe_limit = token_counter.get_safe_context_limit(profile);
                         
-                        let percentage = (total_tokens as f32 / context_limit as f32) * 100.0;
                         tracing::debug!(
                             total_tokens,
                             usage_percent = (total_tokens as f32 / context_limit as f32 * 100.0),

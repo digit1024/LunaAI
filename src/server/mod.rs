@@ -34,7 +34,9 @@ async fn launch(options: ServerOptions) -> Result<()> {
         PromptManager::load_from_config(&crate::prompts::PromptConfig::default())
             .unwrap_or_else(|e| {
                 tracing::error!(error = %e, "Failed to load default prompt config, using empty PromptManager");
-                PromptManager::new()
+                PromptManager {
+                    system_prompt: None,
+                }
             })
     });
     let sqlite_settings = SqliteSettings::from(&config.server);

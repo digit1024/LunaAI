@@ -1,5 +1,5 @@
 use crate::llm::Attachment;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::fs;
 use std::path::Path;
 

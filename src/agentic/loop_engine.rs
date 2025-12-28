@@ -1,7 +1,7 @@
 use super::protocol::{AgentUpdate, PlannedTool};
 use crate::llm::{ChatStreamEvent, LlmClient, LlmError, Message, Role, ToolCall, ToolResult};
 use crate::mcp::MCPServerRegistry;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures::StreamExt;
 use std::sync::Arc;
 use tokio::sync::RwLock;

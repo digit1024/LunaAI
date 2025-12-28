@@ -1,7 +1,7 @@
 use crate::config::LlmProfile;
 use crate::llm::{build_llm_client, Message as LlmMessage, Role};
 use crate::storage::sqlite_storage_simple::Message as SqliteMessage;
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 const MAX_TITLE_LENGTH: usize = 100;
 
