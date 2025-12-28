@@ -154,6 +154,7 @@ impl MCPServerRegistry {
         self.tool_index
             .get(tool_name)
             .ok_or_else(|| anyhow::anyhow!("Tool {} not found", tool_name))
+            .context(format!("Failed to find tool: {}", tool_name))
     }
 
     pub async fn call_tool(&mut self, tool_call: ToolCall) -> Result<ToolResult> {
@@ -161,7 +162,8 @@ impl MCPServerRegistry {
         let server = self
             .servers
             .get(server_name)
-            .ok_or_else(|| anyhow::anyhow!("Server {} not found", server_name))?;
+            .ok_or_else(|| anyhow::anyhow!("Server {} not found", server_name))
+            .context(format!("Failed to find MCP server: {}", server_name))?;
 
         let mut server_guard = server.write().await;
         server_guard.call_tool(tool_call).await
@@ -230,11 +232,7 @@ impl MCPServerRegistry {
                 );
             }
             Err(e) => {
-                return Err(anyhow::anyhow!(
-                    "Failed to connect to MCP server {}: {}",
-                    name,
-                    e
-                ));
+                return Err(e).context(format!("Failed to connect to MCP server: {}", name));
             }
         }
         Ok(())

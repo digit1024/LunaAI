@@ -54,7 +54,11 @@ impl IconCache {
         }
         let (handle, bytes) = if self.bundled_icons.contains(name) {
             let path = get_bundled_icons_path().join(format!("{}.svg", name));
-            let data = fs::read(&path).expect("Failed to read bundled icon");
+            let data = fs::read(&path)
+                .unwrap_or_else(|e| {
+                    tracing::error!(path = %path.display(), error = %e, "Failed to read bundled icon");
+                    Vec::new() // Return empty vec as fallback
+                });
             let handle = icon::from_svg_bytes(data.clone()).symbolic(true);
             (handle, Some(data))
         } else {
@@ -72,7 +76,10 @@ impl IconCache {
 }
 
 pub fn get_icon(name: &str, size: u16) -> icon::Icon {
-    let mut icon_cache = ICON_CACHE.get().unwrap().lock().unwrap();
+    let mut icon_cache = ICON_CACHE.get()
+        .expect("Icon cache should be initialized")
+        .lock()
+        .expect("Icon cache lock should not be poisoned");
     icon_cache.get_icon(name, size)
 }
 
@@ -88,7 +95,10 @@ fn get_bundled_icons_path() -> PathBuf {
 }
 
 pub fn get_handle(name: &str, size: u16) -> icon::Handle {
-    let mut icon_cache = ICON_CACHE.get().unwrap().lock().unwrap();
+    let mut icon_cache = ICON_CACHE.get()
+        .expect("Icon cache should be initialized")
+        .lock()
+        .expect("Icon cache lock should not be poisoned");
     let key = IconCacheKey {
         name: name.to_string(),
         size,

@@ -306,7 +306,10 @@ impl Default for Storage {
             eprintln!("Failed to initialize SQLite storage: {}", e);
             // Fallback to a temporary database
             Self::new(std::env::temp_dir().join("cosmic_llm_temp.db"))
-                .expect("Failed to create temporary database")
+                .unwrap_or_else(|e| {
+                    tracing::error!(error = %e, "Failed to create temporary database");
+                    std::process::exit(1);
+                })
         })
     }
 }

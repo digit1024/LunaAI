@@ -64,7 +64,7 @@ impl SessionState {
             self.llm_client = llm::build_llm_client(&profile);
             Ok(())
         } else {
-            Err(anyhow::anyhow!("Profile '{}' not found", profile_name))
+            anyhow::bail!("Profile '{}' not found", profile_name)
         }
     }
 
@@ -76,6 +76,7 @@ impl SessionState {
             .get_profile(&self.profile_name)
             .or_else(|| config.get_default_profile())
             .ok_or_else(|| anyhow::anyhow!("No active profile configured"))
+            .context("Failed to get active profile")
     }
 
     pub fn track_task(&mut self, handle: JoinHandle<()>) {

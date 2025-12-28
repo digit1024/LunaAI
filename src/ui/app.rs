@@ -954,7 +954,10 @@ impl Application for CosmicLlmApp {
                 crate::prompts::PromptManager::load_from_config(
                     &crate::prompts::PromptConfig::default(),
                 )
-                .unwrap()
+                .unwrap_or_else(|e| {
+                    tracing::error!(error = %e, "Failed to load default prompt config, using empty PromptManager");
+                    crate::prompts::PromptManager::new()
+                })
             });
 
         // Initialize MCP registry (non-blocking)
@@ -2960,7 +2963,9 @@ impl Application for CosmicLlmApp {
                         self.settings_page.expanded_profiles.remove(&profile_name);
                         self.settings_page.editing_profiles.remove(&profile_name);
                         if self.settings_page.staged_default == profile_name && !self.settings_page.staged_profiles.is_empty() {
-                            self.settings_page.staged_default = self.settings_page.staged_profiles.keys().next().unwrap().clone();
+                            self.settings_page.staged_default = self.settings_page.staged_profiles.keys().next()
+                                .expect("Checked that staged_profiles is not empty")
+                                .clone();
                         }
                         self.settings_page.has_changes = true;
                     }

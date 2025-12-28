@@ -90,7 +90,7 @@ pub async fn generate_title_from_messages(
     let response = llm_client
         .send_message_with_tools(llm_messages, Vec::new(), None, None)
         .await
-        .map_err(|e| anyhow::anyhow!("LLM call failed: {}", e))?;
+        .context("LLM call failed for title generation")?;
 
     // Truncate response to MAX_TITLE_LENGTH chars
     let title = response.content.trim();

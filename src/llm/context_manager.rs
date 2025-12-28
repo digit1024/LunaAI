@@ -76,8 +76,10 @@ impl MessageWithImportance {
         }
 
         // Attachment bonus
-        if msg.attachments.is_some() && !msg.attachments.as_ref().unwrap().is_empty() {
-            score += 15.0;
+        if let Some(attachments) = msg.attachments.as_ref() {
+            if !attachments.is_empty() {
+                score += 15.0;
+            }
         }
 
         // Reasoning content bonus
@@ -97,7 +99,7 @@ impl MessageWithImportance {
         tool_call_map: &HashMap<String, usize>,
     ) -> Self {
         let is_system = msg.role == Role::System;
-        let has_tool_calls = msg.tool_calls.is_some() && !msg.tool_calls.as_ref().unwrap().is_empty();
+        let has_tool_calls = msg.tool_calls.as_ref().map_or(false, |calls| !calls.is_empty());
         let has_tool_result = msg.tool_call_id.is_some();
         let _tool_call_id = msg.tool_call_id.clone();
         

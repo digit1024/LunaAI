@@ -286,7 +286,9 @@ impl AppConfig {
                 "config_bcp_{}.toml",
                 now.format("%Y_%m_%d_%H_%M_%S")
             );
-            let backup_path = config_path.parent().unwrap().join(backup_filename);
+            let backup_path = config_path.parent()
+                .ok_or_else(|| anyhow::anyhow!("Config path has no parent directory"))?
+                .join(backup_filename);
             fs::copy(&config_path, &backup_path)?;
         }
 

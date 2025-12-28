@@ -32,7 +32,10 @@ async fn launch(options: ServerOptions) -> Result<()> {
     let prompt_manager = PromptManager::load_from_config(&config.prompts).unwrap_or_else(|err| {
         tracing::warn!("Failed to load prompts: {}", err);
         PromptManager::load_from_config(&crate::prompts::PromptConfig::default())
-            .expect("Prompt defaults must load")
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "Failed to load default prompt config, using empty PromptManager");
+                PromptManager::new()
+            })
     });
     let sqlite_settings = SqliteSettings::from(&config.server);
     let storage =
@@ -42,7 +45,10 @@ async fn launch(options: ServerOptions) -> Result<()> {
                 std::env::temp_dir().join("cosmic_llm_server.db"),
                 sqlite_settings,
             )
-            .expect("temporary sqlite init must succeed")
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "Failed to create temporary database");
+                std::process::exit(1);
+            })
         });
 
     let storage = Arc::new(Mutex::new(storage));
@@ -162,7 +168,8 @@ fn spawn_title_generation_thread(
                 Some(p) => p.clone(),
                 None => {
                     tracing::warn!("Title generation profile '{}' not found, stopping thread", 
-                        title_config.title_generation_profile.as_ref().unwrap());
+                        title_config.title_generation_profile.as_ref()
+                            .expect("Title generation profile should be set at this point"));
                     break;
                 }
             };

@@ -59,7 +59,7 @@ impl AgenticLoop {
                             error: format!("Model communication failed: {}", e),
                         });
                     }
-                    return Err(anyhow::anyhow!("LLM call failed: {}", e));
+                    return Err(e).context("LLM call failed");
                 }
             };
 
@@ -119,7 +119,7 @@ impl AgenticLoop {
                                 error: format!("Streaming error: {}", e),
                             });
                         }
-                        return Err(anyhow::anyhow!("Streaming error: {}", e));
+                        return Err(e).context("Streaming error");
                     }
                 }
             }
@@ -265,7 +265,7 @@ impl AgenticLoop {
                             error: format!("Model communication failed: {}", e),
                         });
                     }
-                    return Err(anyhow::anyhow!("LLM call failed: {}", e));
+                    return Err(e).context("LLM call failed");
                 }
             };
 

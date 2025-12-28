@@ -1,5 +1,5 @@
 use crate::llm::Attachment;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 
@@ -34,13 +34,13 @@ pub fn create_attachment(file_path: &str) -> Result<Attachment> {
     let path = Path::new(file_path);
 
     if !path.exists() {
-        return Err(anyhow::anyhow!("File does not exist: {}", file_path));
+        anyhow::bail!("File does not exist: {}", file_path);
     }
 
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("Invalid file name"))?
+        .ok_or_else(|| anyhow::anyhow!("Failed to extract file name from path: invalid file name"))?
         .to_string();
 
     let metadata = fs::metadata(path)?;
@@ -190,10 +190,7 @@ pub fn validate_file_for_llm(attachment: &Attachment) -> Result<()> {
         FileType::Image => {
             // Check file size limit for images (e.g., 50MB)
             if attachment.file_size > 50 * 1024 * 1024 {
-                Err(anyhow::anyhow!(
-                    "Image file too large: {} bytes",
-                    attachment.file_size
-                ))
+                anyhow::bail!("Image file too large: {} bytes", attachment.file_size)
             } else {
                 Ok(())
             }
@@ -201,10 +198,7 @@ pub fn validate_file_for_llm(attachment: &Attachment) -> Result<()> {
         FileType::Document => {
             // Check file size limit for documents (e.g., 100MB)
             if attachment.file_size > 100 * 1024 * 1024 {
-                Err(anyhow::anyhow!(
-                    "Document file too large: {} bytes",
-                    attachment.file_size
-                ))
+                anyhow::bail!("Document file too large: {} bytes", attachment.file_size)
             } else {
                 Ok(())
             }
@@ -212,10 +206,7 @@ pub fn validate_file_for_llm(attachment: &Attachment) -> Result<()> {
         FileType::Text => {
             // Check file size limit for text files (e.g., 10MB)
             if attachment.file_size > 10 * 1024 * 1024 {
-                Err(anyhow::anyhow!(
-                    "Text file too large: {} bytes",
-                    attachment.file_size
-                ))
+                anyhow::bail!("Text file too large: {} bytes", attachment.file_size)
             } else {
                 Ok(())
             }

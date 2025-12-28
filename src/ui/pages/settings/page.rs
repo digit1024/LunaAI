@@ -325,7 +325,9 @@ impl SettingsPage {
             SettingsMessage::DeleteProfile(profile_name) => {
                 config.profiles.remove(&profile_name);
                 if self.selected_profile == profile_name && !config.profiles.is_empty() {
-                    self.selected_profile = config.profiles.keys().next().unwrap().clone();
+                    self.selected_profile = config.profiles.keys().next()
+                        .expect("Checked that profiles is not empty")
+                        .clone();
                     config.default = self.selected_profile.clone();
                 }
             }
