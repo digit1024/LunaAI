@@ -107,9 +107,9 @@ pub fn input_area(app: &CosmicLlmApp) -> Element<Message> {
                 }
                     .push(
                         // Attached files display (left side, expands to fill)
-                        if !app.attached_files.is_empty() {
+                        if !app.attachment_state.attached_files.is_empty() {
                             cosmic::widget::column::with_children(
-                                app.attached_files
+                                app.attachment_state.attached_files
                                     .iter()
                                     .map(|file_path| {
                                         let file_name = std::path::Path::new(file_path)

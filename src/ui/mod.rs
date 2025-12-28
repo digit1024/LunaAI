@@ -4,6 +4,7 @@ pub mod context;
 pub mod dialogs;
 pub mod icons;
 pub mod pages;
+pub mod state;
 pub mod widgets;
 
 pub use app::CosmicLlmApp;

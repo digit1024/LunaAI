@@ -6,6 +6,7 @@ mod mcp;
 mod prompts;
 mod resources;
 mod server;
+mod services;
 mod storage;
 mod types;
 mod ui;

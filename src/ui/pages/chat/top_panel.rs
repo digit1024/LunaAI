@@ -15,7 +15,7 @@ pub fn top_panel(app: &CosmicLlmApp) -> Element<Message> {
         .count();
 
     // Conversation info
-    let (title, created_text, _msg_count, context_usage) = if let Some(id) = app.current_conversation_id {
+    let (title, created_text, _msg_count, context_usage) = if let Some(id) = app.conversation_state.current_conversation_id {
         if let Ok(Some(conv)) = app.storage.get_conversation(&id) {
             let created = conv.created_at.format("%Y-%m-%d %H:%M").to_string();
             // Prefer the latest title from the on-disk index (updated by background tasks)
@@ -34,13 +34,13 @@ pub fn top_panel(app: &CosmicLlmApp) -> Element<Message> {
             
             // Use cached context usage to avoid blocking UI during rendering
             // Cache is updated when conversation is loaded/changed
-            let usage_pct = app.context_usage_cache.get(&id).copied().flatten();
+            let usage_pct = app.conversation_state.context_usage_cache.get(&id).copied().flatten();
             (latest_title, Some(created), conv.messages.len(), usage_pct)
         } else {
-            ("New Chat".to_string(), None, app.messages.len(), None)
+            ("New Chat".to_string(), None, app.conversation_state.messages.len(), None)
         }
     } else {
-        ("New Chat".to_string(), None, app.messages.len(), None)
+        ("New Chat".to_string(), None, app.conversation_state.messages.len(), None)
     };
 
     let _created_label = created_text.unwrap_or_else(|| "".to_string());

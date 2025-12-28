@@ -40,7 +40,7 @@ pub fn mcp_config_view(app: &CosmicLlmApp) -> Element<Message> {
     let mut server_column = cosmic::widget::column::with_capacity(all_server_names.len());
     for server_name in &all_server_names {
         let status = server_statuses.get(server_name).cloned().unwrap_or(ServerStatus::Failed("Unknown".to_string()));
-        let is_expanded = app.expanded_mcp_servers.contains(server_name);
+        let is_expanded = app.context_state.expanded_mcp_servers.contains(server_name);
         let tools = tools_by_server.get(server_name).cloned().unwrap_or_default();
 
         // Status badge

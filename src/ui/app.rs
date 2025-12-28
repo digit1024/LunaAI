@@ -28,8 +28,10 @@ use crate::{
     ui::pages::mcp_config,
     ui::pages::settings::{SimpleSettingsMessage, SimpleSettingsPage},
     ui::pages::tools,
+    ui::state::{AttachmentState, ContextState, ConversationState, ToolCallState},
     ui::widgets::ToolCallMessage,
 };
+use crate::services::MessageConverter;
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -182,23 +184,12 @@ pub struct CosmicLlmApp {
     pub prompt_manager: PromptManager,
     pub input: String,
     pub input_content: text_editor::Content,
-    pub messages: Vec<ChatMessage>,
     pub input_id: cosmic::widget::Id,
     pub current_page: NavigationPage,
-    pub current_conversation_id: Option<Uuid>,
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
     pub llm_client: Arc<dyn LlmClient>,
     pub is_streaming: bool,
     pub current_streaming_id: Option<Uuid>,
-    pub active_tool_calls: Vec<ToolCallInfo>,
-    // Anchors tool calls under the AI message that executed them
-    pub current_ai_message_index: Option<usize>,
-    pub archived_tool_calls: Vec<AnchoredToolCall>,
-    pub expanded_tool_calls: std::collections::HashSet<usize>,
-    pub expanded_tool_summaries: std::collections::HashSet<(usize, String)>,
-    pub expanded_reasoning: std::collections::HashSet<usize>, // message indices with expanded reasoning
-    pub expanded_summaries: std::collections::HashSet<usize>, // message indices with expanded summaries
-    pub expanded_mcp_servers: std::collections::HashSet<String>,
     pub scrollable_id: cosmic::widget::Id,
     pub key_binds: std::collections::HashMap<menu::KeyBind, MenuAction>,
     pub settings_changed: bool,
@@ -217,29 +208,16 @@ pub struct CosmicLlmApp {
     pub available_mcp_tools: Vec<crate::llm::ToolDefinition>,
     // Tool enable/disable state (tool_name -> enabled)
     pub tool_states: std::collections::HashMap<String, bool>,
-    // Pending tool calls for persistence
-    pub pending_tool_calls_for_history: Vec<ToolCall>,
-    pub tool_runtime_context: std::collections::HashMap<String, ToolRuntimeContext>,
-    // Show tools context panel
-    pub show_tools_context: bool,
     // Store last user message for retry functionality
     pub last_user_message: Option<String>,
-    // Store attached files
-    pub attached_files: Vec<String>,
     // Store current error message
     pub current_error: Option<String>,
-    // Store prepared LLM messages with attachments for the current request
-    pub pending_llm_messages: Option<Vec<crate::llm::Message>>,
     // Search functionality
     pub search_query: String,
     pub search_results: Vec<crate::storage::sqlite_storage_simple::Snippet>,
     // Typing indicator animation state
     pub typing_indicator_progress: f32,
-    // Cache for context usage percentage per conversation (to avoid blocking UI)
-    pub context_usage_cache: std::collections::HashMap<Uuid, Option<u32>>,
     pub typing_indicator_start_time: Option<cosmic::iced::time::Instant>,
-    // Recent conversations for nav bar (last 10)
-    pub recent_conversations: Vec<(Uuid, String)>, // (id, title)
     // D-Bus TTS/STT service
     #[cfg(feature = "ttsandstt")]
     pub dbus_ttsstt_available: bool,
@@ -253,6 +231,12 @@ pub struct CosmicLlmApp {
     pub stt_listening_initiated: bool, // True if we initiated the listening (to distinguish from other apps)
     #[cfg(feature = "ttsandstt")]
     pub playing_message_id: Option<usize>, // Index of message currently playing TTS
+    
+    // State modules (extracted from god object)
+    pub conversation_state: ConversationState,
+    pub tool_call_state: ToolCallState,
+    pub attachment_state: AttachmentState,
+    pub context_state: ContextState,
 }
 
 #[derive(Debug, Clone)]
@@ -344,22 +328,12 @@ impl CosmicLlmApp {
             prompt_manager,
             input: String::new(),
             input_content: text_editor::Content::new(),
-            messages: Vec::new(),
             input_id: cosmic::widget::Id::unique(),
             current_page: NavigationPage::Chat,
-            current_conversation_id: None,
             mcp_registry,
             llm_client,
             is_streaming: false,
             current_streaming_id: None,
-            active_tool_calls: Vec::new(),
-            current_ai_message_index: None,
-            archived_tool_calls: Vec::new(),
-            expanded_tool_calls: std::collections::HashSet::new(),
-            expanded_tool_summaries: std::collections::HashSet::new(),
-            expanded_reasoning: std::collections::HashSet::new(),
-            expanded_summaries: std::collections::HashSet::new(),
-            expanded_mcp_servers: std::collections::HashSet::new(),
             scrollable_id: cosmic::widget::Id::unique(),
             key_binds: Self::create_key_binds(),
             settings_changed: false,
@@ -404,19 +378,12 @@ impl CosmicLlmApp {
             dialog_text_content: None,
             available_mcp_tools: Vec::new(),
             tool_states: std::collections::HashMap::new(),
-            pending_tool_calls_for_history: Vec::new(),
-            tool_runtime_context: std::collections::HashMap::new(),
-            show_tools_context: false,
             last_user_message: None,
-            attached_files: Vec::new(),
             current_error: None,
-            pending_llm_messages: None,
             search_query: String::new(),
             search_results: Vec::new(),
             typing_indicator_progress: 0.0,
             typing_indicator_start_time: None,
-            recent_conversations: Vec::new(),
-            context_usage_cache: std::collections::HashMap::new(),
             #[cfg(feature = "ttsandstt")]
             dbus_ttsstt_available: false,
             #[cfg(feature = "ttsandstt")]
@@ -429,6 +396,12 @@ impl CosmicLlmApp {
             stt_listening_initiated: false, // True if we initiated the listening
             #[cfg(feature = "ttsandstt")]
             playing_message_id: None, // Index of message currently playing TTS
+            
+            // Initialize state modules
+            conversation_state: ConversationState::new(),
+            tool_call_state: ToolCallState::new(),
+            attachment_state: AttachmentState::new(),
+            context_state: ContextState::new(),
         }
     }
 
@@ -484,9 +457,9 @@ impl CosmicLlmApp {
         let id = streaming_id.unwrap_or_else(|| uuid::Uuid::new_v4());
         let llm_client = self.llm_client.clone();
         let prompt_manager = self.prompt_manager.clone();
-        let messages = self.messages.clone();
+        let messages = self.conversation_state.messages.clone();
         let mcp_registry = self.mcp_registry.clone();
-        let pending_messages = self.pending_llm_messages.clone();
+        let pending_messages = self.attachment_state.pending_llm_messages.clone();
         let profile = self.config.get_default_profile().cloned();
         let profile_prompt_path = self.config.get_default_profile().and_then(|profile| {
             profile
@@ -656,15 +629,15 @@ impl CosmicLlmApp {
         &mut self,
         conversation: crate::storage::conversation_storage::Conversation,
     ) {
-        self.messages.clear();
-        self.archived_tool_calls.clear();
-        self.active_tool_calls.clear();
-        self.current_ai_message_index = None;
-        self.pending_tool_calls_for_history.clear();
-        self.tool_runtime_context.clear();
-        self.expanded_tool_summaries.clear();
-        self.expanded_reasoning.clear();
-        self.expanded_summaries.clear();
+        self.conversation_state.messages.clear();
+        self.tool_call_state.archived_tool_calls.clear();
+        self.tool_call_state.active_tool_calls.clear();
+        self.tool_call_state.set_current_ai_message_index(None);
+        self.tool_call_state.clear_pending_tool_calls();
+        self.tool_call_state.tool_runtime_context.clear();
+        self.tool_call_state.expanded_tool_summaries.clear();
+        self.context_state.expanded_reasoning.clear();
+        self.context_state.expanded_summaries.clear();
 
         let mut archived_indices: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
@@ -675,7 +648,7 @@ impl CosmicLlmApp {
             if stored.role == "tool" {
                 if let Some(tool_call_id) = stored.tool_call_id.as_ref() {
                     if let Some(idx) = archived_indices.get(tool_call_id) {
-                        if let Some(entry) = self.archived_tool_calls.get_mut(*idx) {
+                        if let Some(entry) = self.tool_call_state.archived_tool_calls.get_mut(*idx) {
                             entry.tool_call.status =
                                 if stored.tool_status.as_deref() == Some("error") {
                                     ToolCallStatus::Error
@@ -700,11 +673,11 @@ impl CosmicLlmApp {
                         }
                     }
                 }
-                continue; // Skip adding tool messages to self.messages
+                continue; // Skip adding tool messages to self.conversation_state.messages
             }
 
             let is_user = stored.role == "user";
-            self.messages.push(ChatMessage {
+            self.conversation_state.messages.push(ChatMessage {
                 content: stored.content.clone(),
                 is_user,
                 is_error: false,
@@ -713,7 +686,7 @@ impl CosmicLlmApp {
                 is_summarized: stored.is_summarized,
                 summarized_count: stored.summarized_count,
             });
-            let anchor_index = self.messages.len().saturating_sub(1);
+            let anchor_index = self.conversation_state.messages.len().saturating_sub(1);
 
             if let Some(tool_calls) = stored.tool_calls {
                 for call in tool_calls {
@@ -727,11 +700,11 @@ impl CosmicLlmApp {
                         result: None,
                         error: None,
                     };
-                    self.archived_tool_calls.push(AnchoredToolCall {
+                    self.tool_call_state.archived_tool_calls.push(AnchoredToolCall {
                         anchor_index,
                         tool_call: info,
                     });
-                    archived_indices.insert(call.id.clone(), self.archived_tool_calls.len() - 1);
+                    archived_indices.insert(call.id.clone(), self.tool_call_state.archived_tool_calls.len() - 1);
                 }
             }
         }
@@ -749,7 +722,7 @@ impl CosmicLlmApp {
                 &self.config,
                 &self.prompt_manager,
             );
-            self.context_usage_cache.insert(conversation_id, usage_pct);
+            self.conversation_state.context_usage_cache.insert(conversation_id, usage_pct);
         }
     }
 
@@ -1267,13 +1240,13 @@ impl Application for CosmicLlmApp {
             Message::SendMessage => {
                 tracing::debug!(
                     input_length = self.input.len(),
-                    attachment_count = self.attached_files.len(),
+                    attachment_count = self.attachment_state.attached_files.len(),
                     "SendMessage received"
                 );
                 // Allow sending if there's text OR if there are attachments
-                if !self.input.trim().is_empty() || !self.attached_files.is_empty() {
+                if !self.input.trim().is_empty() || !self.attachment_state.attached_files.is_empty() {
                     // Create new conversation if none exists
-                    if self.current_conversation_id.is_none() {
+                    if self.conversation_state.current_conversation_id.is_none() {
                         let current_profile_name = Some(self.config.default.as_str());
                         let conv_id = self
                             .storage
@@ -1282,7 +1255,7 @@ impl Application for CosmicLlmApp {
                                 tracing::error!(error = %e, "Failed to create conversation");
                                 Uuid::new_v4()
                             });
-                        self.current_conversation_id = Some(conv_id);
+                        self.conversation_state.current_conversation_id = Some(conv_id);
                         // Update nav model to reflect new conversation
                         self.load_recent_conversations();
                         self.update_nav_model();
@@ -1333,7 +1306,7 @@ impl Application for CosmicLlmApp {
             is_summarized: false,
                         summarized_count: None,
                     };
-                    self.messages.push(user_msg.clone());
+                    self.conversation_state.messages.push(user_msg.clone());
 
                     // Play sent sound
                     crate::ui::audio::AudioService::play_sound("sent.mp3");
@@ -1342,7 +1315,7 @@ impl Application for CosmicLlmApp {
                     // The scroll will be handled by anchor_bottom() and widget operations
 
                     // Add to storage
-                    if let Some(conv_id) = self.current_conversation_id {
+                    if let Some(conv_id) = self.conversation_state.current_conversation_id {
                         if let Err(e) = self.storage.add_message_to_conversation(
                             &conv_id,
                             "user".to_string(),
@@ -1361,15 +1334,15 @@ impl Application for CosmicLlmApp {
                     self.input_content = text_editor::Content::new();
 
                     // Assistant bubble will be created when streaming starts
-                    self.current_ai_message_index = None;
+                    self.tool_call_state.set_current_ai_message_index(None);
 
                     // Create attachments for the current message FIRST
                     let mut attachments = Vec::new();
                     tracing::debug!(
-                        file_count = self.attached_files.len(),
+                        file_count = self.attachment_state.attached_files.len(),
                         "Processing attached files"
                     );
-                    for file_path in &self.attached_files {
+                    for file_path in &self.attachment_state.attached_files {
                         tracing::debug!(file_path = %file_path, "Processing file");
                         match crate::llm::file_utils::create_attachment(file_path) {
                             Ok(attachment) => {
@@ -1429,98 +1402,12 @@ impl Application for CosmicLlmApp {
                         ));
                     }
 
-                    // Load messages from database to get full tool_result_json data
-                    if let Some(conv_id) = self.current_conversation_id {
+                    // Load messages from database and convert using MessageConverter service
+                    if let Some(conv_id) = self.conversation_state.current_conversation_id {
                         match self.storage.load_conversation_messages(&conv_id.to_string()) {
                             Ok(db_messages) => {
-                                // First pass: collect all valid tool_call_ids from assistant messages
-                                let mut valid_tool_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-                                for msg in &db_messages {
-                                    if msg.role == "assistant" {
-                                        if let Some(ref tool_calls) = msg.tool_calls {
-                                            for tc in tool_calls {
-                                                valid_tool_call_ids.insert(tc.id.clone());
-                                            }
-                                        }
-                                    }
-                                }
-                                
-                                // Second pass: build messages, skipping orphaned tool results and summarized messages
-                                let mut skipped_orphans = 0;
-                                let mut skipped_summarized = 0;
-                                for msg in db_messages {
-                                    // Skip messages that have been summarized (but keep summary messages themselves)
-                                    if msg.is_summarized && !msg.is_summary {
-                                        skipped_summarized += 1;
-                                        continue;
-                                    }
-                                    
-                                    let role = match msg.role.as_str() {
-                                        "user" => crate::llm::Role::User,
-                                        "assistant" => crate::llm::Role::Assistant,
-                                        "system" => crate::llm::Role::System,
-                                        "tool" => {
-                                            // Check if this tool result has a matching tool_call
-                                            if let Some(ref tool_call_id) = msg.tool_call_id {
-                                                if !valid_tool_call_ids.contains(tool_call_id) {
-                                                    skipped_orphans += 1;
-                                                    continue; // Skip orphaned tool result
-                                                }
-                                            } else {
-                                                skipped_orphans += 1;
-                                                continue; // No tool_call_id, skip
-                                            }
-                                            crate::llm::Role::Tool
-                                        }
-                                        _ => continue,
-                                    };
-                                    
-                                    // For tool messages, combine content with tool_result_json
-                                    let content = if role == crate::llm::Role::Tool {
-                                        let mut combined = msg.content.clone();
-                                        if let Some(ref result_json) = msg.tool_result_json {
-                                            if !combined.is_empty() {
-                                                combined.push_str("\n");
-                                            }
-                                            combined.push_str(&result_json.to_string());
-                                        }
-                                        combined
-                                    } else {
-                                        msg.content.clone()
-                                    };
-                                    
-                                    let mut llm_msg = crate::llm::Message::new(role.clone(), content);
-                                    
-                                    // Preserve tool call metadata
-                                    if role == crate::llm::Role::Tool {
-                                        llm_msg.tool_call_id = msg.tool_call_id.clone();
-                                    }
-                                    if let Some(ref tool_calls) = msg.tool_calls {
-                                        llm_msg.tool_calls = Some(tool_calls.iter().map(|tc| {
-                                            crate::llm::ToolCall {
-                                                id: tc.id.clone(),
-                                                name: tc.name.clone(),
-                                                parameters: tc.parameters.clone(),
-                                            }
-                                        }).collect());
-                                    }
-                                    llm_msg.reasoning_content = msg.reasoning_content.clone();
-                                    
-                                    llm_messages.push(llm_msg);
-                                }
-                                
-                                if skipped_orphans > 0 {
-                                    tracing::warn!(
-                                        skipped_count = skipped_orphans,
-                                        "Skipped orphaned tool results (no matching tool_call)"
-                                    );
-                                }
-                                if skipped_summarized > 0 {
-                                    tracing::debug!(
-                                        skipped_count = skipped_summarized,
-                                        "Skipped summarized messages (using summaries instead)"
-                                    );
-                                }
+                                // Use MessageConverter service (single source of truth)
+                                llm_messages.extend(MessageConverter::db_to_llm(&db_messages, true));
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -1528,7 +1415,7 @@ impl Application for CosmicLlmApp {
                                     "Failed to load messages from DB, falling back to UI messages"
                                 );
                                 // Fallback to UI messages
-                                for msg in &self.messages {
+                                for msg in &self.conversation_state.messages {
                                     let role = if msg.is_user {
                                         crate::llm::Role::User
                                     } else {
@@ -1540,7 +1427,7 @@ impl Application for CosmicLlmApp {
                         }
                     } else {
                         // No conversation yet, use UI messages
-                        for msg in &self.messages {
+                        for msg in &self.conversation_state.messages {
                             let role = if msg.is_user {
                                 crate::llm::Role::User
                             } else {
@@ -1572,7 +1459,7 @@ impl Application for CosmicLlmApp {
                     llm_messages.push(current_user_message.clone());
 
                     // Clear attached files after processing
-                    self.attached_files.clear();
+                    self.attachment_state.attached_files.clear();
 
                     // === DESKTOP CONTEXT MANAGEMENT ===
                     // Check token count and trigger summarization if needed
@@ -1608,7 +1495,7 @@ impl Application for CosmicLlmApp {
                                 "Summarization threshold exceeded"
                             );
                             
-                            if let Some(conv_id) = self.current_conversation_id {
+                            if let Some(conv_id) = self.conversation_state.current_conversation_id {
                                 // Load messages from DB for summarization
                                 if let Ok(db_messages) = self.storage.load_conversation_messages(&conv_id.to_string()) {
                                     // Filter to regular messages (exclude summaries, tools, and already summarized messages)
@@ -1805,7 +1692,7 @@ impl Application for CosmicLlmApp {
                     }
 
                     // Store the prepared messages for the subscription to use
-                    self.pending_llm_messages = Some(llm_messages);
+                    self.attachment_state.pending_llm_messages = Some(llm_messages);
 
                     // Start streaming LLM response
                     let streaming_id = uuid::Uuid::new_v4();
@@ -1830,17 +1717,17 @@ impl Application for CosmicLlmApp {
                     // Stop the current streaming
                     self.is_streaming = false;
                     self.current_streaming_id = None;
-                    self.pending_llm_messages = None; // Clear prepared messages
+                    self.attachment_state.pending_llm_messages = None; // Clear prepared messages
                     self.typing_indicator_start_time = None;
                     self.typing_indicator_progress = 0.0;
 
                     // Remove any incomplete assistant message
-                    if let Some(index) = self.current_ai_message_index {
-                        if index < self.messages.len() && !self.messages[index].is_user {
-                            self.messages.remove(index);
+                    if let Some(index) = self.tool_call_state.current_ai_message_index {
+                        if index < self.conversation_state.messages.len() && !self.conversation_state.messages[index].is_user {
+                            self.conversation_state.messages.remove(index);
                         }
                     }
-                    self.current_ai_message_index = None;
+                    self.tool_call_state.set_current_ai_message_index(None);
                 }
             }
             Message::RetryMessage => {
@@ -1854,9 +1741,9 @@ impl Application for CosmicLlmApp {
                     }
 
                     // Remove the last assistant message if it exists
-                    if let Some(index) = self.current_ai_message_index {
-                        if index < self.messages.len() && !self.messages[index].is_user {
-                            self.messages.remove(index);
+                    if let Some(index) = self.tool_call_state.current_ai_message_index {
+                        if index < self.conversation_state.messages.len() && !self.conversation_state.messages[index].is_user {
+                            self.conversation_state.messages.remove(index);
                         }
                     }
 
@@ -1929,10 +1816,10 @@ impl Application for CosmicLlmApp {
             }
             Message::FileSelected(file_path) => {
                 tracing::debug!(file_path = %file_path, "File selected");
-                if !self.attached_files.contains(&file_path) {
-                    self.attached_files.push(file_path);
+                if !self.attachment_state.attached_files.contains(&file_path) {
+                    self.attachment_state.attached_files.push(file_path);
                     tracing::debug!(
-                        file_count = self.attached_files.len(),
+                        file_count = self.attachment_state.attached_files.len(),
                         "File added to attached_files"
                     );
                 } else {
@@ -1940,7 +1827,7 @@ impl Application for CosmicLlmApp {
                 }
             }
             Message::RemoveFile(file_path) => {
-                self.attached_files.retain(|f| f != &file_path);
+                self.attachment_state.attached_files.retain(|f| f != &file_path);
             }
             Message::FileChooserCancelled => {
                 // User cancelled file selection - do nothing
@@ -1963,7 +1850,7 @@ impl Application for CosmicLlmApp {
                 }
             }
             Message::SelectConversation(id) => {
-                self.current_conversation_id = Some(id);
+                self.conversation_state.current_conversation_id = Some(id);
                 self.current_page = NavigationPage::Chat;
                 if let Ok(Some(conv)) = self.storage.get_conversation(&id) {
                     // Switch to the conversation's profile, or default if not set/present
@@ -2029,9 +1916,9 @@ impl Application for CosmicLlmApp {
             }
             Message::DeleteConversation(id) => {
                 // If deleting the active conversation, clear the chat
-                if self.current_conversation_id == Some(id) {
-                    self.current_conversation_id = None;
-                    self.messages.clear();
+                if self.conversation_state.current_conversation_id == Some(id) {
+                    self.conversation_state.current_conversation_id = None;
+                    self.conversation_state.messages.clear();
                     self.input.clear();
                 }
                 let _ = self.storage.delete_conversation(&id);
@@ -2042,17 +1929,17 @@ impl Application for CosmicLlmApp {
                 self.update_nav_model();
             }
             Message::NewConversation => {
-                self.current_conversation_id = None;
-                self.messages.clear();
+                self.conversation_state.current_conversation_id = None;
+                self.conversation_state.messages.clear();
                 self.input.clear();
                 self.current_page = NavigationPage::Chat;
-                self.active_tool_calls.clear();
-                self.archived_tool_calls.clear();
-                self.current_ai_message_index = None;
-                self.pending_tool_calls_for_history.clear();
-                self.tool_runtime_context.clear();
-                self.expanded_tool_summaries.clear();
-                self.expanded_reasoning.clear();
+                self.tool_call_state.active_tool_calls.clear();
+                self.tool_call_state.archived_tool_calls.clear();
+                self.tool_call_state.set_current_ai_message_index(None);
+                self.tool_call_state.pending_tool_calls_for_history.clear();
+                self.tool_call_state.tool_runtime_context.clear();
+                self.tool_call_state.expanded_tool_summaries.clear();
+                self.context_state.expanded_reasoning.clear();
                 // Update nav model to reflect new conversation
                 self.load_recent_conversations();
                 self.update_nav_model();
@@ -2060,10 +1947,10 @@ impl Application for CosmicLlmApp {
             Message::AgentUpdate(u) => {
                 match u {
                     AgentUpdate::AssistantStreamingStarted => {
-                        self.pending_tool_calls_for_history.clear();
-                        self.tool_runtime_context.clear();
-                        self.active_tool_calls.clear();
-                        self.messages.push(ChatMessage {
+                        self.tool_call_state.pending_tool_calls_for_history.clear();
+                        self.tool_call_state.tool_runtime_context.clear();
+                        self.tool_call_state.active_tool_calls.clear();
+                        self.conversation_state.messages.push(ChatMessage {
                             content: String::new(),
                             is_user: false,
                             is_error: false,
@@ -2072,11 +1959,11 @@ impl Application for CosmicLlmApp {
             is_summarized: false,
                             summarized_count: None,
                         });
-                        self.current_ai_message_index = Some(self.messages.len() - 1);
+                        self.tool_call_state.set_current_ai_message_index(Some(self.conversation_state.messages.len() - 1));
                     }
                     AgentUpdate::AssistantDelta { text_chunk, .. } => {
-                        if let Some(idx) = self.current_ai_message_index {
-                            if let Some(msg) = self.messages.get_mut(idx) {
+                        if let Some(idx) = self.tool_call_state.current_ai_message_index {
+                            if let Some(msg) = self.conversation_state.messages.get_mut(idx) {
                                 msg.content.push_str(&text_chunk);
                             }
                         }
@@ -2084,8 +1971,8 @@ impl Application for CosmicLlmApp {
                         // The scroll will be handled by anchor_bottom() and widget operations
                     }
                     AgentUpdate::ReasoningContentDelta { chunk } => {
-                        if let Some(idx) = self.current_ai_message_index {
-                            if let Some(msg) = self.messages.get_mut(idx) {
+                        if let Some(idx) = self.tool_call_state.current_ai_message_index {
+                            if let Some(msg) = self.conversation_state.messages.get_mut(idx) {
                                 // Accumulate reasoning content during streaming
                                 match &mut msg.reasoning_content {
                                     Some(existing) => {
@@ -2099,13 +1986,13 @@ impl Application for CosmicLlmApp {
                         }
                     }
                     AgentUpdate::AssistantComplete { full_text, reasoning_content } => {
-                        if let Some(idx) = self.current_ai_message_index {
-                            if let Some(msg) = self.messages.get_mut(idx) {
+                        if let Some(idx) = self.tool_call_state.current_ai_message_index {
+                            if let Some(msg) = self.conversation_state.messages.get_mut(idx) {
                                 msg.content = full_text.clone();
                                 msg.reasoning_content = reasoning_content.clone();
                             }
                         } else {
-                            self.messages.push(ChatMessage {
+                            self.conversation_state.messages.push(ChatMessage {
                                 content: full_text.clone(),
                                 is_user: false,
                                 is_error: false,
@@ -2114,14 +2001,14 @@ impl Application for CosmicLlmApp {
             is_summarized: false,
                                 summarized_count: None,
                             });
-                            self.current_ai_message_index = Some(self.messages.len() - 1);
+                            self.tool_call_state.set_current_ai_message_index(Some(self.conversation_state.messages.len() - 1));
                         }
-                        if let Some(conv_id) = self.current_conversation_id {
-                            let tool_calls_slice = if self.pending_tool_calls_for_history.is_empty()
+                        if let Some(conv_id) = self.conversation_state.current_conversation_id {
+                            let tool_calls_slice = if self.tool_call_state.pending_tool_calls_for_history.is_empty()
                             {
                                 None
                             } else {
-                                Some(self.pending_tool_calls_for_history.as_slice())
+                                Some(self.tool_call_state.pending_tool_calls_for_history.as_slice())
                             };
                             let metadata = MessageMetadata {
                                 tool_calls: tool_calls_slice,
@@ -2145,12 +2032,12 @@ impl Application for CosmicLlmApp {
                                 self.update_context_usage_cache(conv_id);
                             }
                         }
-                        self.pending_tool_calls_for_history.clear();
+                        self.tool_call_state.pending_tool_calls_for_history.clear();
                     }
                     AgentUpdate::ToolPlanned { plan_items } => {
                         let anchor = self
-                            .current_ai_message_index
-                            .unwrap_or_else(|| self.messages.len().saturating_sub(1));
+                            .tool_call_state.current_ai_message_index
+                            .unwrap_or_else(|| self.conversation_state.messages.len().saturating_sub(1));
                         for plan in plan_items {
                             let params_value: Value = serde_json::from_str(&plan.params_json)
                                 .unwrap_or(Value::String(plan.params_json.clone()));
@@ -2161,15 +2048,15 @@ impl Application for CosmicLlmApp {
                                 name: plan.name.clone(),
                                 parameters: params_value.clone(),
                             };
-                            self.pending_tool_calls_for_history.push(tool_call.clone());
-                            self.tool_runtime_context.insert(
+                            self.tool_call_state.pending_tool_calls_for_history.push(tool_call.clone());
+                            self.tool_call_state.tool_runtime_context.insert(
                                 plan.id.clone(),
                                 ToolRuntimeContext {
                                     anchor_index: anchor,
                                     params: Some(params_value.clone()),
                                 },
                             );
-                            self.active_tool_calls.push(ToolCallInfo {
+                            self.tool_call_state.active_tool_calls.push(ToolCallInfo {
                                 id: Some(plan.id),
                                 tool_name: plan.name,
                                 parameters: params_pretty,
@@ -2189,10 +2076,10 @@ impl Application for CosmicLlmApp {
                         let params_pretty = serde_json::to_string_pretty(&params_value)
                             .unwrap_or(params_json.clone());
                         let anchor = self
-                            .current_ai_message_index
-                            .unwrap_or_else(|| self.messages.len().saturating_sub(1));
+                            .tool_call_state.current_ai_message_index
+                            .unwrap_or_else(|| self.conversation_state.messages.len().saturating_sub(1));
 
-                        self.tool_runtime_context
+                        self.tool_call_state.tool_runtime_context
                             .entry(tool_call_id.clone())
                             .and_modify(|ctx| {
                                 if ctx.params.is_none() {
@@ -2205,7 +2092,7 @@ impl Application for CosmicLlmApp {
                             });
 
                         if let Some(existing) = self
-                            .active_tool_calls
+                            .tool_call_state.active_tool_calls
                             .iter_mut()
                             .find(|tc| tc.id.as_ref().map(|s| s == &tool_call_id).unwrap_or(false))
                         {
@@ -2215,7 +2102,7 @@ impl Application for CosmicLlmApp {
                             existing.result = None;
                             existing.error = None;
                         } else {
-                            self.active_tool_calls.push(ToolCallInfo {
+                            self.tool_call_state.active_tool_calls.push(ToolCallInfo {
                                 id: Some(tool_call_id),
                                 tool_name: name,
                                 parameters: params_pretty,
@@ -2230,19 +2117,19 @@ impl Application for CosmicLlmApp {
                         name,
                         result_json,
                     } => {
-                        let context = self.tool_runtime_context.get(&tool_call_id).cloned();
+                        let context = self.tool_call_state.tool_runtime_context.get(&tool_call_id).cloned();
                         let result_display = Self::format_json_string(&result_json);
                         let anchor = context
                             .as_ref()
                             .map(|ctx| ctx.anchor_index)
-                            .or(self.current_ai_message_index)
-                            .unwrap_or_else(|| self.messages.len().saturating_sub(1));
+                            .or(self.tool_call_state.current_ai_message_index)
+                            .unwrap_or_else(|| self.conversation_state.messages.len().saturating_sub(1));
 
                         let mut archived_entry = None;
-                        if let Some(pos) = self.active_tool_calls.iter().position(|tc| {
+                        if let Some(pos) = self.tool_call_state.active_tool_calls.iter().position(|tc| {
                             tc.id.as_ref().map(|s| s == &tool_call_id).unwrap_or(false)
                         }) {
-                            let mut info = self.active_tool_calls.remove(pos);
+                            let mut info = self.tool_call_state.active_tool_calls.remove(pos);
                             info.status = ToolCallStatus::Completed;
                             info.result = Some(result_display.clone());
                             archived_entry = Some(info);
@@ -2267,7 +2154,7 @@ impl Application for CosmicLlmApp {
                         }
 
                         if let Some(entry) = archived_entry {
-                            self.archived_tool_calls.push(AnchoredToolCall {
+                            self.tool_call_state.archived_tool_calls.push(AnchoredToolCall {
                                 anchor_index: anchor,
                                 tool_call: entry,
                             });
@@ -2276,7 +2163,7 @@ impl Application for CosmicLlmApp {
                             crate::ui::audio::AudioService::play_sound("tool.mp3");
                         }
 
-                        if let Some(conv_id) = self.current_conversation_id {
+                        if let Some(conv_id) = self.conversation_state.current_conversation_id {
                             let params_owned = context.as_ref().and_then(|ctx| ctx.params.clone());
                             let params_ref = params_owned.as_ref();
                             let result_value = Self::coerce_value(&result_json);
@@ -2304,7 +2191,7 @@ impl Application for CosmicLlmApp {
                             }
                         }
 
-                        self.tool_runtime_context.remove(&tool_call_id);
+                        self.tool_call_state.tool_runtime_context.remove(&tool_call_id);
                     }
                     AgentUpdate::ToolError {
                         tool_call_id,
@@ -2312,18 +2199,18 @@ impl Application for CosmicLlmApp {
                         error,
                         retryable: _,
                     } => {
-                        let context = self.tool_runtime_context.get(&tool_call_id).cloned();
+                        let context = self.tool_call_state.tool_runtime_context.get(&tool_call_id).cloned();
                         let anchor = context
                             .as_ref()
                             .map(|ctx| ctx.anchor_index)
-                            .or(self.current_ai_message_index)
-                            .unwrap_or_else(|| self.messages.len().saturating_sub(1));
+                            .or(self.tool_call_state.current_ai_message_index)
+                            .unwrap_or_else(|| self.conversation_state.messages.len().saturating_sub(1));
 
                         let mut archived_entry = None;
-                        if let Some(pos) = self.active_tool_calls.iter().position(|tc| {
+                        if let Some(pos) = self.tool_call_state.active_tool_calls.iter().position(|tc| {
                             tc.id.as_ref().map(|s| s == &tool_call_id).unwrap_or(false)
                         }) {
-                            let mut info = self.active_tool_calls.remove(pos);
+                            let mut info = self.tool_call_state.active_tool_calls.remove(pos);
                             info.status = ToolCallStatus::Error;
                             info.error = Some(error.clone());
                             archived_entry = Some(info);
@@ -2348,13 +2235,13 @@ impl Application for CosmicLlmApp {
                         }
 
                         if let Some(entry) = archived_entry {
-                            self.archived_tool_calls.push(AnchoredToolCall {
+                            self.tool_call_state.archived_tool_calls.push(AnchoredToolCall {
                                 anchor_index: anchor,
                                 tool_call: entry,
                             });
                         }
 
-                        if let Some(conv_id) = self.current_conversation_id {
+                        if let Some(conv_id) = self.conversation_state.current_conversation_id {
                             let params_owned = context.as_ref().and_then(|ctx| ctx.params.clone());
                             let params_ref = params_owned.as_ref();
                             let error_value = Value::String(error.clone());
@@ -2382,18 +2269,18 @@ impl Application for CosmicLlmApp {
                             }
                         }
 
-                        self.tool_runtime_context.remove(&tool_call_id);
+                        self.tool_call_state.tool_runtime_context.remove(&tool_call_id);
                     }
                     AgentUpdate::ConversationComplete { final_text: _ } => {
-                        if let Some(idx) = self.current_ai_message_index {
+                        if let Some(idx) = self.tool_call_state.current_ai_message_index {
                             let should_remove = self
-                                .messages
+                                .conversation_state.messages
                                 .get(idx)
                                 .map(|m| !m.is_user && m.content.trim().is_empty())
                                 .unwrap_or(false);
                             if should_remove {
-                                self.messages.remove(idx);
-                                for anchored in &mut self.archived_tool_calls {
+                                self.conversation_state.messages.remove(idx);
+                                for anchored in &mut self.tool_call_state.archived_tool_calls {
                                     if anchored.anchor_index > idx {
                                         anchored.anchor_index -= 1;
                                     } else if anchored.anchor_index == idx {
@@ -2404,13 +2291,13 @@ impl Application for CosmicLlmApp {
                         }
                         self.is_streaming = false;
                         self.current_streaming_id = None;
-                        self.current_ai_message_index = None;
-                        self.pending_llm_messages = None;
+                        self.tool_call_state.set_current_ai_message_index(None);
+                        self.attachment_state.pending_llm_messages = None;
                         self.typing_indicator_start_time = None;
                         self.typing_indicator_progress = 0.0;
-                        self.active_tool_calls.clear();
-                        self.pending_tool_calls_for_history.clear();
-                        self.tool_runtime_context.clear();
+                        self.tool_call_state.active_tool_calls.clear();
+                        self.tool_call_state.pending_tool_calls_for_history.clear();
+                        self.tool_call_state.tool_runtime_context.clear();
                         
                         // Play completion sound
                         crate::ui::audio::AudioService::play_sound("done.mp3");
@@ -2419,16 +2306,16 @@ impl Application for CosmicLlmApp {
                         // Stop streaming and show error message
                         self.is_streaming = false;
                         self.current_streaming_id = None;
-                        self.current_ai_message_index = None;
-                        self.pending_llm_messages = None;
+                        self.tool_call_state.set_current_ai_message_index(None);
+                        self.attachment_state.pending_llm_messages = None;
                         self.typing_indicator_start_time = None;
                         self.typing_indicator_progress = 0.0;
-                        self.active_tool_calls.clear();
-                        self.pending_tool_calls_for_history.clear();
-                        self.tool_runtime_context.clear();
+                        self.tool_call_state.active_tool_calls.clear();
+                        self.tool_call_state.pending_tool_calls_for_history.clear();
+                        self.tool_call_state.tool_runtime_context.clear();
 
                         // Add error message as a separate chat bubble
-                        self.messages.push(ChatMessage {
+                        self.conversation_state.messages.push(ChatMessage {
                             content: format!("❌ **Model Communication Error**\n\n{}", error),
                             is_user: false,
                             is_error: true,
@@ -2442,7 +2329,7 @@ impl Application for CosmicLlmApp {
             }
             Message::ToolCallStarted(tool_name, parameters) => {
                 // Add tool call to active list
-                self.active_tool_calls.push(ToolCallInfo {
+                self.tool_call_state.active_tool_calls.push(ToolCallInfo {
                     id: None,
                     tool_name: tool_name.clone(),
                     parameters,
@@ -2454,7 +2341,7 @@ impl Application for CosmicLlmApp {
             Message::ToolCallCompleted(tool_name, result) => {
                 // Update tool call status
                 if let Some(tool_call) = self
-                    .active_tool_calls
+                    .tool_call_state.active_tool_calls
                     .iter_mut()
                     .find(|tc| tc.tool_name == tool_name)
                 {
@@ -2465,7 +2352,7 @@ impl Application for CosmicLlmApp {
             Message::ToolCallError(tool_name, error) => {
                 // Update tool call status
                 if let Some(tool_call) = self
-                    .active_tool_calls
+                    .tool_call_state.active_tool_calls
                     .iter_mut()
                     .find(|tc| tc.tool_name == tool_name)
                 {
@@ -2477,42 +2364,38 @@ impl Application for CosmicLlmApp {
                 // Handle tool call widget interactions
                 match message {
                     ToolCallMessage::ToggleExpanded => {
-                        if self.expanded_tool_calls.contains(&index) {
-                            self.expanded_tool_calls.remove(&index);
+                        if self.tool_call_state.expanded_tool_calls.contains(&index) {
+                            self.tool_call_state.expanded_tool_calls.remove(&index);
                         } else {
-                            self.expanded_tool_calls.insert(index);
+                            self.tool_call_state.expanded_tool_calls.insert(index);
                         }
                     }
                 }
             }
             Message::ToggleToolSummary(message_idx, summary_id) => {
                 let key = (message_idx, summary_id);
-                if self.expanded_tool_summaries.contains(&key) {
-                    self.expanded_tool_summaries.remove(&key);
+                if self.tool_call_state.expanded_tool_summaries.contains(&key) {
+                    self.tool_call_state.expanded_tool_summaries.remove(&key);
                 } else {
-                    self.expanded_tool_summaries.insert(key);
+                    self.tool_call_state.expanded_tool_summaries.insert(key);
                 }
             }
             Message::ToggleReasoning(message_idx) => {
-                if self.expanded_reasoning.contains(&message_idx) {
-                    self.expanded_reasoning.remove(&message_idx);
+                if self.context_state.expanded_reasoning.contains(&message_idx) {
+                    self.context_state.expanded_reasoning.remove(&message_idx);
                 } else {
-                    self.expanded_reasoning.insert(message_idx);
+                    self.context_state.expanded_reasoning.insert(message_idx);
                 }
             }
             Message::ToggleSummary(message_idx) => {
-                if self.expanded_summaries.contains(&message_idx) {
-                    self.expanded_summaries.remove(&message_idx);
+                if self.context_state.expanded_summaries.contains(&message_idx) {
+                    self.context_state.expanded_summaries.remove(&message_idx);
                 } else {
-                    self.expanded_summaries.insert(message_idx);
+                    self.context_state.expanded_summaries.insert(message_idx);
                 }
             }
             Message::ToggleMCPServer(server_name) => {
-                if self.expanded_mcp_servers.contains(&server_name) {
-                    self.expanded_mcp_servers.remove(&server_name);
-                } else {
-                    self.expanded_mcp_servers.insert(server_name);
-                }
+                self.context_state.toggle_mcp_server(server_name);
             }
             Message::OpenMCPConfig => {
                 // Get MCP config file path
@@ -2622,7 +2505,7 @@ impl Application for CosmicLlmApp {
                 self.settings_page.load_from_config(&self.config);
             }
             Message::ManualSummarize => {
-                if let Some(conv_id) = self.current_conversation_id {
+                if let Some(conv_id) = self.conversation_state.current_conversation_id {
                     self.perform_manual_summarization(conv_id);
                 } else {
                     tracing::warn!("No active conversation to summarize");
@@ -2682,7 +2565,7 @@ impl Application for CosmicLlmApp {
             #[cfg(feature = "ttsandstt")]
             Message::PlayMessageTts(message_idx) => {
                 // Get message content
-                if let Some(msg) = self.messages.get(message_idx) {
+                if let Some(msg) = self.conversation_state.messages.get(message_idx) {
                     // Mark this message as playing
                     self.playing_message_id = Some(message_idx);
                     
@@ -2821,7 +2704,7 @@ impl Application for CosmicLlmApp {
                         self.llm_client = llm::build_llm_client(&profile);
                         
                         // Update active conversation's profile in database if there is one
-                        if let Some(conv_id) = self.current_conversation_id {
+                        if let Some(conv_id) = self.conversation_state.current_conversation_id {
                             if let Err(e) = self.storage.update_conversation_profile(&conv_id, Some(&new_profile)) {
                                 tracing::error!(error = %e, "Failed to update conversation profile");
                             } else {
@@ -3131,7 +3014,7 @@ impl Application for CosmicLlmApp {
                                 self.llm_client = llm::build_llm_client(&profile);
                             }
                             // Update active conversation's profile in database if there is one
-                            if let Some(conv_id) = self.current_conversation_id {
+                            if let Some(conv_id) = self.conversation_state.current_conversation_id {
                                 if let Err(e) = self.storage.update_conversation_profile(&conv_id, Some(&profile_changed)) {
                                     tracing::error!(error = %e, "Failed to update conversation profile");
                                 } else {
@@ -3307,11 +3190,11 @@ impl Application for CosmicLlmApp {
                 );
             }
             Message::ShowToolsContext => {
-                self.show_tools_context = true;
+                self.context_state.show_tools_context = true;
                 self.core.window.show_context = true;
             }
             Message::HideToolsContext => {
-                self.show_tools_context = false;
+                self.context_state.show_tools_context = false;
                 self.core.window.show_context = false;
             }
             Message::MarkdownLinkClicked(url) => {
@@ -3401,7 +3284,7 @@ impl Application for CosmicLlmApp {
             match nav_item {
                 NavItem::Page(NavigationPage::Chat) => {
                     // "New Chat" clicked - trigger NewConversation if we have an active conversation
-                    if self.current_conversation_id.is_some() {
+                    if self.conversation_state.current_conversation_id.is_some() {
                         return app::Task::perform(
                             async move { cosmic::Action::App(Message::NewConversation) },
                             |action| action,
@@ -3453,7 +3336,7 @@ impl Application for CosmicLlmApp {
             return None;
         }
 
-        if self.show_tools_context {
+        if self.context_state.show_tools_context {
             Some(
                 app::context_drawer::context_drawer(
                     tools::tools_context_view(self),
@@ -3480,7 +3363,7 @@ impl CosmicLlmApp {
         // Clear and rebuild the nav model
         let mut model = widget::segmented_button::ModelBuilder::default().build();
         
-        let current_conv_id = self.current_conversation_id;
+        let current_conv_id = self.conversation_state.current_conversation_id;
         
         // Add "New Chat" as first item when there's no active conversation
         if current_conv_id.is_none() {
@@ -3496,7 +3379,7 @@ impl CosmicLlmApp {
         let mut added_conv_ids = std::collections::HashSet::new();
         let active_conv_title = if let Some(active_conv_id) = current_conv_id {
             // Check if active conversation is in recent list
-            let is_in_recent = self.recent_conversations.iter()
+            let is_in_recent = self.conversation_state.recent_conversations.iter()
                 .any(|(id, _)| *id == active_conv_id);
             
             if !is_in_recent {
@@ -3523,7 +3406,7 @@ impl CosmicLlmApp {
         }
         
         // Add all recent conversations (including active one if it was in the list, up to 11 items)
-        for (conv_id, title) in &self.recent_conversations {
+        for (conv_id, title) in &self.conversation_state.recent_conversations {
             if !added_conv_ids.contains(conv_id) {
                 added_conv_ids.insert(*conv_id);
                 model
@@ -3601,14 +3484,14 @@ impl CosmicLlmApp {
     fn load_recent_conversations(&mut self) {
         match self.storage.list_conversations_paginated(None, Some(11)) {
             Ok(conversations) => {
-                self.recent_conversations = conversations
+                self.conversation_state.recent_conversations = conversations
                     .into_iter()
                     .map(|c| (c.id, c.title))
                     .collect();
             }
             Err(e) => {
                 tracing::error!(error = %e, "Failed to load recent conversations");
-                self.recent_conversations.clear();
+                self.conversation_state.recent_conversations.clear();
             }
         }
     }
