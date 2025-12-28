@@ -1,5 +1,5 @@
 use anyhow::Result;
-use log::{debug, warn};
+use tracing::{debug, warn};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

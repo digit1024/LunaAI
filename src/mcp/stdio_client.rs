@@ -3,7 +3,7 @@ use crate::llm::ToolResult;
 use crate::llm::{ToolCall, ToolDefinition};
 use anyhow::Result;
 use async_trait::async_trait;
-use log::debug;
+use tracing::debug;
 use serde_json;
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -193,7 +193,7 @@ impl MCPTransport for StdioMCPClient {
                         {
                             // Check size limit
                             if text_content.len() > MAX_TOOL_RESULT_SIZE {
-                                log::warn!(
+                                tracing::warn!(
                                     "⚠️ Tool '{}' result too large: {} bytes (max: {} bytes)",
                                     tool_name,
                                     text_content.len(),
@@ -224,11 +224,11 @@ impl MCPTransport for StdioMCPClient {
                 Ok(content) => {
                     // Check size limit for fallback path too
                     if content.len() > MAX_TOOL_RESULT_SIZE {
-                        log::warn!(
-                            "⚠️ Tool '{}' result too large: {} bytes (max: {} bytes)",
-                            tool_name,
-                            content.len(),
-                            MAX_TOOL_RESULT_SIZE
+                        tracing::warn!(
+                            tool_name = %tool_name,
+                            content_size = content.len(),
+                            max_size = MAX_TOOL_RESULT_SIZE,
+                            "Tool result too large"
                         );
                         return Ok(ToolResult {
                             content: format!(

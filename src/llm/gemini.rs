@@ -375,7 +375,7 @@ impl LlmClient for GeminiClient {
                     .into_iter()
                     .map(|tool| {
                         let sanitized_params = self.sanitize_schema(tool.parameters);
-                        log::debug!("🔧 Gemini tool: {} (sanitized schema)", tool.name);
+                        tracing::debug!(tool_name = %tool.name, "Gemini tool sanitized schema");
                         GeminiFunctionDeclaration {
                             name: tool.name,
                             description: tool.description,
@@ -392,7 +392,7 @@ impl LlmClient for GeminiClient {
             tools,
         };
 
-        log::debug!(
+        tracing::debug!(
             "📤 Sending Gemini request with {} tools",
             request.tools.as_ref().map(|t| t.len()).unwrap_or(0)
         );

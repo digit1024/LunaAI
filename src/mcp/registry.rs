@@ -2,7 +2,7 @@ use crate::config::MCPConfig;
 use crate::llm::{ToolCall, ToolDefinition, ToolResult};
 use crate::mcp::transport::MCPTransport;
 use anyhow::Result;
-use log::{error, info};
+use tracing::{error, info};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;

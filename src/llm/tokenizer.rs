@@ -71,7 +71,7 @@ impl TokenCounter {
                     encoder.encode_with_special_tokens(text).len()
                 } else {
                     // Fallback to estimation if encoder failed to load
-                    log::warn!("tiktoken encoder failed to load, using estimation");
+                    tracing::warn!("tiktoken encoder failed to load, using estimation");
                     Self::estimate_tokens(text)
                 }
             }

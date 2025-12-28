@@ -279,7 +279,7 @@ impl OpenAIClient {
             match serde_json::from_str::<OpenAIStreamResponse>(payload) {
                 Ok(parsed) => events.extend(Self::extract_stream_events(parsed, tool_states)),
                 Err(err) => {
-                    log::warn!("Failed to parse OpenAI stream payload: {}", err);
+                    tracing::warn!("Failed to parse OpenAI stream payload: {}", err);
                 }
             }
         }
@@ -308,7 +308,7 @@ impl LlmClient for OpenAIClient {
         };
 
         if let Ok(payload) = serde_json::to_string(&request) {
-            log::debug!("⬆️ OpenAI stream request: {}", payload);
+            tracing::debug!("⬆️ OpenAI stream request: {}", payload);
         }
 
         let response = self
@@ -320,7 +320,7 @@ impl LlmClient for OpenAIClient {
             .send()
             .await?;
 
-        log::debug!("⬇️ OpenAI stream status: {}", response.status());
+        tracing::debug!("⬇️ OpenAI stream status: {}", response.status());
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
@@ -420,7 +420,7 @@ impl LlmClient for OpenAIClient {
         };
 
         if let Ok(payload) = serde_json::to_string(&request) {
-            log::debug!("⬆️ OpenAI tool request: {}", payload);
+            tracing::debug!("⬆️ OpenAI tool request: {}", payload);
         }
 
         let response = self
@@ -432,7 +432,7 @@ impl LlmClient for OpenAIClient {
             .send()
             .await?;
 
-        log::debug!("⬇️ OpenAI tool response status: {}", response.status());
+        tracing::debug!("⬇️ OpenAI tool response status: {}", response.status());
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
@@ -527,7 +527,7 @@ impl LlmClient for OpenAIClient {
         };
 
         if let Ok(payload) = serde_json::to_string(&request) {
-            log::debug!("⬆️ OpenAI streaming tool request: {}", payload);
+            tracing::debug!("⬆️ OpenAI streaming tool request: {}", payload);
         }
 
         let response = self
@@ -539,7 +539,7 @@ impl LlmClient for OpenAIClient {
             .send()
             .await?;
 
-        log::debug!(
+        tracing::debug!(
             "⬇️ OpenAI streaming tool response status: {}",
             response.status()
         );

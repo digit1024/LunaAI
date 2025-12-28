@@ -64,7 +64,7 @@ impl SessionState {
             self.llm_client = llm::build_llm_client(&profile);
             Ok(())
         } else {
-            Err(anyhow!("Profile '{}' not found", profile_name))
+            Err(anyhow::anyhow!("Profile '{}' not found", profile_name))
         }
     }
 
@@ -75,7 +75,7 @@ impl SessionState {
         config
             .get_profile(&self.profile_name)
             .or_else(|| config.get_default_profile())
-            .ok_or_else(|| anyhow!("No active profile configured"))
+            .ok_or_else(|| anyhow::anyhow!("No active profile configured"))
     }
 
     pub fn track_task(&mut self, handle: JoinHandle<()>) {
@@ -190,7 +190,7 @@ impl ServerHandler {
                 .outbound
                 .send(ServerEvent::ConversationLoaded { conversation: view });
         } else {
-            return Err(anyhow!("Conversation {} not found", conversation_id));
+            return Err(anyhow::anyhow!("Conversation {} not found", conversation_id));
         }
         Ok(())
     }
@@ -367,7 +367,7 @@ impl ServerHandler {
         
         // Log token usage
         let usage_percent = (total_tokens as f32 / context_limit as f32 * 100.0) as u32;
-        log::info!(
+        tracing::info!(
             "Context usage: {} tokens / {} limit ({}%), Threshold: {} tokens",
             total_tokens,
             context_limit,
@@ -377,10 +377,10 @@ impl ServerHandler {
         
         // Check if summarization threshold is exceeded
         if total_tokens > summarize_threshold_tokens {
-            log::info!(
-                "Summarization threshold exceeded: {} tokens > {} threshold tokens. Triggering summarization.",
+            tracing::info!(
                 total_tokens,
-                summarize_threshold_tokens
+                summarize_threshold_tokens,
+                "Summarization threshold exceeded, triggering summarization"
             );
             
             // Perform summarization before context selection
@@ -406,7 +406,7 @@ impl ServerHandler {
                 .filter(|msg| !msg.is_summary && !msg.is_summarized && msg.role != "tool")
                 .collect();
             
-            log::info!(
+            tracing::info!(
                 "Total messages: {}, Regular messages (excluding summaries/tools): {}, Keeping last {}",
                 db_messages.len(),
                 regular_messages.len(),
@@ -456,10 +456,10 @@ impl ServerHandler {
                     .collect();
                 
                 if messages_to_summarize_db.is_empty() {
-                    log::warn!("No messages found to summarize despite count > 0");
+                    tracing::warn!("No messages found to summarize despite count > 0");
                     // Continue without summarization
                 } else {
-                    log::info!(
+                    tracing::info!(
                         "Summarizing {} messages ({} regular + {} tool results, IDs: {:?})",
                         messages_to_summarize_db.len(),
                         regular_ids_to_summarize.len(),
@@ -501,7 +501,7 @@ impl ServerHandler {
                         .collect();
                     
                     if !messages_to_summarize.is_empty() {
-                        log::info!(
+                        tracing::info!(
                             "Calling LLM to summarize {} messages ({} LLM messages after filtering)",
                             messages_to_summarize_db.len(),
                             messages_to_summarize.len()
@@ -515,7 +515,7 @@ impl ServerHandler {
                             llm_client.as_ref(),
                         ).await {
                             Ok(summary_message) => {
-                                log::info!("✅ Generated summary ({} chars), replacing {} messages", 
+                                tracing::info!("✅ Generated summary ({} chars), replacing {} messages", 
                                     summary_message.content.len(),
                                     messages_to_summarize_db.len()
                                 );
@@ -527,9 +527,9 @@ impl ServerHandler {
                                     &messages_to_summarize_db,
                                     &summary_message.content,
                                 ) {
-                                    log::error!("Failed to perform summarization in database: {}", e);
+                                    tracing::error!("Failed to perform summarization in database: {}", e);
                                 } else {
-                                    log::info!("Summarization completed successfully");
+                                    tracing::info!("Summarization completed successfully");
                                     
                                     // Notify user
                                     let _ = self.outbound.send(ServerEvent::Error {
@@ -589,7 +589,7 @@ impl ServerHandler {
                                         .map(|msg| token_counter.count_message_tokens(msg))
                                         .sum();
                                     
-                                    log::info!(
+                                    tracing::info!(
                                         "After summarization: {} tokens (reduced from {} tokens)",
                                         new_total_tokens,
                                         total_tokens
@@ -597,12 +597,12 @@ impl ServerHandler {
                                 }
                             }
                             Err(e) => {
-                                log::error!("❌ Failed to generate summary: {}", e);
+                                tracing::error!("❌ Failed to generate summary: {}", e);
                                 // Continue without summarization - will fall back to context selection
                             }
                         }
                     } else {
-                        log::warn!(
+                        tracing::warn!(
                             "No messages to summarize after filtering (had {} DB messages, {} LLM messages after conversion)",
                             messages_to_summarize_db.len(),
                             messages_to_summarize.len()
@@ -610,7 +610,7 @@ impl ServerHandler {
                     }
                 } // End of messages_to_summarize_db.is_empty() else block
             } else {
-                log::info!(
+                tracing::info!(
                     "Not enough messages to summarize: {} regular messages, need at least {} to keep {} recent",
                     regular_messages.len(),
                     keep_recent_count + 1,
@@ -618,7 +618,7 @@ impl ServerHandler {
                 );
             }
         } else {
-            log::debug!(
+            tracing::debug!(
                 "Token usage {} <= threshold {}, no summarization needed",
                 total_tokens,
                 summarize_threshold_tokens
@@ -631,10 +631,10 @@ impl ServerHandler {
         
         // Always ensure we don't exceed the hard limit (API will reject if we do)
         if total_tokens > hard_limit {
-            log::warn!(
-                "⚠️ CRITICAL: Context exceeds hard limit! {} tokens > {} limit. Forcing truncation.",
+            tracing::warn!(
                 total_tokens,
-                hard_limit
+                hard_limit,
+                "CRITICAL: Context exceeds hard limit, forcing truncation"
             );
             let original_count = agent_messages.len();
             agent_messages = SmartContextManager::select_context(agent_messages, &token_counter, &profile);
@@ -643,12 +643,12 @@ impl ServerHandler {
                 .map(|msg| token_counter.count_message_tokens(msg))
                 .sum();
             
-            log::warn!(
-                "⚠️ Emergency truncation: {} messages -> {} messages ({} tokens -> {} tokens)",
+            tracing::warn!(
                 original_count,
                 selected_count,
                 total_tokens,
-                selected_tokens
+                selected_tokens,
+                "Emergency truncation: messages and tokens reduced"
             );
             
             // Notify user about truncation
@@ -661,7 +661,7 @@ impl ServerHandler {
                 ),
             });
         } else if total_tokens > safe_limit {
-            log::info!(
+            tracing::info!(
                 "Context overflow detected: {} tokens > {} safe limit. Applying smart context selection.",
                 total_tokens,
                 safe_limit
@@ -673,7 +673,7 @@ impl ServerHandler {
                 .map(|msg| token_counter.count_message_tokens(msg))
                 .sum();
             
-            log::info!(
+            tracing::info!(
                 "Context selection: {} messages -> {} messages ({} tokens -> {} tokens)",
                 original_count,
                 selected_count,
@@ -698,7 +698,7 @@ impl ServerHandler {
             .sum();
         
         if final_tokens > hard_limit {
-            log::error!(
+            tracing::error!(
                 "❌ FATAL: After truncation, still over limit! {} tokens > {} limit. This should not happen!",
                 final_tokens,
                 hard_limit
@@ -724,7 +724,10 @@ impl ServerHandler {
             }
             
             agent_messages = emergency_messages;
-            log::warn!("Emergency fallback: Reduced to {} messages", agent_messages.len());
+            tracing::warn!(
+                message_count = agent_messages.len(),
+                "Emergency fallback: Reduced messages"
+            );
         }
 
         let outbound = self.outbound.clone();

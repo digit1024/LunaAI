@@ -328,9 +328,11 @@ impl CosmicLlmApp {
             .comments("A COSMIC desktop application for AI chat with MCP tool integration. Built with Rust and libcosmic.");
 
         // Initialize icon cache
-        crate::ui::icons::ICON_CACHE
+        if let Err(e) = crate::ui::icons::ICON_CACHE
             .set(Mutex::new(crate::ui::icons::IconCache::new()))
-            .unwrap();
+        {
+            tracing::warn!(error = ?e, "Failed to initialize icon cache (may be already initialized)");
+        }
 
         let mut settings_page = SimpleSettingsPage::new();
         settings_page.load_from_config(&config);
@@ -498,10 +500,10 @@ impl CosmicLlmApp {
             stream::channel(100, move |mut output| async move {
                 // Use prepared messages if available (which includes attachments), otherwise rebuild
                 let llm_messages = if let Some(prepared_messages) = pending_messages {
-                    println!("🔍 DEBUG: Using prepared messages with attachments");
+                    tracing::debug!("Using prepared messages with attachments");
                     prepared_messages
                 } else {
-                    println!("🔍 DEBUG: Rebuilding messages from history");
+                    tracing::debug!("Rebuilding messages from history");
                     // Build LLM messages with system prompt
                     let mut llm_messages = Vec::new();
 
@@ -570,11 +572,19 @@ impl CosmicLlmApp {
                         .map(|msg| token_counter.count_message_tokens(msg))
                         .sum();
                     
-                    println!("📊 Desktop context: {} tokens / {} limit (safe: {})", 
-                        total_tokens, context_limit, safe_limit);
+                    tracing::debug!(
+                        total_tokens,
+                        context_limit,
+                        safe_limit,
+                        "Desktop context usage"
+                    );
                     
                     if total_tokens > safe_limit {
-                        println!("⚠️ Context exceeds safe limit, applying smart truncation...");
+                        tracing::warn!(
+                            total_tokens,
+                            safe_limit,
+                            "Context exceeds safe limit, applying smart truncation"
+                        );
                         let _ = output.send(Message::InlineError(format!(
                             "Context size ({} tokens) exceeds safe limit ({}). Applying smart truncation.",
                             total_tokens, safe_limit
@@ -907,7 +917,10 @@ impl Application for CosmicLlmApp {
                     std::env::temp_dir().join("cosmic_llm_temp.db"),
                     sqlite_settings,
                 )
-                .expect("Failed to create temporary database")
+                .unwrap_or_else(|e| {
+                    tracing::error!(error = %e, "Failed to create temporary database");
+                    std::process::exit(1);
+                })
             });
 
         // Initialize prompt manager
@@ -968,9 +981,9 @@ impl Application for CosmicLlmApp {
         // Check for conversations with "Generating title..." and retry title generation
         // Note: We'll handle this in the main thread instead of async task
         // since Storage is not cloneable
-        println!("🔍 Checking for conversations with 'Generating title...'");
+        tracing::debug!("Checking for conversations with 'Generating title...'");
         let conversations = app.storage.list_conversations().unwrap_or_else(|e| {
-            eprintln!("Failed to list conversations: {}", e);
+            tracing::warn!(error = %e, "Failed to list conversations");
             Vec::new()
         });
         let conversation_ids: Vec<_> = conversations
@@ -980,9 +993,9 @@ impl Application for CosmicLlmApp {
             .collect();
 
         for conv_id in conversation_ids {
-            println!(
-                "🔄 Found conversation {} with 'Generating title...', retrying...",
-                conv_id
+            tracing::debug!(
+                conversation_id = %conv_id,
+                "Found conversation with 'Generating title...', retrying"
             );
 
             // Get the first user message to generate title from
@@ -991,7 +1004,11 @@ impl Application for CosmicLlmApp {
                     conversation.messages.iter().find(|msg| msg.role == "user")
                 {
                     let message_text = &first_user_msg.content;
-                    println!("📝 Retrying title generation for: '{}'", message_text);
+                    tracing::debug!(
+                        conversation_id = %conv_id,
+                        message_preview = &message_text[..message_text.len().min(50)],
+                        "Retrying title generation"
+                    );
 
                     // Create a simple title based on first few words
                     let fallback_title = if message_text.len() > 50 {
@@ -1004,13 +1021,22 @@ impl Application for CosmicLlmApp {
                         .storage
                         .update_conversation_title(&conv_id, fallback_title.clone())
                     {
-                        eprintln!("Failed to update conversation title: {}", e);
+                        tracing::error!(
+                            conversation_id = %conv_id,
+                            error = %e,
+                            "Failed to update conversation title"
+                        );
+                    } else {
+                        tracing::debug!(
+                            conversation_id = %conv_id,
+                            title = %fallback_title,
+                            "Updated title"
+                        );
                     }
-                    println!("💾 Updated title to: {}", fallback_title);
                 }
             }
         }
-        println!("✅ Finished checking for conversations with 'Generating title...'");
+        tracing::debug!("Finished checking for conversations with 'Generating title...'");
 
 
         // Load recent conversations and update nav model
@@ -1022,7 +1048,7 @@ impl Application for CosmicLlmApp {
             async move {
                 // Wait for MCP servers to initialize (give them more time)
                 tokio::time::sleep(tokio::time::Duration::from_millis(5000)).await;
-                println!("🔄 Startup: Attempting to refresh MCP tools...");
+                tracing::debug!("Startup: Attempting to refresh MCP tools");
                 cosmic::Action::App(Message::RefreshMCPTools)
             },
             |msg| msg,
@@ -1097,18 +1123,20 @@ impl Application for CosmicLlmApp {
             // Use a stable UUID so cosmic doesn't recreate the subscription on every state change
             // Generate a constant UUID for the D-Bus subscription (same ID every time)
             // This ensures cosmic reuses the same subscription instead of creating new ones
-            let dbus_sub_id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+            // Constant UUID for D-Bus subscription (hardcoded, safe to unwrap)
+            let dbus_sub_id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000")
+                .expect("Hardcoded UUID should always parse");
             
             Subscription::run_with_id(
                 dbus_sub_id,
                 stream::channel(100, move |mut output| async move {
-                    println!("📡 Starting D-Bus signal subscription...");
+                    tracing::debug!("Starting D-Bus signal subscription");
                     
                     // Get connection
                     let conn = match client.get_connection_for_signals().await {
                         Ok(c) => c,
                         Err(e) => {
-                            eprintln!("📡 ❌ Failed to get connection: {}", e);
+                            tracing::error!(error = %e, "Failed to get D-Bus connection for signals");
                             return;
                         }
                     };
@@ -1122,8 +1150,20 @@ impl Application for CosmicLlmApp {
                     
                     use zbus::names::BusName;
                     use zbus::zvariant::ObjectPath;
-                    let dbus_name: BusName = "org.freedesktop.DBus".try_into().unwrap();
-                    let dbus_path: ObjectPath = "/org/freedesktop/DBus".try_into().unwrap();
+                    let dbus_name: BusName = match "org.freedesktop.DBus".try_into() {
+                        Ok(name) => name,
+                        Err(e) => {
+                            tracing::error!(error = %e, "Failed to parse D-Bus bus name");
+                            return;
+                        }
+                    };
+                    let dbus_path: ObjectPath = match "/org/freedesktop/DBus".try_into() {
+                        Ok(path) => path,
+                        Err(e) => {
+                            tracing::error!(error = %e, "Failed to parse D-Bus object path");
+                            return;
+                        }
+                    };
                     
                     // Call AddMatch method
                     match conn.call_method(
@@ -1133,16 +1173,16 @@ impl Application for CosmicLlmApp {
                         "AddMatch",
                         &(match_rule_str.clone()),
                     ).await {
-                        Ok(_) => println!("📡 ✅ Added match rule for StatusChanged signals"),
+                        Ok(_) => tracing::debug!("Added match rule for StatusChanged signals"),
                         Err(e) => {
-                            eprintln!("📡 ⚠️ Failed to add match rule (will filter manually): {}", e);
+                            tracing::warn!(error = %e, "Failed to add match rule (will filter manually)");
                             // Continue anyway, we'll filter manually
                         }
                     }
                     
                     // Create message stream (like Go's conn.Signal(signalChan))
                     let mut stream = MessageStream::from(conn);
-                    println!("📡 MessageStream created, listening for StatusChanged signals...");
+                    tracing::debug!("MessageStream created, listening for StatusChanged signals");
                     
                     // Listen for signals
                     while let Some(msg_result) = stream.next().await {
@@ -1158,10 +1198,10 @@ impl Application for CosmicLlmApp {
                                                 if member.as_str() == "StatusChanged" {
                                                     // Deserialize status
                                                     if let Ok((status,)) = message.body().deserialize::<(String,)>() {
-                                                        println!("📡 ✅ Received StatusChanged signal: {}", status);
+                                                        tracing::debug!(status = %status, "Received StatusChanged signal");
                                                         let _ = output.send(Message::DbusStatusChanged(status)).await;
                                                     } else {
-                                                        eprintln!("📡 ❌ Failed to deserialize StatusChanged signal");
+                                                        tracing::error!("Failed to deserialize StatusChanged signal");
                                                     }
                                                 }
                                             }
@@ -1170,12 +1210,12 @@ impl Application for CosmicLlmApp {
                                 }
                             }
                             Err(e) => {
-                                eprintln!("📡 ❌ Error receiving D-Bus message: {}", e);
+                                tracing::error!(error = %e, "Error receiving D-Bus message");
                             }
                         }
                     }
                     
-                    eprintln!("📡 ⚠️ Signal stream ended");
+                    tracing::warn!("D-Bus signal stream ended");
                 })
             )
         } else {
@@ -1197,10 +1237,10 @@ impl Application for CosmicLlmApp {
                 self.input = self.input_content.text();
             }
             Message::SendMessage => {
-                println!(
-                    "🔍 DEBUG: SendMessage received. Input: '{}', Attachments: {}",
-                    self.input,
-                    self.attached_files.len()
+                tracing::debug!(
+                    input_length = self.input.len(),
+                    attachment_count = self.attached_files.len(),
+                    "SendMessage received"
                 );
                 // Allow sending if there's text OR if there are attachments
                 if !self.input.trim().is_empty() || !self.attached_files.is_empty() {
@@ -1220,7 +1260,7 @@ impl Application for CosmicLlmApp {
                         self.update_nav_model();
 
                         // Generate title synchronously
-                        println!("🚀 Starting title generation for conversation {}", conv_id);
+                        tracing::debug!(conversation_id = %conv_id, "Starting title generation");
                         let message_text = self.input.clone();
 
                         // Create a simple title based on first few words
@@ -1230,12 +1270,20 @@ impl Application for CosmicLlmApp {
                             message_text
                         };
 
-                        println!("🎯 Generated title: '{}'", fallback_title);
+                        tracing::debug!(
+                            conversation_id = %conv_id,
+                            title = %fallback_title,
+                            "Generated title"
+                        );
                         if let Err(e) = self
                             .storage
                             .update_conversation_title(&conv_id, fallback_title.clone())
                         {
-                            eprintln!("Failed to update conversation title: {}", e);
+                            tracing::error!(
+                                conversation_id = %conv_id,
+                                error = %e,
+                                "Failed to update conversation title"
+                            );
                         }
                         println!(
                             "💾 Saved title to storage for conversation {}: {}",
@@ -1288,32 +1336,43 @@ impl Application for CosmicLlmApp {
 
                     // Create attachments for the current message FIRST
                     let mut attachments = Vec::new();
-                    println!(
-                        "🔍 DEBUG: Processing {} attached files: {:?}",
-                        self.attached_files.len(),
-                        self.attached_files
+                    tracing::debug!(
+                        file_count = self.attached_files.len(),
+                        "Processing attached files"
                     );
                     for file_path in &self.attached_files {
-                        println!("🔍 DEBUG: Processing file: {}", file_path);
+                        tracing::debug!(file_path = %file_path, "Processing file");
                         match crate::llm::file_utils::create_attachment(file_path) {
                             Ok(attachment) => {
-                                println!("🔍 DEBUG: Created attachment: {:?}", attachment);
+                                tracing::debug!(
+                                    file_name = %attachment.file_name,
+                                    mime_type = %attachment.mime_type,
+                                    "Created attachment"
+                                );
                                 // Validate file for LLM
                                 if let Err(e) =
                                     crate::llm::file_utils::validate_file_for_llm(&attachment)
                                 {
-                                    println!("❌ DEBUG: File validation failed: {}", e);
+                                    tracing::error!(
+                                        file_path = %file_path,
+                                        error = %e,
+                                        "File validation failed"
+                                    );
                                     self.current_error = Some(format!(
                                         "File validation error for {}: {}",
                                         file_path, e
                                     ));
                                     return app::Task::none();
                                 }
-                                println!("✅ DEBUG: File validation passed");
+                                tracing::debug!(file_path = %file_path, "File validation passed");
                                 attachments.push(attachment);
                             }
                             Err(e) => {
-                                println!("❌ DEBUG: Failed to create attachment: {}", e);
+                                tracing::error!(
+                                    file_path = %file_path,
+                                    error = %e,
+                                    "Failed to create attachment"
+                                );
                                 self.current_error =
                                     Some(format!("Failed to process file {}: {}", file_path, e));
                                 return app::Task::none();

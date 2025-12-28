@@ -386,7 +386,7 @@ impl SqliteStorage {
                 .as_deref()
                 .map(|json| {
                     serde_json::from_str(json).map_err(|err| {
-                        log::warn!("Failed to deserialize tool_calls JSON: {}", err);
+                        tracing::warn!("Failed to deserialize tool_calls JSON: {}", err);
                         err
                     })
                 })
@@ -852,7 +852,7 @@ impl SqliteStorage {
         raw.and_then(|json| match serde_json::from_str(&json) {
             Ok(value) => Some(value),
             Err(err) => {
-                log::warn!("Failed to deserialize JSON payload: {}", err);
+                tracing::warn!("Failed to deserialize JSON payload: {}", err);
                 None
             }
         })
