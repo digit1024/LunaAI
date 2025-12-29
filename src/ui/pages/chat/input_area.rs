@@ -9,7 +9,7 @@ pub fn input_area(app: &CosmicLlmApp) -> Element<Message> {
             .push(
                 // Text editor for message (multi-line) - full width on top
                 cosmic::widget::container(
-                    text_editor(&app.input_content)
+                    text_editor(&app.chat_page.input_content)
                     .class(cosmic::theme::iced::TextEditor::Custom(Box::new(
                         |_theme, _status| text_editor::Style {
                             background: Background::Color(Color::TRANSPARENT),
@@ -24,7 +24,7 @@ pub fn input_area(app: &CosmicLlmApp) -> Element<Message> {
                             selection: Color::from_rgba(1.0, 1.0, 1.0, 0.3),
                         }
                     )))
-                        .id(app.input_id.clone())
+                        .id(app.chat_page.input_id.clone())
                         .on_action(Message::InputActionPerformed)
                         .height(Length::Shrink)
                         .padding(12)

@@ -64,7 +64,7 @@ impl ContextService {
     }
 
     /// Inject system prompts into message history
-    fn inject_prompts(
+    pub fn inject_prompts(
         mut history: Vec<LlmMessage>,
         prompt_manager: &PromptManager,
         profile: &LlmProfile,

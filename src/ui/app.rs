@@ -31,7 +31,8 @@ use crate::{
     ui::state::{AttachmentState, ContextState, ConversationState, ToolCallState},
     ui::widgets::ToolCallMessage,
 };
-use crate::services::MessageConverter;
+use crate::services::{ContextService, MessageConverter};
+use crate::ui::handlers::{handle_chat_messages, handle_tool_messages, handle_navigation_messages, handle_agent_messages, handle_settings_messages};
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -71,6 +72,10 @@ pub enum Message {
     ResetSettings,
     // New Settings page messages
     SettingsMessage(SimpleSettingsMessage),
+    // Page messages (delegated to page modules)
+    ChatPage(chat::Message),
+    HistoryPage(history::Message),
+    MCPConfigPage(mcp_config::Message),
     // Dialog actions
     DialogAction(DialogAction),
     ShowMessageDialog(String),
@@ -182,15 +187,11 @@ pub struct CosmicLlmApp {
     pub config: AppConfig,
     pub storage: Storage,
     pub prompt_manager: PromptManager,
-    pub input: String,
-    pub input_content: text_editor::Content,
-    pub input_id: cosmic::widget::Id,
     pub current_page: NavigationPage,
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
     pub llm_client: Arc<dyn LlmClient>,
     pub is_streaming: bool,
     pub current_streaming_id: Option<Uuid>,
-    pub scrollable_id: cosmic::widget::Id,
     pub key_binds: std::collections::HashMap<menu::KeyBind, MenuAction>,
     pub settings_changed: bool,
     pub title_sender: Option<tokio::sync::mpsc::UnboundedSender<(Uuid, String)>>,
@@ -208,16 +209,6 @@ pub struct CosmicLlmApp {
     pub available_mcp_tools: Vec<crate::llm::ToolDefinition>,
     // Tool enable/disable state (tool_name -> enabled)
     pub tool_states: std::collections::HashMap<String, bool>,
-    // Store last user message for retry functionality
-    pub last_user_message: Option<String>,
-    // Store current error message
-    pub current_error: Option<String>,
-    // Search functionality
-    pub search_query: String,
-    pub search_results: Vec<crate::storage::sqlite_storage_simple::Snippet>,
-    // Typing indicator animation state
-    pub typing_indicator_progress: f32,
-    pub typing_indicator_start_time: Option<cosmic::iced::time::Instant>,
     // D-Bus TTS/STT service
     #[cfg(feature = "ttsandstt")]
     pub dbus_ttsstt_available: bool,
@@ -237,6 +228,11 @@ pub struct CosmicLlmApp {
     pub tool_call_state: ToolCallState,
     pub attachment_state: AttachmentState,
     pub context_state: ContextState,
+    
+    // Page modules (extracted from god object)
+    pub chat_page: chat::Page,
+    pub history_page: history::Page,
+    pub mcp_config_page: mcp_config::Page,
 }
 
 #[derive(Debug, Clone)]
@@ -326,15 +322,11 @@ impl CosmicLlmApp {
             config: config.clone(),
             storage,
             prompt_manager,
-            input: String::new(),
-            input_content: text_editor::Content::new(),
-            input_id: cosmic::widget::Id::unique(),
             current_page: NavigationPage::Chat,
             mcp_registry,
             llm_client,
             is_streaming: false,
             current_streaming_id: None,
-            scrollable_id: cosmic::widget::Id::unique(),
             key_binds: Self::create_key_binds(),
             settings_changed: false,
             title_sender: Some(title_sender),
@@ -378,12 +370,6 @@ impl CosmicLlmApp {
             dialog_text_content: None,
             available_mcp_tools: Vec::new(),
             tool_states: std::collections::HashMap::new(),
-            last_user_message: None,
-            current_error: None,
-            search_query: String::new(),
-            search_results: Vec::new(),
-            typing_indicator_progress: 0.0,
-            typing_indicator_start_time: None,
             #[cfg(feature = "ttsandstt")]
             dbus_ttsstt_available: false,
             #[cfg(feature = "ttsandstt")]
@@ -402,6 +388,11 @@ impl CosmicLlmApp {
             tool_call_state: ToolCallState::new(),
             attachment_state: AttachmentState::new(),
             context_state: ContextState::new(),
+            
+            // Initialize page modules
+            chat_page: chat::Page::new(),
+            history_page: history::Page::new(),
+            mcp_config_page: mcp_config::Page::new(),
         }
     }
 
@@ -625,7 +616,7 @@ impl CosmicLlmApp {
         )
     }
 
-    fn rebuild_conversation_view(
+    pub(crate) fn rebuild_conversation_view(
         &mut self,
         conversation: crate::storage::conversation_storage::Conversation,
     ) {
@@ -715,7 +706,7 @@ impl CosmicLlmApp {
 
     /// Update the context usage cache for a conversation
     /// This is called when conversations are loaded/changed to avoid blocking UI during rendering
-    fn update_context_usage_cache(&mut self, conversation_id: Uuid) {
+    pub(crate) fn update_context_usage_cache(&mut self, conversation_id: Uuid) {
         if let Ok(Some(conv)) = self.storage.get_conversation(&conversation_id) {
             let usage_pct = crate::ui::pages::chat::top_panel::calculate_context_usage(
                 &conv,
@@ -849,14 +840,14 @@ impl CosmicLlmApp {
         }
     }
 
-    fn format_json_string(raw: &str) -> String {
+    pub(crate) fn format_json_string(raw: &str) -> String {
         match serde_json::from_str::<Value>(raw) {
             Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| raw.to_string()),
             Err(_) => raw.to_string(),
         }
     }
 
-    fn coerce_value(raw: &str) -> Value {
+    pub(crate) fn coerce_value(raw: &str) -> Value {
         serde_json::from_str::<Value>(raw).unwrap_or(Value::String(raw.to_string()))
     }
 }
@@ -1229,487 +1220,92 @@ impl Application for CosmicLlmApp {
     }
 
     fn update(&mut self, message: Self::Message) -> app::Task<Self::Message> {
+        // Try chat handlers first
+        if let Some(task) = handle_chat_messages(self, message.clone()) {
+            return task;
+        }
+        
+        // Try tool handlers
+        if let Some(task) = handle_tool_messages(self, message.clone()) {
+            return task;
+        }
+        
+        // Try navigation handlers
+        if let Some(task) = handle_navigation_messages(self, message.clone()) {
+            return task;
+        }
+        
+        // Try agent handlers
+        if let Some(task) = handle_agent_messages(self, message.clone()) {
+            return task;
+        }
+        
+        // Try settings handlers
+        if let Some(task) = handle_settings_messages(self, message.clone()) {
+            return task;
+        }
+        
+        // Check if any handler handled the message (they all return None for handled messages)
+        // If none returned a task, check if it's a handled message and return Task::none()
+        if matches!(&message,
+            Message::InputChanged(_) | Message::InputActionPerformed(_) |
+            Message::SendMessage | Message::StopMessage | Message::RetryMessage |
+            Message::AttachFile | Message::FileSelected(_) | Message::RemoveFile(_) |
+            Message::FileChooserCancelled | Message::FileChooserError(_) |
+            Message::ScrollToBottom | Message::InlineError(_) | Message::DismissError |
+            Message::TypingIndicatorTick(_) |
+            Message::ToolCallStarted(_, _) | Message::ToolCallCompleted(_, _) |
+            Message::ToolCallError(_, _) | Message::ToolCallWidgetMessage(_, _) |
+            Message::ToggleToolSummary(_, _) |
+            Message::NavigateTo(_) | Message::SelectConversation(_) |
+            Message::DeleteConversation(_) | Message::NewConversation |
+            Message::AgentUpdate(_) |
+            Message::OpenSettings | Message::OpenConfigFile | Message::OpenProfilePrompt(_) |
+            Message::OpenMCPConfig
+        ) {
+            return app::Task::none();
+        }
+        
+        // Handle remaining messages (messages not handled by handler modules)
         match message {
-            Message::InputChanged(input) => {
-                self.input = input;
+            Message::ToggleReasoning(message_idx) => {
+                if self.context_state.expanded_reasoning.contains(&message_idx) {
+                    self.context_state.expanded_reasoning.remove(&message_idx);
+                } else {
+                    self.context_state.expanded_reasoning.insert(message_idx);
+                }
             }
-            Message::InputActionPerformed(action) => {
-                self.input_content.perform(action);
-                self.input = self.input_content.text();
+            Message::ToggleSummary(message_idx) => {
+                if self.context_state.expanded_summaries.contains(&message_idx) {
+                    self.context_state.expanded_summaries.remove(&message_idx);
+                } else {
+                    self.context_state.expanded_summaries.insert(message_idx);
+                }
             }
-            Message::SendMessage => {
-                tracing::debug!(
-                    input_length = self.input.len(),
-                    attachment_count = self.attachment_state.attached_files.len(),
-                    "SendMessage received"
-                );
-                // Allow sending if there's text OR if there are attachments
-                if !self.input.trim().is_empty() || !self.attachment_state.attached_files.is_empty() {
-                    // Create new conversation if none exists
-                    if self.conversation_state.current_conversation_id.is_none() {
-                        let current_profile_name = Some(self.config.default.as_str());
-                        let conv_id = self
-                            .storage
-                            .create_conversation_with_profile("Generating title...".to_string(), current_profile_name)
-                            .unwrap_or_else(|e| {
-                                tracing::error!(error = %e, "Failed to create conversation");
-                                Uuid::new_v4()
-                            });
-                        self.conversation_state.current_conversation_id = Some(conv_id);
-                        // Update nav model to reflect new conversation
-                        self.load_recent_conversations();
-                        self.update_nav_model();
-
-                        // Generate title synchronously
-                        tracing::debug!(conversation_id = %conv_id, "Starting title generation");
-                        let message_text = self.input.clone();
-
-                        // Create a simple title based on first few words
-                        let fallback_title = if message_text.len() > 50 {
-                            format!("{}...", &message_text[..47])
-                        } else {
-                            message_text
-                        };
-
-                        tracing::debug!(
-                            conversation_id = %conv_id,
-                            title = %fallback_title,
-                            "Generated title"
-                        );
-                        if let Err(e) = self
-                            .storage
-                            .update_conversation_title(&conv_id, fallback_title.clone())
-                        {
-                            tracing::error!(
-                                conversation_id = %conv_id,
-                                error = %e,
-                                "Failed to update conversation title"
-                            );
-                        }
-                        tracing::debug!(
-                            conversation_id = %conv_id,
-                            title = %fallback_title,
-                            "Saved title to storage"
-                        );
-                    }
-
-                    // Create user message content
-                    let message_content = self.input.clone();
-
-                    // Add user message
-                    let user_msg = ChatMessage {
-                        content: message_content,
-                        is_user: true,
-                        is_error: false,
-                        reasoning_content: None,
-                        is_summary: false,
-            is_summarized: false,
-                        summarized_count: None,
-                    };
-                    self.conversation_state.messages.push(user_msg.clone());
-
-                    // Play sent sound
-                    crate::ui::audio::AudioService::play_sound("sent.mp3");
-                    
-                    // Trigger scroll to bottom for new user message
-                    // The scroll will be handled by anchor_bottom() and widget operations
-
-                    // Add to storage
-                    if let Some(conv_id) = self.conversation_state.current_conversation_id {
-                        if let Err(e) = self.storage.add_message_to_conversation(
-                            &conv_id,
-                            "user".to_string(),
-                            self.input.clone(),
-                        ) {
-                            tracing::error!(error = %e, "Failed to add message to conversation");
-                        } else {
-                            // Update context usage cache after adding message
-                            self.update_context_usage_cache(conv_id);
-                        }
-                    }
-
-                    // Send to LLM and get response
-                    let input_text = self.input.clone();
-                    self.input.clear();
-                    self.input_content = text_editor::Content::new();
-
-                    // Assistant bubble will be created when streaming starts
-                    self.tool_call_state.set_current_ai_message_index(None);
-
-                    // Create attachments for the current message FIRST
-                    let mut attachments = Vec::new();
-                    tracing::debug!(
-                        file_count = self.attachment_state.attached_files.len(),
-                        "Processing attached files"
-                    );
-                    for file_path in &self.attachment_state.attached_files {
-                        tracing::debug!(file_path = %file_path, "Processing file");
-                        match crate::llm::file_utils::create_attachment(file_path) {
-                            Ok(attachment) => {
-                                tracing::debug!(
-                                    file_name = %attachment.file_name,
-                                    mime_type = %attachment.mime_type,
-                                    "Created attachment"
-                                );
-                                // Validate file for LLM
-                                if let Err(e) =
-                                    crate::llm::file_utils::validate_file_for_llm(&attachment)
-                                {
-                                    tracing::error!(
-                                        file_path = %file_path,
-                                        error = %e,
-                                        "File validation failed"
-                                    );
-                                    self.current_error = Some(format!(
-                                        "File validation error for {}: {}",
-                                        file_path, e
-                                    ));
-                                    return app::Task::none();
-                                }
-                                tracing::debug!(file_path = %file_path, "File validation passed");
-                                attachments.push(attachment);
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    file_path = %file_path,
-                                    error = %e,
-                                    "Failed to create attachment"
-                                );
-                                self.current_error =
-                                    Some(format!("Failed to process file {}: {}", file_path, e));
-                                return app::Task::none();
-                            }
-                        }
-                    }
-                    tracing::debug!(attachment_count = attachments.len(), "Final attachments count");
-
-                    // Convert messages to LLM format
-                    let profile_prompt = self.load_active_profile_prompt();
-                    let mut llm_messages = Vec::new();
-
-                    // Add system prompt if available
-                    if let Some(system_prompt) = self.prompt_manager.get_system_prompt() {
-                        llm_messages.push(crate::llm::Message::new(
-                            crate::llm::Role::System,
-                            system_prompt.to_string(),
-                        ));
-                    }
-
-                    if let Some(ref profile_prompt) = profile_prompt {
-                        llm_messages.push(crate::llm::Message::new(
-                            crate::llm::Role::System,
-                            profile_prompt.clone(),
-                        ));
-                    }
-
-                    // Load messages from database and convert using MessageConverter service
-                    if let Some(conv_id) = self.conversation_state.current_conversation_id {
-                        match self.storage.load_conversation_messages(&conv_id.to_string()) {
-                            Ok(db_messages) => {
-                                // Use MessageConverter service (single source of truth)
-                                llm_messages.extend(MessageConverter::db_to_llm(&db_messages, true));
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    "Failed to load messages from DB, falling back to UI messages"
-                                );
-                                // Fallback to UI messages
-                                for msg in &self.conversation_state.messages {
-                                    let role = if msg.is_user {
-                                        crate::llm::Role::User
-                                    } else {
-                                        crate::llm::Role::Assistant
-                                    };
-                                    llm_messages.push(crate::llm::Message::new(role, msg.content.clone()));
-                                }
-                            }
-                        }
-                    } else {
-                        // No conversation yet, use UI messages
-                        for msg in &self.conversation_state.messages {
-                            let role = if msg.is_user {
-                                crate::llm::Role::User
-                            } else {
-                                crate::llm::Role::Assistant
-                            };
-                            llm_messages.push(crate::llm::Message::new(role, msg.content.clone()));
-                        }
-                    }
-
-                    // Create the current user message with attachments
-                    let current_user_message = if attachments.is_empty() {
-                        crate::llm::Message::new(crate::llm::Role::User, input_text.clone())
-                    } else {
-                        crate::llm::Message::new_with_attachments(
-                            crate::llm::Role::User,
-                            input_text.clone(),
-                            attachments,
-                        )
-                    };
-
-                    // Debug: Print the final message that will be sent to LLM
-                    tracing::debug!(
-                        message_role = ?current_user_message.role,
-                        content_length = current_user_message.content.len(),
-                        attachment_count = current_user_message.attachments.as_ref().map(|a| a.len()).unwrap_or(0),
-                        "Final LLM message with attachments"
-                    );
-
-                    llm_messages.push(current_user_message.clone());
-
-                    // Clear attached files after processing
-                    self.attachment_state.attached_files.clear();
-
-                    // === DESKTOP CONTEXT MANAGEMENT ===
-                    // Check token count and trigger summarization if needed
-                    if let Some(profile) = self.config.get_default_profile() {
-                        use crate::llm::tokenizer::TokenCounter;
-                        
-                        let token_counter = TokenCounter::new(profile);
-                        let total_tokens: usize = llm_messages.iter()
-                            .map(|msg| token_counter.count_message_tokens(msg))
-                            .sum();
-                        
-                        let context_limit = token_counter.get_context_limit(profile);
-                        let summarize_threshold_tokens = token_counter.get_summarize_threshold_tokens(profile);
-                        let safe_limit = token_counter.get_safe_context_limit(profile);
-                        
-                        tracing::debug!(
-                            total_tokens,
-                            usage_percent = (total_tokens as f32 / context_limit as f32 * 100.0),
-                            context_limit,
-                            "Desktop context usage"
-                        );
-                        tracing::debug!(
-                            summarize_threshold = summarize_threshold_tokens,
-                            safe_limit,
-                            "Context limits"
-                        );
-                        
-                        // Check if summarization is needed
-                        if total_tokens > summarize_threshold_tokens {
-                            tracing::info!(
-                                total_tokens,
-                                summarize_threshold_tokens,
-                                "Summarization threshold exceeded"
-                            );
-                            
-                            if let Some(conv_id) = self.conversation_state.current_conversation_id {
-                                // Load messages from DB for summarization
-                                if let Ok(db_messages) = self.storage.load_conversation_messages(&conv_id.to_string()) {
-                                    // Filter to regular messages (exclude summaries, tools, and already summarized messages)
-                                    let regular_messages: Vec<_> = db_messages.iter()
-                                        .filter(|msg| !msg.is_summary && !msg.is_summarized && msg.role != "tool")
-                                        .collect();
-                                    
-                                    let keep_recent_count = 10;
-                                    let messages_to_summarize_count = regular_messages.len().saturating_sub(keep_recent_count);
-                                    
-                                    if messages_to_summarize_count > 0 {
-                                        tracing::debug!(
-                                            messages_to_summarize = messages_to_summarize_count,
-                                            keep_recent_count,
-                                            "Will summarize messages"
-                                        );
-                                        
-                                        // Get IDs to summarize
-                                        let ids_to_summarize: Vec<i64> = regular_messages[..messages_to_summarize_count]
-                                            .iter()
-                                            .map(|msg| msg.id)
-                                            .collect();
-                                        
-                                        // Get full messages to summarize
-                                        let msgs_to_summarize: Vec<_> = db_messages.iter()
-                                            .filter(|msg| ids_to_summarize.contains(&msg.id))
-                                            .cloned()
-                                            .collect();
-                                        
-                                        // Convert to LlmMessage for summarization
-                                        let llm_msgs_to_summarize: Vec<crate::llm::Message> = msgs_to_summarize.iter()
-                                            .filter_map(|msg| {
-                                                let role = match msg.role.as_str() {
-                                                    "user" => crate::llm::Role::User,
-                                                    "assistant" => crate::llm::Role::Assistant,
-                                                    "system" => crate::llm::Role::System,
-                                                    _ => return None,
-                                                };
-                                                Some(crate::llm::Message::new(role, msg.content.clone()))
-                                            })
-                                            .collect();
-                                        
-                                        if !llm_msgs_to_summarize.is_empty() {
-                                            // Generate summary synchronously (blocking but necessary for desktop)
-                                            tracing::debug!("Generating summary");
-                                            let llm_client = self.llm_client.clone();
-                                            let profile_clone = profile.clone();
-                                            
-                                            // Use tokio runtime for async summarization
-                                            let summary_result = tokio::task::block_in_place(|| {
-                                                tokio::runtime::Handle::current().block_on(async {
-                                                    crate::llm::context_manager::SmartContextManager::summarize_messages(
-                                                        llm_msgs_to_summarize,
-                                                        &profile_clone,
-                                                        llm_client.as_ref(),
-                                                    ).await
-                                                })
-                                            });
-                                            
-                                            match summary_result {
-                                                Ok(summary_msg) => {
-                                                    tracing::info!(
-                                summary_length = summary_msg.content.len(),
-                                "Summary generated"
-                            );
-                                                    
-                                                    // Perform database summarization
-                                                    if let Err(e) = self.storage.perform_summarization(
-                                                        &conv_id.to_string(),
-                                                        &msgs_to_summarize,
-                                                        &summary_msg.content,
-                                                    ) {
-                                                        tracing::error!(
-                                    error = %e,
-                                    "Failed to save summary to DB"
-                                );
-                                                    } else {
-                                                        tracing::debug!("Summary saved to database");
-                                                        
-                                                        // Rebuild llm_messages from the updated database
-                                                        if let Ok(updated_msgs) = self.storage.load_conversation_messages(&conv_id.to_string()) {
-                                                            llm_messages.clear();
-                                                            
-                                                            // Re-add system prompts
-                                                            if let Some(system_prompt) = self.prompt_manager.get_system_prompt() {
-                                                                llm_messages.push(crate::llm::Message::new(
-                                                                    crate::llm::Role::System,
-                                                                    system_prompt.to_string(),
-                                                                ));
-                                                            }
-                                                            if let Some(ref profile_prompt) = profile_prompt {
-                                                                llm_messages.push(crate::llm::Message::new(
-                                                                    crate::llm::Role::System,
-                                                                    profile_prompt.clone(),
-                                                                ));
-                                                            }
-                                                            
-                                                            // Collect valid tool_call_ids
-                                                            let mut valid_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-                                                            for msg in &updated_msgs {
-                                                                if msg.role == "assistant" {
-                                                                    if let Some(ref tcs) = msg.tool_calls {
-                                                                        for tc in tcs {
-                                                                            valid_ids.insert(tc.id.clone());
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                            
-                                                            // Add updated messages from DB, skipping orphaned tool results and summarized messages
-                                                            for msg in updated_msgs {
-                                                                // Skip messages that have been summarized (but keep summary messages themselves)
-                                                                if msg.is_summarized && !msg.is_summary {
-                                                                    continue;
-                                                                }
-                                                                
-                                                                let role = match msg.role.as_str() {
-                                                                    "user" => crate::llm::Role::User,
-                                                                    "assistant" => crate::llm::Role::Assistant,
-                                                                    "system" => crate::llm::Role::System,
-                                                                    "tool" => {
-                                                                        // Skip orphaned tool results
-                                                                        if let Some(ref tid) = msg.tool_call_id {
-                                                                            if !valid_ids.contains(tid) { continue; }
-                                                                        } else { continue; }
-                                                                        crate::llm::Role::Tool
-                                                                    }
-                                                                    _ => continue,
-                                                                };
-                                                                
-                                                                let content = if role == crate::llm::Role::Tool {
-                                                                    let mut combined = msg.content.clone();
-                                                                    if let Some(ref result_json) = msg.tool_result_json {
-                                                                        if !combined.is_empty() {
-                                                                            combined.push_str("\n");
-                                                                        }
-                                                                        combined.push_str(&result_json.to_string());
-                                                                    }
-                                                                    combined
-                                                                } else {
-                                                                    msg.content.clone()
-                                                                };
-                                                                
-                                                                let mut llm_msg = crate::llm::Message::new(role.clone(), content);
-                                                                if role == crate::llm::Role::Tool {
-                                                                    llm_msg.tool_call_id = msg.tool_call_id.clone();
-                                                                }
-                                                                llm_msg.reasoning_content = msg.reasoning_content.clone();
-                                                                llm_messages.push(llm_msg);
-                                                            }
-                                                            
-                                                            // Re-add current user message
-                                                            llm_messages.push(current_user_message.clone());
-                                                            
-                                                            let new_tokens: usize = llm_messages.iter()
-                                                                .map(|msg| token_counter.count_message_tokens(msg))
-                                                                .sum();
-                                                            tracing::debug!(
-                                                                total_tokens = new_tokens,
-                                                                "After summarization"
-                                                            );
-                                                            
-                                                            // Rebuild UI messages from DB
-                                                            if let Ok(Some(conv)) = self.storage.get_conversation(&conv_id) {
-                                                                self.rebuild_conversation_view(conv);
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    tracing::error!(
-                                                        error = %e,
-                                                        "Summarization failed"
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    
-                    // Debug: Print all messages being sent to LLM
-                    tracing::debug!("All LLM messages being sent");
-                    for (i, msg) in llm_messages.iter().enumerate() {
-                        tracing::debug!(
-                            message_index = i,
-                            role = ?msg.role,
-                            content_length = msg.content.len(),
-                            has_attachments = msg.attachments.is_some(),
-                            "LLM message details"
-                        );
-                    }
-
-                    // Store the prepared messages for the subscription to use
-                    self.attachment_state.pending_llm_messages = Some(llm_messages);
-
-                    // Start streaming LLM response
-                    let streaming_id = uuid::Uuid::new_v4();
-                    self.current_streaming_id = Some(streaming_id);
-                    self.is_streaming = true;
-                    // Initialize typing indicator animation
-                    self.typing_indicator_start_time = Some(cosmic::iced::time::Instant::now());
-                    self.typing_indicator_progress = 0.0;
-                    
-                    // Play typing sound
-                    crate::ui::audio::AudioService::play_sound("typing.mp3");
-
-                    // Store the last user message for retry functionality
-                    self.last_user_message = Some(input_text.clone());
-
-                    // The scrollable widget will automatically scroll to show new content
-                    // due to the spacer at the bottom
+            Message::ToggleMCPServer(server_name) => {
+                self.context_state.toggle_mcp_server(server_name);
+            }
+            Message::ShowAbout => {
+                // Toggle behavior: if About is already shown, hide it; otherwise show it
+                // Pattern from msToDO for consistent UX
+                if self.context_page == ContextPage::About && self.core.window.show_context {
+                    self.core.window.show_context = false; // Toggle off
+                } else {
+                    self.context_page = ContextPage::About;
+                    self.core.window.show_context = true; // Show
+                }
+            }
+            Message::CloseAbout => {
+                self.core.window.show_context = false;
+            }
+            Message::OpenUrl(url) => {
+                let _ = webbrowser::open(&url);
+            }
+            Message::ManualSummarize => {
+                if let Some(conv_id) = self.conversation_state.current_conversation_id {
+                    self.perform_manual_summarization(conv_id);
+                } else {
+                    tracing::warn!("No active conversation to summarize");
                 }
             }
             Message::StopMessage => {
@@ -1718,8 +1314,8 @@ impl Application for CosmicLlmApp {
                     self.is_streaming = false;
                     self.current_streaming_id = None;
                     self.attachment_state.pending_llm_messages = None; // Clear prepared messages
-                    self.typing_indicator_start_time = None;
-                    self.typing_indicator_progress = 0.0;
+                    self.chat_page.typing_indicator_start_time = None;
+                    self.chat_page.typing_indicator_progress = 0.0;
 
                     // Remove any incomplete assistant message
                     if let Some(index) = self.tool_call_state.current_ai_message_index {
@@ -1731,13 +1327,13 @@ impl Application for CosmicLlmApp {
                 }
             }
             Message::RetryMessage => {
-                if let Some(last_msg) = &self.last_user_message {
+                if let Some(last_msg) = &self.chat_page.last_user_message {
                     // Stop current streaming if any
                     if self.is_streaming {
                         self.is_streaming = false;
                         self.current_streaming_id = None;
-                        self.typing_indicator_start_time = None;
-                        self.typing_indicator_progress = 0.0;
+                        self.chat_page.typing_indicator_start_time = None;
+                        self.chat_page.typing_indicator_progress = 0.0;
                     }
 
                     // Remove the last assistant message if it exists
@@ -1748,7 +1344,7 @@ impl Application for CosmicLlmApp {
                     }
 
                     // Resend the last user message
-                    self.input = last_msg.clone();
+                    self.chat_page.input = last_msg.clone();
                     // Trigger SendMessage with the retried message
                     return self.update(Message::SendMessage);
                 }
@@ -1834,7 +1430,7 @@ impl Application for CosmicLlmApp {
             }
             Message::FileChooserError(error) => {
                 if let Some(error) = Arc::into_inner(error) {
-                    self.current_error = Some(format!("File selection error: {}", error));
+                    self.chat_page.current_error = Some(format!("File selection error: {}", error));
                 }
             }
             Message::NavigateTo(page) => {
@@ -1919,7 +1515,7 @@ impl Application for CosmicLlmApp {
                 if self.conversation_state.current_conversation_id == Some(id) {
                     self.conversation_state.current_conversation_id = None;
                     self.conversation_state.messages.clear();
-                    self.input.clear();
+                    self.chat_page.input.clear();
                 }
                 let _ = self.storage.delete_conversation(&id);
                 // Stay on History page to reflect changes
@@ -1931,7 +1527,7 @@ impl Application for CosmicLlmApp {
             Message::NewConversation => {
                 self.conversation_state.current_conversation_id = None;
                 self.conversation_state.messages.clear();
-                self.input.clear();
+                self.chat_page.input.clear();
                 self.current_page = NavigationPage::Chat;
                 self.tool_call_state.active_tool_calls.clear();
                 self.tool_call_state.archived_tool_calls.clear();
@@ -2293,8 +1889,8 @@ impl Application for CosmicLlmApp {
                         self.current_streaming_id = None;
                         self.tool_call_state.set_current_ai_message_index(None);
                         self.attachment_state.pending_llm_messages = None;
-                        self.typing_indicator_start_time = None;
-                        self.typing_indicator_progress = 0.0;
+                        self.chat_page.typing_indicator_start_time = None;
+                        self.chat_page.typing_indicator_progress = 0.0;
                         self.tool_call_state.active_tool_calls.clear();
                         self.tool_call_state.pending_tool_calls_for_history.clear();
                         self.tool_call_state.tool_runtime_context.clear();
@@ -2308,8 +1904,8 @@ impl Application for CosmicLlmApp {
                         self.current_streaming_id = None;
                         self.tool_call_state.set_current_ai_message_index(None);
                         self.attachment_state.pending_llm_messages = None;
-                        self.typing_indicator_start_time = None;
-                        self.typing_indicator_progress = 0.0;
+                        self.chat_page.typing_indicator_start_time = None;
+                        self.chat_page.typing_indicator_progress = 0.0;
                         self.tool_call_state.active_tool_calls.clear();
                         self.tool_call_state.pending_tool_calls_for_history.clear();
                         self.tool_call_state.tool_runtime_context.clear();
@@ -2378,137 +1974,6 @@ impl Application for CosmicLlmApp {
                     self.tool_call_state.expanded_tool_summaries.remove(&key);
                 } else {
                     self.tool_call_state.expanded_tool_summaries.insert(key);
-                }
-            }
-            Message::ToggleReasoning(message_idx) => {
-                if self.context_state.expanded_reasoning.contains(&message_idx) {
-                    self.context_state.expanded_reasoning.remove(&message_idx);
-                } else {
-                    self.context_state.expanded_reasoning.insert(message_idx);
-                }
-            }
-            Message::ToggleSummary(message_idx) => {
-                if self.context_state.expanded_summaries.contains(&message_idx) {
-                    self.context_state.expanded_summaries.remove(&message_idx);
-                } else {
-                    self.context_state.expanded_summaries.insert(message_idx);
-                }
-            }
-            Message::ToggleMCPServer(server_name) => {
-                self.context_state.toggle_mcp_server(server_name);
-            }
-            Message::OpenMCPConfig => {
-                // Get MCP config file path
-                let mcp_config_path = dirs::data_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join("cosmic_llm")
-                    .join("mcp_config.json");
-                
-                // Open file in cosmic-edit
-                let path_str = mcp_config_path.to_string_lossy().to_string();
-                
-                match std::process::Command::new("cosmic-edit")
-                    .arg(&path_str)
-                    .spawn()
-                {
-                    Ok(_) => {
-                        tracing::debug!(path = %path_str, "Opened MCP config file in cosmic-edit");
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to open MCP config file in cosmic-edit");
-                        // Show error dialog to user
-                        self.dialog = Some(DialogPage::message_text(format!(
-                            "Failed to open MCP config file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
-                            path_str, e
-                        )));
-                    }
-                }
-            }
-            Message::OpenConfigFile => {
-                // Get config file path
-                let config_path = AppConfig::config_toml_path();
-                let path_str = config_path.to_string_lossy().to_string();
-                
-                match std::process::Command::new("cosmic-edit")
-                    .arg(&path_str)
-                    .spawn()
-                {
-                    Ok(_) => {
-                        tracing::debug!(path = %path_str, "Opened config file in cosmic-edit");
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to open config file in cosmic-edit");
-                        self.dialog = Some(DialogPage::message_text(format!(
-                            "Failed to open config file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
-                            path_str, e
-                        )));
-                    }
-                }
-            }
-            Message::OpenProfilePrompt(profile_name) => {
-                // Get prompt file path for the profile
-                if let Some(profile) = self.config.profiles.get(&profile_name) {
-                    if let Some(prompt_file) = &profile.profile_prompt_file {
-                        let prompt_path = AppConfig::resolve_config_path(prompt_file);
-                        let path_str = prompt_path.to_string_lossy().to_string();
-                        
-                        match std::process::Command::new("cosmic-edit")
-                            .arg(&path_str)
-                            .spawn()
-                        {
-                            Ok(_) => {
-                                tracing::debug!(path = %path_str, "Opened prompt file in cosmic-edit");
-                            }
-                            Err(e) => {
-                                tracing::error!(error = %e, "Failed to open prompt file in cosmic-edit");
-                                self.dialog = Some(DialogPage::message_text(format!(
-                                    "Failed to open prompt file in cosmic-edit:\n{}\n\nError: {}\n\nMake sure cosmic-edit is installed.",
-                                    path_str, e
-                                )));
-                            }
-                        }
-                    } else {
-                        self.dialog = Some(DialogPage::message_text(format!(
-                            "Profile '{}' does not have a prompt file configured.",
-                            profile_name
-                        )));
-                    }
-                }
-            }
-            Message::ScrollToBottom => {
-                // Trigger scroll operation to bottom
-                // The actual scrolling will be handled in the view method using widget operations
-            }
-            Message::ShowAbout => {
-                // Toggle behavior: if About is already shown, hide it; otherwise show it
-                // Pattern from msToDO for consistent UX
-                if self.context_page == ContextPage::About && self.core.window.show_context {
-                    self.core.window.show_context = false; // Toggle off
-                } else {
-                    self.context_page = ContextPage::About;
-                    self.core.window.show_context = true; // Show
-                }
-            }
-            Message::CloseAbout => {
-                self.core.window.show_context = false;
-            }
-            Message::OpenUrl(url) => {
-                let _ = webbrowser::open(&url);
-            }
-            Message::OpenSettings => {
-                self.current_page = NavigationPage::Settings;
-                // Reload config from file to ensure we have the latest values
-                if let Ok(fresh_config) = AppConfig::load() {
-                    self.config = fresh_config;
-                }
-                // Load current config values into settings page (this also initializes staged config)
-                self.settings_page.load_from_config(&self.config);
-            }
-            Message::ManualSummarize => {
-                if let Some(conv_id) = self.conversation_state.current_conversation_id {
-                    self.perform_manual_summarization(conv_id);
-                } else {
-                    tracing::warn!("No active conversation to summarize");
                 }
             }
             #[cfg(feature = "ttsandstt")]
@@ -2650,10 +2115,10 @@ impl Application for CosmicLlmApp {
                 self.stt_listening_initiated = false;
                 // Insert STT result into input field
                 // Use perform_action to insert text
-                self.input_content.perform(text_editor::Action::Edit(
+                self.chat_page.input_content.perform(text_editor::Action::Edit(
                     text_editor::Edit::Paste(Arc::new(text.clone())),
                 ));
-                self.input = self.input_content.text();
+                self.chat_page.input = self.chat_page.input_content.text();
             }
             #[cfg(not(feature = "ttsandstt"))]
             Message::DbusServiceAvailable(_) | 
@@ -3200,45 +2665,62 @@ impl Application for CosmicLlmApp {
             Message::MarkdownLinkClicked(url) => {
                 let _ = webbrowser::open(url.as_str());
             }
-            Message::SearchChanged(query) => {
-                self.search_query = query.clone();
-                // Perform search if query is not empty
-                if !query.trim().is_empty() {
-                    // Perform search synchronously since Storage doesn't implement Clone
-                    match self.storage.search_history(&query, 50) {
-                        Ok(results) => {
-                            self.search_results = results;
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "Search error");
-                            self.search_results.clear();
-                        }
+            Message::ChatPage(_) => {
+                // Chat page messages will be handled in future iteration
+                // For now, these are still handled as direct messages
+            }
+            Message::MCPConfigPage(msg) => {
+                match msg {
+                    mcp_config::Message::ToggleServer(server_name) => {
+                        self.mcp_config_page.toggle_server(server_name);
                     }
-                } else {
-                    // Clear search results if query is empty
-                    self.search_results.clear();
                 }
             }
+            Message::HistoryPage(msg) => {
+                // Handle navigation messages first (before update consumes msg)
+                let nav_action = match &msg {
+                    history::Message::SelectConversation(id) => {
+                        Some(Message::SelectConversation(*id))
+                    }
+                    history::Message::DeleteConversation(id) => {
+                        Some(Message::DeleteConversation(*id))
+                    }
+                    _ => None,
+                };
+                
+                // Delegate to history page update
+                let _task = self.history_page.update(msg, &self.storage);
+                
+                // Handle navigation if needed
+                if let Some(action) = nav_action {
+                    return self.update(action);
+                }
+            }
+            // Legacy messages (to be migrated to page messages)
+            Message::SearchChanged(query) => {
+                return self.update(Message::HistoryPage(history::Message::SearchChanged(query)));
+            }
             Message::SearchResults(results) => {
-                self.search_results = results;
+                return self.update(Message::HistoryPage(history::Message::SearchResults(results)));
             }
             Message::InlineError(error) => {
-                self.current_error = Some(error);
+                self.chat_page.current_error = Some(error);
             }
             Message::DismissError => {
-                self.current_error = None;
+                self.chat_page.current_error = None;
             }
             Message::TypingIndicatorTick(instant) => {
-                if let Some(start_time) = self.typing_indicator_start_time {
+                if let Some(start_time) = self.chat_page.typing_indicator_start_time {
                     let elapsed = instant.duration_since(start_time);
                     // Update animation progress (cycles every 1.2 seconds)
-                    self.typing_indicator_progress = (elapsed.as_secs_f32() / 1.2) % 1.0;
+                    self.chat_page.typing_indicator_progress = (elapsed.as_secs_f32() / 1.2) % 1.0;
                 }
             }
             Message::RefreshConversationList => {
                 self.load_recent_conversations();
                 self.update_nav_model();
             }
+            _ => {} // Messages handled by handler modules or page modules
         }
 
         app::Task::none()
@@ -3359,7 +2841,7 @@ impl Application for CosmicLlmApp {
 
 impl CosmicLlmApp {
     /// Update the nav model with current conversation title and recent conversations
-    fn update_nav_model(&mut self) {
+    pub(crate) fn update_nav_model(&mut self) {
         // Clear and rebuild the nav model
         let mut model = widget::segmented_button::ModelBuilder::default().build();
         
@@ -3481,7 +2963,7 @@ impl CosmicLlmApp {
     }
     
     /// Load recent conversations from storage (last 11 to accommodate active conversation)
-    fn load_recent_conversations(&mut self) {
+    pub(crate) fn load_recent_conversations(&mut self) {
         match self.storage.list_conversations_paginated(None, Some(11)) {
             Ok(conversations) => {
                 self.conversation_state.recent_conversations = conversations
@@ -3497,7 +2979,7 @@ impl CosmicLlmApp {
     }
     
     pub(crate) fn error_banner(&self) -> Option<Element<Message>> {
-        self.current_error.as_ref().map(|error| {
+        self.chat_page.current_error.as_ref().map(|error| {
             let content = widget::row::with_children(vec![
                 crate::ui::icons::get_icon("dialog-warning-symbolic", 16).into(),
                 widget::text(error.clone()).size(14).into(),
@@ -3528,12 +3010,12 @@ impl CosmicLlmApp {
         match self.prompt_manager.load_profile_prompt(&resolved) {
             Ok(content) => {
                 if self
-                    .current_error
+                    .chat_page.current_error
                     .as_deref()
                     .map(|msg| msg.starts_with("Profile prompt"))
                     .unwrap_or(false)
                 {
-                    self.current_error = None;
+                    self.chat_page.current_error = None;
                 }
                 Some(content)
             }
@@ -3544,13 +3026,13 @@ impl CosmicLlmApp {
                     }
                     _ => err.to_string(),
                 };
-                self.current_error = Some(message);
+                self.chat_page.current_error = Some(message);
                 None
             }
         }
     }
 
-    fn profile_tool_defaults_task(&self) -> Option<app::Task<Message>> {
+    pub(crate) fn profile_tool_defaults_task(&self) -> Option<app::Task<Message>> {
         let profile = self.config.get_default_profile()?;
         // Always apply profile defaults, even if enabled_mcp is empty
         // (empty list means enable all tools)

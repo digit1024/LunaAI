@@ -9,6 +9,7 @@ use crate::{
     llm::context_manager::SmartContextManager,
     mcp::MCPServerRegistry,
     prompts::PromptManager,
+    services::{ContextService, MessageConverter},
     server::dto::{
         ClientCommand, ConversationSummary, ConversationView, MessageView, PlannedToolView,
         SearchResult, ServerEvent,
@@ -16,7 +17,7 @@ use crate::{
     server::http::AttachmentStorage,
     storage::{
         conversation_storage::Conversation as StoredConversation,
-        sqlite_storage_simple::MessageMetadata, Storage,
+        sqlite_storage_simple::{Message as StorageMessage, MessageMetadata}, Storage,
     },
 };
 use anyhow::{anyhow, Context, Result};
@@ -355,7 +356,7 @@ impl ServerHandler {
         llm_messages.push(current_user_message);
         
         // Inject system prompts first
-        let mut agent_messages = inject_prompts(llm_messages, &prompt_manager, &profile)?;
+        let mut agent_messages = ContextService::inject_prompts(llm_messages, &prompt_manager, &profile)?;
         
         // Apply context management (token counting and smart selection)
         let token_counter = TokenCounter::new(&profile);
@@ -570,21 +571,38 @@ impl ServerHandler {
                                         })
                                         .collect();
                                     
-                                    let mut reloaded_llm = conversation_to_llm(StoredConversation {
-                                        id: conversation_uuid,
-                                        title: "".to_string(),
-                                        created_at: chrono::Utc::now(),
-                                        updated_at: chrono::Utc::now(),
-                                        messages: stored_messages,
-                                        turns: Vec::new(), // Turns not used in SQLite storage
-                                        profile_name: None,
-                                    });
+                                    // Convert stored_messages to StorageMessage format for MessageConverter
+                                    let storage_messages: Vec<StorageMessage> = stored_messages
+                                        .into_iter()
+                                        .map(|msg| StorageMessage {
+                                            id: 0, // Not used in conversion
+                                            conversation_id: String::new(), // Not used in conversion
+                                            role: msg.role,
+                                            content: msg.content,
+                                            embedding: None,
+                                            created_at: msg.timestamp.timestamp(),
+                                            tool_calls: msg.tool_calls,
+                                            tool_call_id: msg.tool_call_id,
+                                            tool_name: msg.tool_name,
+                                            tool_status: msg.tool_status,
+                                            tool_params_json: msg.tool_params_json,
+                                            tool_result_json: msg.tool_result_json,
+                                            reasoning_content: msg.reasoning_content,
+                                            is_summary: msg.is_summary,
+                                            is_summarized: msg.is_summarized,
+                                            summarized_message_ids: None,
+                                            summarized_count: msg.summarized_count,
+                                        })
+                                        .collect();
+                                    
+                                    // Use MessageConverter service (single source of truth)
+                                    let mut reloaded_llm = MessageConverter::db_to_llm(&storage_messages, true);
                                     
                                     // Add current message back
                                     reloaded_llm.push(current_user_message_clone);
                                     
                                     // Re-inject prompts and recalculate
-                                    agent_messages = inject_prompts(reloaded_llm, &prompt_manager, &profile)?;
+                                    agent_messages = ContextService::inject_prompts(reloaded_llm, &prompt_manager, &profile)?;
                                     
                                     // Recalculate tokens after summarization
                                     let new_total_tokens: usize = agent_messages.iter()
@@ -828,11 +846,13 @@ impl ServerHandler {
 
     async fn build_llm_messages(&self, conversation_id: Uuid) -> Result<Vec<LlmMessage>> {
         let storage = self.ctx.storage.lock().await;
-        let conversation = storage
-            .get_conversation(&conversation_id)
-            .context("failed to load conversation history")?
-            .ok_or_else(|| anyhow!("Conversation {} not found", conversation_id))?;
-        Ok(conversation_to_llm(conversation))
+        // Load messages directly from storage (more efficient than loading full conversation)
+        let db_messages = storage
+            .load_conversation_messages(&conversation_id.to_string())
+            .context("failed to load conversation messages")?;
+        
+        // Use MessageConverter service (single source of truth)
+        Ok(MessageConverter::db_to_llm(&db_messages, true))
     }
 }
 
@@ -859,67 +879,11 @@ fn to_conversation_view(conv: &StoredConversation) -> ConversationView {
     }
 }
 
-fn conversation_to_llm(conversation: StoredConversation) -> Vec<LlmMessage> {
-    use crate::storage::sqlite_storage_simple::Message as StorageMessage;
-    
-    conversation
-        .messages
-        .into_iter()
-        .filter_map(|msg| {
-            // Skip messages that have been summarized (but keep summary messages themselves)
-            if msg.is_summarized && !msg.is_summary {
-                return None;
-            }
-            
-            // Convert storage message to LLM message using From trait from types module
-            // Convert StoredMessage to sqlite_storage_simple::Message format for conversion
-            let storage_msg = StorageMessage {
-                id: 0, // Not used in conversion
-                conversation_id: String::new(), // Not used in conversion
-                role: msg.role,
-                content: msg.content,
-                embedding: None,
-                created_at: msg.timestamp.timestamp(),
-                tool_calls: msg.tool_calls,
-                tool_call_id: msg.tool_call_id,
-                tool_name: msg.tool_name,
-                tool_status: msg.tool_status,
-                tool_params_json: msg.tool_params_json,
-                tool_result_json: msg.tool_result_json,
-                reasoning_content: msg.reasoning_content,
-                is_summary: msg.is_summary,
-                is_summarized: msg.is_summarized,
-                summarized_message_ids: None,
-                summarized_count: msg.summarized_count,
-            };
-            
-            // Use the From trait implementation from types module
-            Some(<LlmMessage as From<&StorageMessage>>::from(&storage_msg))
-        })
-        .collect()
-}
+// Removed: conversation_to_llm() - Now using MessageConverter::db_to_llm() service
+// This function was replaced to eliminate duplication and use the single source of truth
 
-fn inject_prompts(
-    mut history: Vec<LlmMessage>,
-    prompt_manager: &PromptManager,
-    profile: &crate::config::LlmProfile,
-) -> Result<Vec<LlmMessage>> {
-    let mut final_messages = Vec::new();
-    if let Some(system) = prompt_manager.get_system_prompt() {
-        final_messages.push(LlmMessage::new(Role::System, system.to_string()));
-    }
-
-    if let Some(profile_prompt) = profile.profile_prompt_file.as_ref().and_then(|path| {
-        let resolved = AppConfig::resolve_config_path(path);
-        let owned = resolved.to_string_lossy().to_string();
-        prompt_manager.load_profile_prompt(&owned).ok()
-    }) {
-        final_messages.push(LlmMessage::new(Role::System, profile_prompt));
-    }
-
-    final_messages.append(&mut history);
-    Ok(final_messages)
-}
+// Removed: inject_prompts() - Now using ContextService::inject_prompts() service
+// This function was replaced to eliminate duplication and use the single source of truth
 
 struct PersistenceContext {
     storage: Arc<Mutex<Storage>>,

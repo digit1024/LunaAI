@@ -78,7 +78,7 @@ impl MessageWithImportance {
         // Attachment bonus
         if let Some(attachments) = msg.attachments.as_ref() {
             if !attachments.is_empty() {
-                score += 15.0;
+            score += 15.0;
             }
         }
 

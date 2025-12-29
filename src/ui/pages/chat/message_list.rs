@@ -483,7 +483,7 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                 if app.tool_call_state.active_tool_calls.is_empty() && app.is_streaming {
                     use crate::ui::widgets::typing_indicator;
                     let indicator_widget = cosmic::widget::container(
-                        typing_indicator(app.typing_indicator_progress)
+                        typing_indicator(app.chat_page.typing_indicator_progress)
                             .map(|_| Message::ScrollToBottom)
                     )
                     .width(Length::FillPortion(7)); // 70% width like AI messages
@@ -506,7 +506,7 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
         if !already_shown {
             use crate::ui::widgets::typing_indicator;
             let indicator_widget = cosmic::widget::container(
-                typing_indicator(app.typing_indicator_progress)
+                typing_indicator(app.chat_page.typing_indicator_progress)
                     .map(|_| Message::ScrollToBottom)
             )
             .width(Length::FillPortion(7)); // 70% width like AI messages
@@ -525,7 +525,7 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
     scrollable(column)
         .scrollbar_width(8)
         .scrollbar_padding(4)
-        .id(app.scrollable_id.clone())
+        .id(app.chat_page.scrollable_id.clone())
         .anchor_bottom()
         .into()
 }

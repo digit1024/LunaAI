@@ -31,6 +31,15 @@ pub struct Page {
     
     /// Last user message (for retry)
     pub last_user_message: Option<String>,
+    
+    /// Typing indicator animation progress (0.0 to 1.0)
+    pub typing_indicator_progress: f32,
+    
+    /// Typing indicator start time
+    pub typing_indicator_start_time: Option<cosmic::iced::time::Instant>,
+    
+    /// Current error message
+    pub current_error: Option<String>,
 }
 
 impl Page {
@@ -42,6 +51,9 @@ impl Page {
             input_id: cosmic::widget::Id::unique(),
             scrollable_id: cosmic::widget::Id::unique(),
             last_user_message: None,
+            typing_indicator_progress: 0.0,
+            typing_indicator_start_time: None,
+            current_error: None,
         }
     }
 }
