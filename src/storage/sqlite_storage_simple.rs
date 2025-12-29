@@ -1,7 +1,7 @@
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Result as SqliteResult};
 use serde::{Deserialize, Serialize};
-use serde_json::{self, Value};
+use serde_json::Value;
 use std::path::Path;
 use std::time::Duration;
 use uuid::Uuid;
@@ -38,6 +38,7 @@ pub struct Message {
     #[serde(default)]
     pub is_summary: bool, // True if this message is a summary of previous messages
     #[serde(default)]
+    #[allow(dead_code)] // Field used for serialization/storage
     pub is_summarized: bool, // True if this message has been summarized (should be excluded from LLM payload)
     pub summarized_message_ids: Option<Vec<i64>>, // IDs of messages that were summarized
     pub summarized_count: Option<usize>, // Count of messages summarized

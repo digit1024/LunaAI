@@ -10,6 +10,6 @@ pub mod mcp_service;
 
 pub use message_converter::MessageConverter;
 pub use context_service::ContextService;
-pub use tool_call_manager::ToolCallManager;
+// ToolCallManager not used - keeping module for future use
 pub use mcp_service::MCPService;
 

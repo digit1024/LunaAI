@@ -38,7 +38,7 @@ impl ContextService {
         prompt_manager: &PromptManager,
     ) -> Result<Vec<LlmMessage>> {
         // Inject system prompts first
-        let mut final_messages = Self::inject_prompts(messages, prompt_manager, profile)?;
+        let final_messages = Self::inject_prompts(messages, prompt_manager, profile)?;
 
         // Apply context management (token counting and smart selection)
         let token_counter = TokenCounter::new(profile);

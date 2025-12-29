@@ -61,6 +61,7 @@ pub struct StoredMessage {
     #[serde(default)]
     pub is_summary: bool, // True if this message is a summary of previous messages
     #[serde(default)]
+    #[allow(dead_code)] // Field used for serialization/storage
     pub is_summarized: bool, // True if this message has been summarized (should be excluded from LLM payload)
     pub summarized_count: Option<usize>, // Count of messages summarized
 }
@@ -170,8 +171,11 @@ pub struct ConversationIndex {
 
 #[derive(Debug, Clone)]
 pub struct Storage {
+    #[allow(dead_code)] // Fields used for file-based storage (legacy)
     conversations: HashMap<Uuid, Conversation>,
+    #[allow(dead_code)] // Fields used for file-based storage (legacy)
     conversations_dir: PathBuf,
+    #[allow(dead_code)] // Fields used for file-based storage (legacy)
     index_file: PathBuf,
 }
 

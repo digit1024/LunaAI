@@ -3,8 +3,8 @@ mod handlers;
 mod http;
 mod websocket;
 
-use self::handlers::ServerContext;
-use self::http::AttachmentStorage;
+use crate::server::handlers::ServerContext;
+use crate::server::http::AttachmentStorage;
 use crate::{
     config::{AppConfig, MCPConfig},
     prompts::PromptManager,

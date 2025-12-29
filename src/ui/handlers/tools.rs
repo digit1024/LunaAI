@@ -48,7 +48,7 @@ pub fn handle_tool_messages(
             }
             None
         }
-        Message::ToolCallWidgetMessage(index, _message) => {
+        Message::ToolCallWidgetMessage(_index, _message) => {
             // Tool call widget messages are handled by the widget itself
             // This is just a placeholder
             None

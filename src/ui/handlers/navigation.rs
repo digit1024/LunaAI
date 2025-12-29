@@ -95,7 +95,7 @@ fn handle_select_conversation(app: &mut CosmicLlmApp, id: Uuid) {
         
         // Return profile tool defaults task if profile changed
         if profile_changed {
-            if let Some(task) = app.profile_tool_defaults_task() {
+            if let Some(_task) = app.profile_tool_defaults_task() {
                 // Update nav model to reflect current conversation
                 app.load_recent_conversations();
                 app.update_nav_model();

@@ -10,10 +10,14 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Tool call manager service
+/// 
+/// Reserved for future use - will unify tool call execution logic
+#[allow(dead_code)]
 pub struct ToolCallManager {
     registry: Arc<RwLock<MCPServerRegistry>>,
 }
 
+#[allow(dead_code)]
 impl ToolCallManager {
     /// Create a new tool call manager
     pub fn new(registry: Arc<RwLock<MCPServerRegistry>>) -> Self {

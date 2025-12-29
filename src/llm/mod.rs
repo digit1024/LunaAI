@@ -73,6 +73,7 @@ pub struct Message {
 pub struct Attachment {
     pub file_path: String,
     pub file_name: String,
+    #[allow(dead_code)] // Field used for serialization
     pub mime_type: String,
     pub file_size: u64,
     pub content: Option<String>, // For text files, store content directly

@@ -2,11 +2,7 @@
 //!
 //! Full libcosmic module for the conversation history interface.
 
-use cosmic::{
-    app,
-    widget::{self},
-    Element,
-};
+use cosmic::{app, Element};
 use uuid::Uuid;
 
 use crate::storage::sqlite_storage_simple::Snippet;

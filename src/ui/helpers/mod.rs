@@ -3,5 +3,4 @@
 //! Helper functions extracted from app.rs for better modularity.
 
 pub mod navigation;
-pub mod profile;
 

@@ -6,8 +6,8 @@ use cosmic::app;
 use serde_json::Value;
 
 use crate::agentic::protocol::AgentUpdate;
-use crate::ui::app::{AnchoredToolCall, ChatMessage, CosmicLlmApp, Message, ToolCallInfo, ToolCallStatus, ToolRuntimeContext};
 use crate::storage::sqlite_storage_simple::MessageMetadata;
+use crate::ui::app::{AnchoredToolCall, ChatMessage, CosmicLlmApp, Message, ToolCallInfo, ToolCallStatus, ToolRuntimeContext};
 
 /// Handle agent-related messages
 pub fn handle_agent_messages(

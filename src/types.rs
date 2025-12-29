@@ -56,37 +56,7 @@ impl From<&StorageMessage> for LlmMessage {
     }
 }
 
-/// Convert LLM message to storage message (for saving)
-/// Note: This is a helper function since StorageMessage has additional fields
-pub fn llm_message_to_storage(
-    llm_msg: &LlmMessage,
-    conversation_id: &str,
-    message_id: i64,
-) -> StorageMessage {
-    StorageMessage {
-        id: message_id,
-        conversation_id: conversation_id.to_string(),
-        role: llm_msg.role.as_str().to_string(),
-        content: llm_msg.content.clone(),
-        embedding: None,
-        created_at: llm_msg.timestamp
-            .map(|dt| dt.timestamp())
-            .unwrap_or_else(|| Utc::now().timestamp()),
-        tool_calls: llm_msg.tool_calls.clone(),
-        tool_call_id: llm_msg.tool_call_id.clone(),
-        tool_name: None,
-        tool_status: None,
-        tool_params_json: None,
-        tool_result_json: None,
-        reasoning_content: llm_msg.reasoning_content.clone(),
-        is_summary: false,
-        is_summarized: false,
-        summarized_message_ids: None,
-        summarized_count: None,
-    }
-}
+// Function removed - not used anywhere
 
-/// Re-export commonly used types for convenience
-pub use crate::llm::{Message, ToolCall, Attachment};
-pub use crate::storage::sqlite_storage_simple::Conversation as StorageConversation;
+// Re-exports removed - not used anywhere
 

@@ -101,18 +101,5 @@ pub async fn generate_title_from_messages(
     Ok(truncated_title)
 }
 
-/// Generate a title for a conversation (public API that uses storage)
-pub async fn generate_title_for_conversation(
-    storage: &crate::storage::sqlite_storage_simple::SqliteStorage,
-    conversation_id: &str,
-    profile: &LlmProfile,
-    summary_chars: u32,
-    system_prompt: &str,
-) -> Result<String> {
-    // Load messages synchronously
-    let messages: Vec<SqliteMessage> = storage.load_conversation(conversation_id)?;
-    
-    // Generate title from messages (async part)
-    generate_title_from_messages(messages, profile, summary_chars, system_prompt).await
-}
+// Function removed - not used anywhere
 

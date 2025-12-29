@@ -87,6 +87,7 @@ pub enum ProfilePromptError {
 }
 
 impl ProfilePromptError {
+    #[allow(dead_code)] // Public API method
     pub fn path(&self) -> &str {
         match self {
             ProfilePromptError::NotFound(path) => path,

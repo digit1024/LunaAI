@@ -396,12 +396,6 @@ impl ServerHandler {
                 .context("failed to load conversation for summarization")?;
             drop(storage);
             
-            // Separate system messages (prompts) from conversation messages
-            // System messages are at the beginning (from inject_prompts)
-            let system_count = agent_messages.iter()
-                .take_while(|m| matches!(m.role, Role::System))
-                .count();
-            
             // Convert database messages to LLM messages for summarization
             // We want to summarize old messages, keeping recent ones (last 10 messages)
             // IMPORTANT: Exclude summary messages and tool messages from summarization

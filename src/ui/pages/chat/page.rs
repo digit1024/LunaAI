@@ -4,9 +4,7 @@
 //! Manages chat-specific state and messages.
 
 use cosmic::{
-    app,
-    widget::{self, text_editor},
-    Element,
+    widget::{text_editor},
 };
 use std::sync::Arc;
 

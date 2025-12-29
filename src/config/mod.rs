@@ -267,6 +267,7 @@ impl AppConfig {
         self.profiles.get(name)
     }
 
+    #[allow(dead_code)] // Public API method
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         use std::fs;
         use toml;

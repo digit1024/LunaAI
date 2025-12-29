@@ -121,6 +121,7 @@ pub enum SettingsMessage {
 
 #[derive(Debug, Clone)]
 pub enum NewProfileField {
+    #[allow(dead_code)] // Used in match patterns
     Name,
     Backend,
     Model,

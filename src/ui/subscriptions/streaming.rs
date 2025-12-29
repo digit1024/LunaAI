@@ -3,7 +3,7 @@
 //! Extracted from app.rs for better modularity.
 
 use crate::ui::app::Message;
-use crate::ui::state::{AttachmentState, ConversationState};
+use crate::ui::state::AttachmentState;
 use crate::services::ContextService;
 use crate::config::AppConfig;
 use crate::prompts::PromptManager;

@@ -137,6 +137,7 @@ impl MCPServerRegistry {
         }
     }
 
+    #[allow(dead_code)] // Public API method
     pub fn is_server_enabled(&self, server_name: &str) -> bool {
         // A server is considered enabled if at least one of its tools is enabled
         // This is a simple heuristic - we could also check if all tools are enabled

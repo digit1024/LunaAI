@@ -2,11 +2,6 @@
 //!
 //! Full libcosmic module for the MCP configuration interface.
 
-use cosmic::{
-    app,
-    widget::{self, button, container, scrollable},
-    Element,
-};
 use std::collections::HashSet;
 
 /// MCP Config page state

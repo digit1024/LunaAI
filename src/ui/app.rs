@@ -1,37 +1,32 @@
 use cosmic::{
     app::{self, Core},
-    dialog::file_chooser::{self, FileFilter},
+    dialog::file_chooser::{self},
     iced::Subscription,
     widget::{self, menu, text_editor},
     Application, Element,
 };
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::{
     agentic::protocol::AgentUpdate,
-    config::{AppConfig, LlmProfile},
-    ui::pages::settings::simple_settings::{EditingProfileState, ProfileField},
-    llm::{self, LlmClient, ToolCall},
+    config::AppConfig,
+    llm::{self, LlmClient},
     mcp::MCPServerRegistry,
-    prompts::{ProfilePromptError, PromptManager},
-    storage::{
-        sqlite_storage_simple::{MessageMetadata, SqliteSettings},
-        Storage,
-    },
+    prompts::PromptManager,
+    storage::Storage,
     ui::context::ContextPage,
     ui::dialogs::{DialogAction, DialogPage},
     ui::pages::chat,
     ui::pages::history,
     ui::pages::mcp_config,
-    ui::pages::settings::{SimpleSettingsMessage, SimpleSettingsPage},
+    ui::pages::settings::{self, SimpleSettingsMessage, SimpleSettingsPage},
     ui::pages::tools,
     ui::state::{AttachmentState, ContextState, ConversationState, ToolCallState},
     ui::widgets::ToolCallMessage,
 };
-use crate::services::{ContextService, MessageConverter, MCPService};
+use crate::services::MCPService;
 use crate::ui::handlers::{handle_chat_messages, handle_tool_messages, handle_navigation_messages, handle_agent_messages, handle_settings_messages};
 use serde_json::Value;
 
@@ -70,8 +65,8 @@ pub enum Message {
     ChangeDefaultProfile(usize),
     SaveSettings,
     ResetSettings,
-    // New Settings page messages
-    SettingsMessage(SimpleSettingsMessage),
+    // Settings page messages (delegated to page module)
+    SettingsPage(SimpleSettingsMessage),
     // Page messages (delegated to page modules)
     ChatPage(chat::Message),
     HistoryPage(history::Message),
@@ -194,6 +189,7 @@ pub struct CosmicLlmApp {
     pub current_streaming_id: Option<Uuid>,
     pub key_binds: std::collections::HashMap<menu::KeyBind, MenuAction>,
     pub settings_changed: bool,
+    #[allow(dead_code)] // Reserved for future use
     pub title_sender: Option<tokio::sync::mpsc::UnboundedSender<(Uuid, String)>>,
     pub settings_page: SimpleSettingsPage,
     pub context_page: ContextPage,
@@ -201,6 +197,7 @@ pub struct CosmicLlmApp {
     // Navigation model to integrate with COSMIC shell nav bar (pattern from msToDO)
     pub nav_model: widget::segmented_button::SingleSelectModel,
     // When true, ignore legacy StreamingUpdate to avoid duplicate UI events
+    #[allow(dead_code)] // Reserved for future use
     pub agent_mode_active: bool,
     // Dialog state
     pub dialog: Option<DialogPage>,
@@ -242,6 +239,7 @@ pub struct ChatMessage {
     pub is_error: bool,
     pub reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
     pub is_summary: bool, // True if this message is a summary of previous messages
+    #[allow(dead_code)] // Field used for serialization/storage
     pub is_summarized: bool, // True if this message has been summarized (should be excluded from LLM payload)
     pub summarized_count: Option<usize>, // Count of messages summarized
 }
@@ -992,255 +990,12 @@ impl Application for CosmicLlmApp {
                 self.config = AppConfig::default();
                 self.settings_changed = true;
             }
-            Message::SettingsMessage(settings_msg) => {
-                match settings_msg {
+            Message::SettingsPage(msg) => {
+                // Handle app-level messages before delegating to page
+                match &msg {
                     SimpleSettingsMessage::BackToMain => {
                         self.current_page = NavigationPage::Chat;
-                    }
-                    SimpleSettingsMessage::SetDefaultProfile(name) => {
-                        if self.settings_page.staged_profiles.contains_key(&name) {
-                            self.settings_page.staged_default = name;
-                            self.settings_page.has_changes = true;
-                        }
-                    }
-                    SimpleSettingsMessage::NewProfileNameChanged(val) => {
-                        self.settings_page.new_profile_name = val;
-                    }
-                    SimpleSettingsMessage::NewProfileModelChanged(val) => {
-                        self.settings_page.new_profile_model = val;
-                    }
-                    SimpleSettingsMessage::NewProfileEndpointChanged(val) => {
-                        self.settings_page.new_profile_endpoint = val;
-                    }
-                    SimpleSettingsMessage::NewProfileApiKeyChanged(val) => {
-                        self.settings_page.new_profile_api_key = val;
-                    }
-                    SimpleSettingsMessage::NewProfileBackendChanged(val) => {
-                        self.settings_page.new_profile_backend = val;
-                    }
-                    SimpleSettingsMessage::AddNewProfile => {
-                        let name = self.settings_page.new_profile_name.trim().to_string();
-                        let model = self.settings_page.new_profile_model.trim().to_string();
-                        let endpoint = self.settings_page.new_profile_endpoint.trim().to_string();
-                        let api_key = self.settings_page.new_profile_api_key.trim().to_string();
-                        let backend = self.settings_page.new_profile_backend.trim().to_string();
-                        if !name.is_empty() && !model.is_empty() {
-                            let mut profile = LlmProfile::default();
-                            profile.backend = if backend.is_empty() { "openai".to_string() } else { backend };
-                            profile.model = model;
-                            profile.endpoint = endpoint;
-                            profile.api_key = api_key;
-                            profile.temperature = Some(0.7);
-                            profile.max_tokens = Some(1000);
-                            self.settings_page.staged_profiles.insert(name.clone(), profile);
-                            if self.settings_page.staged_default.is_empty() {
-                                self.settings_page.staged_default = name.clone();
-                            }
-                            self.settings_page.has_changes = true;
-                            // Clear inputs
-                            self.settings_page.new_profile_name.clear();
-                            self.settings_page.new_profile_model.clear();
-                            self.settings_page.new_profile_endpoint.clear();
-                            self.settings_page.new_profile_api_key.clear();
-                            self.settings_page.new_profile_backend = "openai".to_string();
-                        }
-                    }
-                    SimpleSettingsMessage::ToggleProfile(profile_name) => {
-                        if self.settings_page.expanded_profiles.contains(&profile_name) {
-                            self.settings_page.expanded_profiles.remove(&profile_name);
-                        } else {
-                            self.settings_page.expanded_profiles.insert(profile_name);
-                        }
-                    }
-                    SimpleSettingsMessage::StartEditProfile(profile_name) => {
-                        if let Some(profile) = self.settings_page.staged_profiles.get(&profile_name).cloned() {
-                            self.settings_page.editing_profiles.insert(
-                                profile_name.clone(),
-                                EditingProfileState {
-                                    name: profile_name.clone(),
-                                    backend: profile.backend,
-                                    model: profile.model,
-                                    endpoint: profile.endpoint,
-                                    api_key: profile.api_key,
-                                    temperature: profile.temperature,
-                                    temperature_str: profile.temperature.map(|t| t.to_string()).unwrap_or_default(),
-                                    max_tokens: profile.max_tokens,
-                                    max_tokens_str: profile.max_tokens.map(|t| t.to_string()).unwrap_or_default(),
-                                    context_window_size: profile.context_window_size,
-                                    context_window_size_str: profile.context_window_size.map(|s| s.to_string()).unwrap_or_default(),
-                                    summarize_threshold: profile.summarize_threshold,
-                                    summarize_threshold_str: profile.summarize_threshold.to_string(),
-                                    profile_prompt_file: profile.profile_prompt_file.clone(),
-                                    profile_prompt_file_str: profile.profile_prompt_file.as_deref().unwrap_or("").to_string(),
-                                    enabled_mcp: profile.enabled_mcp.clone(),
-                                    enabled_mcp_str: profile.enabled_mcp.join(", "),
-                                    hidden: profile.hidden,
-                                },
-                            );
-                        }
-                    }
-                    SimpleSettingsMessage::CancelEditProfile(profile_name) => {
-                        self.settings_page.editing_profiles.remove(&profile_name);
-                    }
-                    SimpleSettingsMessage::SaveProfile(profile_name) => {
-                        if let Some(edit_state) = self.settings_page.editing_profiles.get(&profile_name) {
-                            if let Some(profile) = self.settings_page.staged_profiles.get_mut(&profile_name) {
-                                profile.backend = edit_state.backend.clone();
-                                profile.model = edit_state.model.clone();
-                                profile.endpoint = edit_state.endpoint.clone();
-                                profile.api_key = edit_state.api_key.clone();
-                                profile.temperature = edit_state.temperature;
-                                profile.max_tokens = edit_state.max_tokens;
-                                profile.context_window_size = edit_state.context_window_size;
-                                profile.summarize_threshold = edit_state.summarize_threshold;
-                                profile.profile_prompt_file = edit_state.profile_prompt_file.clone();
-                                profile.enabled_mcp = edit_state.enabled_mcp.clone();
-                                profile.hidden = edit_state.hidden;
-                                self.settings_page.has_changes = true;
-                            }
-                            self.settings_page.editing_profiles.remove(&profile_name);
-                        }
-                    }
-                    SimpleSettingsMessage::DeleteProfile(profile_name) => {
-                        self.settings_page.staged_profiles.remove(&profile_name);
-                        self.settings_page.expanded_profiles.remove(&profile_name);
-                        self.settings_page.editing_profiles.remove(&profile_name);
-                            if self.settings_page.staged_default == profile_name && !self.settings_page.staged_profiles.is_empty() {
-                                self.settings_page.staged_default = self.settings_page.staged_profiles.keys().next()
-                                    .map(|k| k.clone())
-                                    .unwrap_or_else(|| {
-                                        tracing::warn!("staged_profiles was empty after check, using first available profile");
-                                        self.config.profiles.keys().next()
-                                            .cloned()
-                                            .unwrap_or_else(|| "default".to_string())
-                                    });
-                        }
-                        self.settings_page.has_changes = true;
-                    }
-                    SimpleSettingsMessage::UpdateProfileField(profile_name, field, value) => {
-                        if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
-                            match field {
-                                ProfileField::Name => edit_state.name = value,
-                                ProfileField::Backend => edit_state.backend = value,
-                                ProfileField::Model => edit_state.model = value,
-                                ProfileField::Endpoint => edit_state.endpoint = value,
-                                ProfileField::ApiKey => edit_state.api_key = value,
-                            }
-                        }
-                    }
-                    SimpleSettingsMessage::UpdateProfileTemperature(profile_name, temp) => {
-                        if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
-                            edit_state.temperature = temp;
-                            edit_state.temperature_str = temp.map(|t| t.to_string()).unwrap_or_default();
-                        }
-                    }
-                    SimpleSettingsMessage::UpdateProfileMaxTokens(profile_name, tokens) => {
-                        if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
-                            edit_state.max_tokens = tokens;
-                            edit_state.max_tokens_str = tokens.map(|t| t.to_string()).unwrap_or_default();
-                        }
-                    }
-                    SimpleSettingsMessage::UpdateProfileContextWindowSize(profile_name, size) => {
-                        if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
-                            edit_state.context_window_size = size;
-                            edit_state.context_window_size_str = size.map(|s| s.to_string()).unwrap_or_default();
-                        }
-                    }
-                    SimpleSettingsMessage::UpdateProfileSummarizeThreshold(profile_name, threshold) => {
-                        if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
-                            edit_state.summarize_threshold = threshold;
-                            edit_state.summarize_threshold_str = threshold.to_string();
-                        }
-                    }
-                    SimpleSettingsMessage::UpdateProfilePromptFile(profile_name, prompt_file) => {
-                        if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
-                            edit_state.profile_prompt_file = if prompt_file.trim().is_empty() {
-                                None
-                            } else {
-                                Some(prompt_file.clone())
-                            };
-                            edit_state.profile_prompt_file_str = prompt_file;
-                        }
-                    }
-                    SimpleSettingsMessage::UpdateProfileEnabledMCP(profile_name, enabled_mcp_str) => {
-                        if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
-                            edit_state.enabled_mcp_str = enabled_mcp_str.clone();
-                            // Parse the comma-separated string into Vec, but keep the raw string for editing
-                            edit_state.enabled_mcp = enabled_mcp_str
-                                .split(',')
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty())
-                                .collect();
-                        }
-                    }
-                    SimpleSettingsMessage::UpdateProfileHidden(profile_name, hidden) => {
-                        if let Some(edit_state) = self.settings_page.editing_profiles.get_mut(&profile_name) {
-                            edit_state.hidden = hidden;
-                        }
-                    }
-                    SimpleSettingsMessage::UpdateServerHost(val) => {
-                        self.settings_page.staged_server.host = val.clone();
-                        self.settings_page.server_host = val;
-                        self.settings_page.has_changes = true;
-                    }
-                    SimpleSettingsMessage::UpdateServerPort(val) => {
-                        if let Ok(port) = val.parse::<u16>() {
-                            self.settings_page.staged_server.port = port;
-                            self.settings_page.server_port = port;
-                            self.settings_page.server_port_str = val.clone();
-                            self.settings_page.has_changes = true;
-                        } else {
-                            self.settings_page.server_port_str = val;
-                        }
-                    }
-                    SimpleSettingsMessage::UpdateServerApiKey(val) => {
-                        self.settings_page.staged_server.api_key = val.clone();
-                        self.settings_page.server_api_key = val;
-                        self.settings_page.has_changes = true;
-                    }
-                    SimpleSettingsMessage::UpdateStreamTimeout(val) => {
-                        if let Ok(timeout) = val.parse::<u64>() {
-                            self.settings_page.staged_server.stream_timeout_secs = timeout;
-                            self.settings_page.stream_timeout_secs = timeout;
-                            self.settings_page.stream_timeout_str = val.clone();
-                            self.settings_page.has_changes = true;
-                        } else {
-                            self.settings_page.stream_timeout_str = val;
-                        }
-                    }
-                    SimpleSettingsMessage::UpdateTitleGenProfile(val) => {
-                        self.settings_page.staged_title_summary.title_generation_profile = if val.is_empty() {
-                            None
-                        } else {
-                            Some(val.clone())
-                        };
-                        self.settings_page.title_generation_profile = val;
-                        self.settings_page.has_changes = true;
-                    }
-                    SimpleSettingsMessage::UpdateSummaryChars(val) => {
-                        if let Ok(chars) = val.parse::<u32>() {
-                            self.settings_page.staged_title_summary.summary_chars = chars;
-                            self.settings_page.summary_chars = chars;
-                            self.settings_page.summary_chars_str = val.clone();
-                            self.settings_page.has_changes = true;
-                        } else {
-                            self.settings_page.summary_chars_str = val;
-                        }
-                    }
-                    SimpleSettingsMessage::UpdateSummaryLoopSleep(val) => {
-                        if let Ok(sleep) = val.parse::<u64>() {
-                            self.settings_page.staged_title_summary.summary_loop_sleep_seconds = sleep;
-                            self.settings_page.summary_loop_sleep_seconds = sleep;
-                            self.settings_page.summary_loop_str = val.clone();
-                            self.settings_page.has_changes = true;
-                        } else {
-                            self.settings_page.summary_loop_str = val;
-                        }
-                    }
-                    SimpleSettingsMessage::UpdateTitleGenPrompt(val) => {
-                        self.settings_page.staged_title_summary.title_generation_system_prompt = val.clone();
-                        self.settings_page.title_generation_system_prompt = val;
-                        self.settings_page.has_changes = true;
+                        return app::Task::none();
                     }
                     SimpleSettingsMessage::OpenConfigFile => {
                         return cosmic::Task::perform(
@@ -1293,11 +1048,17 @@ impl Application for CosmicLlmApp {
                                 return task;
                             }
                         }
+                        return app::Task::none();
                     }
                     SimpleSettingsMessage::CancelConfig => {
                         // Reload from config to discard all staged changes
                         self.settings_page.load_from_config(&self.config);
                         self.current_page = NavigationPage::Chat;
+                        return app::Task::none();
+                    }
+                    _ => {
+                        // Delegate to page module for page state updates
+                        let _task = self.settings_page.update(msg.clone(), &self.config);
                     }
                 }
             }
@@ -1533,10 +1294,7 @@ impl Application for CosmicLlmApp {
                 NavigationPage::Chat => chat::chat_view(self),
                 NavigationPage::History => history::history_view(self),
                 NavigationPage::MCPConfig => mcp_config::mcp_config_view(self),
-                NavigationPage::Settings => self
-                    .settings_page
-                    .view(&self.config)
-                    .map(Message::SettingsMessage),
+                NavigationPage::Settings => settings::settings_view(self),
             },
         )
         .into()
@@ -1661,12 +1419,37 @@ impl CosmicLlmApp {
             .map(|error| crate::ui::widgets::error_banner::error_banner(error))
     }
 
+    #[allow(dead_code)] // Used internally
     fn load_active_profile_prompt(&mut self) -> Option<String> {
-        crate::ui::helpers::profile::load_active_profile_prompt(
-            &self.config,
-            &self.prompt_manager,
-            &mut self.chat_page,
-        )
+        let profile = self.config.get_default_profile()?;
+        let path = profile.profile_prompt_file.as_deref()?;
+
+        let resolved_path = AppConfig::resolve_config_path(path);
+        let resolved = resolved_path.to_string_lossy().to_string();
+
+        match self.prompt_manager.load_profile_prompt(&resolved) {
+            Ok(content) => {
+                if self.chat_page
+                    .current_error
+                    .as_deref()
+                    .map(|msg| msg.starts_with("Profile prompt"))
+                    .unwrap_or(false)
+                {
+                    self.chat_page.current_error = None;
+                }
+                Some(content)
+            }
+            Err(err) => {
+                let message = match &err {
+                    crate::prompts::ProfilePromptError::NotFound(_) => {
+                        format!("Profile prompt not found: {}", resolved)
+                    }
+                    _ => err.to_string(),
+                };
+                self.chat_page.current_error = Some(message);
+                None
+            }
+        }
     }
 
     pub(crate) fn profile_tool_defaults_task(&self) -> Option<app::Task<Message>> {

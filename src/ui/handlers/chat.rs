@@ -513,7 +513,7 @@ fn handle_retry_message(app: &mut CosmicLlmApp) -> Option<app::Task<Message>> {
 }
 
 /// Handle AttachFile - returns a Task for file chooser
-fn handle_attach_file(app: &mut CosmicLlmApp) -> Option<app::Task<Message>> {
+fn handle_attach_file(_app: &mut CosmicLlmApp) -> Option<cosmic::app::Task<Message>> {
     use cosmic::dialog::file_chooser::{self, FileFilter};
     use std::sync::Arc;
     
