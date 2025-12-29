@@ -6,8 +6,10 @@
 pub mod message_converter;
 pub mod context_service;
 pub mod tool_call_manager;
+pub mod mcp_service;
 
 pub use message_converter::MessageConverter;
 pub use context_service::ContextService;
 pub use tool_call_manager::ToolCallManager;
+pub use mcp_service::MCPService;
 

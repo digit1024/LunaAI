@@ -3,9 +3,12 @@ pub mod audio;
 pub mod context;
 pub mod dialogs;
 pub mod handlers;
+pub mod helpers;
 pub mod icons;
+pub mod init_helpers;
 pub mod pages;
 pub mod state;
+pub mod subscriptions;
 pub mod widgets;
 
 pub use app::CosmicLlmApp;

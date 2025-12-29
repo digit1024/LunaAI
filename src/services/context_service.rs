@@ -57,8 +57,34 @@ impl ContextService {
             "Context preparation"
         );
 
-        // TODO: Apply truncation/summarization if needed
-        // This will be implemented in a future iteration
+        // Apply truncation if needed
+        let final_messages = if total_tokens > token_counter.get_safe_context_limit(profile) {
+            debug!(
+                total_tokens,
+                safe_limit = token_counter.get_safe_context_limit(profile),
+                "Context exceeds safe limit, applying smart truncation"
+            );
+            
+            // Use SmartContextManager to select important messages
+            crate::llm::context_manager::SmartContextManager::select_context(
+                final_messages,
+                &token_counter,
+                profile,
+            )
+        } else {
+            final_messages
+        };
+
+        let final_tokens: usize = final_messages
+            .iter()
+            .map(|msg| token_counter.count_message_tokens(msg))
+            .sum();
+        
+        debug!(
+            final_tokens,
+            message_count = final_messages.len(),
+            "Context preparation complete"
+        );
 
         Ok(final_messages)
     }

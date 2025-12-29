@@ -31,7 +31,7 @@ use crate::{
     ui::state::{AttachmentState, ContextState, ConversationState, ToolCallState},
     ui::widgets::ToolCallMessage,
 };
-use crate::services::{ContextService, MessageConverter};
+use crate::services::{ContextService, MessageConverter, MCPService};
 use crate::ui::handlers::{handle_chat_messages, handle_tool_messages, handle_navigation_messages, handle_agent_messages, handle_settings_messages};
 use serde_json::Value;
 
@@ -452,12 +452,6 @@ impl CosmicLlmApp {
         let mcp_registry = self.mcp_registry.clone();
         let pending_messages = self.attachment_state.pending_llm_messages.clone();
         let profile = self.config.get_default_profile().cloned();
-        let profile_prompt_path = self.config.get_default_profile().and_then(|profile| {
-            profile
-                .profile_prompt_file
-                .as_ref()
-                .map(|path| crate::config::AppConfig::resolve_config_path(path))
-        });
 
         Subscription::run_with_id(
             id,
@@ -468,38 +462,8 @@ impl CosmicLlmApp {
                     prepared_messages
                 } else {
                     tracing::debug!("Rebuilding messages from history");
-                    // Build LLM messages with system prompt
+                    // Build LLM messages from conversation history (without prompts - ContextService will add them)
                     let mut llm_messages = Vec::new();
-
-                    // Add system prompt if available
-                    if let Some(system_prompt) = prompt_manager.get_system_prompt() {
-                        llm_messages.push(crate::llm::Message::new(
-                            crate::llm::Role::System,
-                            system_prompt.to_string(),
-                        ));
-                    }
-
-                    // Add profile prompt if configured
-                    if let Some(profile_prompt_path) = profile_prompt_path.clone() {
-                        let resolved = profile_prompt_path.to_string_lossy().to_string();
-                        match prompt_manager.load_profile_prompt(&resolved) {
-                            Ok(prompt) => {
-                                llm_messages.push(crate::llm::Message::new(
-                                    crate::llm::Role::System,
-                                    prompt,
-                                ));
-                            }
-                            Err(err) => {
-                                let message = match &err {
-                                    ProfilePromptError::NotFound(_) => {
-                                        format!("Profile prompt not found: {}", err.path())
-                                    }
-                                    _ => err.to_string(),
-                                };
-                                let _ = output.send(Message::InlineError(message)).await;
-                            }
-                        }
-                    }
 
                     // Add conversation history, filtering out placeholder assistant messages
                     for msg in &messages {
@@ -523,56 +487,47 @@ impl CosmicLlmApp {
                 };
 
                 // === CONTEXT MANAGEMENT ===
-                // Apply token counting and truncation to prevent API context overflow
+                // Use ContextService to prepare context (inject prompts, apply truncation)
                 let final_messages = if let Some(ref prof) = profile {
-                    use crate::llm::tokenizer::TokenCounter;
-                    use crate::llm::context_manager::SmartContextManager;
-                    
-                    let token_counter = TokenCounter::new(prof);
-                    let context_limit = token_counter.get_context_limit(prof);
-                    let safe_limit = token_counter.get_safe_context_limit(prof);
-                    
-                    let total_tokens: usize = llm_messages.iter()
-                        .map(|msg| token_counter.count_message_tokens(msg))
-                        .sum();
-                    
-                    tracing::debug!(
-                        total_tokens,
-                        context_limit,
-                        safe_limit,
-                        "Desktop context usage"
-                    );
-                    
-                    if total_tokens > safe_limit {
-                        tracing::warn!(
-                            total_tokens,
-                            safe_limit,
-                            "Context exceeds safe limit, applying smart truncation"
-                        );
-                        let _ = output.send(Message::InlineError(format!(
-                            "Context size ({} tokens) exceeds safe limit ({}). Applying smart truncation.",
-                            total_tokens, safe_limit
-                        ))).await;
-                        
-                        // Apply smart context selection
-                        let truncated = SmartContextManager::select_context(
-                            llm_messages,
-                            &token_counter,
-                            prof,
-                        );
-                        
-                        let new_tokens: usize = truncated.iter()
-                            .map(|msg| token_counter.count_message_tokens(msg))
-                            .sum();
-                        tracing::debug!(
-                            total_tokens = new_tokens,
-                            message_count = truncated.len(),
-                            "Truncated messages"
-                        );
-                        
-                        truncated
-                    } else {
-                        llm_messages
+                    let context_service = ContextService;
+                    // Clone llm_messages for fallback in error case
+                    let llm_messages_fallback = llm_messages.clone();
+                    match context_service.prepare_context(llm_messages, prof, &prompt_manager) {
+                        Ok(prepared) => {
+                            // Check if truncation occurred and notify user if needed
+                            use crate::llm::tokenizer::TokenCounter;
+                            let token_counter = TokenCounter::new(prof);
+                            let safe_limit = token_counter.get_safe_context_limit(prof);
+                            let final_tokens: usize = prepared.iter()
+                                .map(|msg| token_counter.count_message_tokens(msg))
+                                .sum();
+                            
+                            if final_tokens > safe_limit * 9 / 10 {
+                                // Close to limit, warn user
+                                let _ = output.send(Message::InlineError(format!(
+                                    "Context size ({} tokens) is close to limit ({}). Some messages may have been truncated.",
+                                    final_tokens, safe_limit
+                                ))).await;
+                            }
+                            
+                            prepared
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "Failed to prepare context");
+                            // Try to handle profile prompt errors gracefully
+                            if let Some(err_msg) = e.to_string().as_str().strip_prefix("Profile prompt error: ") {
+                                let _ = output.send(Message::InlineError(format!(
+                                    "Profile prompt error: {}",
+                                    err_msg
+                                ))).await;
+                            } else {
+                                let _ = output.send(Message::InlineError(format!(
+                                    "Failed to prepare context: {}",
+                                    e
+                                ))).await;
+                            }
+                            llm_messages_fallback // Fallback to original messages
+                        }
                     }
                 } else {
                     llm_messages
@@ -784,15 +739,12 @@ impl Application for CosmicLlmApp {
             tracing::debug!(server_name = %name, "MCP server configured");
         }
 
-        tokio::spawn(async move {
-            let mut registry = mcp_registry_clone.write().await;
-            if let Err(e) = registry.initialize_from_config(&mcp_config).await {
-                tracing::error!(error = %e, "Failed to initialize MCP registry");
-            } else {
-                // Always apply profile defaults, even if empty (empty = enable all)
-                registry.apply_profile_tool_defaults(&initial_profile_mcp_servers);
-            }
-        });
+        // Initialize MCP registry in background
+        crate::ui::init_helpers::initialize_mcp_registry(
+            mcp_registry_clone,
+            mcp_config,
+            initial_profile_mcp_servers,
+        );
 
         // Initialize LLM client based on default profile's backend
         let llm_client: Arc<dyn LlmClient> = {
@@ -813,64 +765,7 @@ impl Application for CosmicLlmApp {
         );
 
         // Check for conversations with "Generating title..." and retry title generation
-        // Note: We'll handle this in the main thread instead of async task
-        // since Storage is not cloneable
-        tracing::debug!("Checking for conversations with 'Generating title...'");
-        let conversations = app.storage.list_conversations().unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "Failed to list conversations");
-            Vec::new()
-        });
-        let conversation_ids: Vec<_> = conversations
-            .into_iter()
-            .filter(|conv| conv.title == "Generating title...")
-            .map(|conv| conv.id)
-            .collect();
-
-        for conv_id in conversation_ids {
-            tracing::debug!(
-                conversation_id = %conv_id,
-                "Found conversation with 'Generating title...', retrying"
-            );
-
-            // Get the first user message to generate title from
-            if let Ok(Some(conversation)) = app.storage.get_conversation(&conv_id) {
-                if let Some(first_user_msg) =
-                    conversation.messages.iter().find(|msg| msg.role == "user")
-                {
-                    let message_text = &first_user_msg.content;
-                    tracing::debug!(
-                        conversation_id = %conv_id,
-                        message_preview = &message_text[..message_text.len().min(50)],
-                        "Retrying title generation"
-                    );
-
-                    // Create a simple title based on first few words
-                    let fallback_title = if message_text.len() > 50 {
-                        format!("{}...", &message_text[..47])
-                    } else {
-                        message_text.clone()
-                    };
-
-                    if let Err(e) = app
-                        .storage
-                        .update_conversation_title(&conv_id, fallback_title.clone())
-                    {
-                        tracing::error!(
-                            conversation_id = %conv_id,
-                            error = %e,
-                            "Failed to update conversation title"
-                        );
-                    } else {
-                        tracing::debug!(
-                            conversation_id = %conv_id,
-                            title = %fallback_title,
-                            "Updated title"
-                        );
-                    }
-                }
-            }
-        }
-        tracing::debug!("Finished checking for conversations with 'Generating title...'");
+        crate::ui::init_helpers::retry_title_generation(&mut app);
 
 
         // Load recent conversations and update nav model
@@ -942,115 +837,11 @@ impl Application for CosmicLlmApp {
         #[cfg(not(feature = "ttsandstt"))]
         let dbus_check_sub = Subscription::none();
         
-        // D-Bus status signal subscription - listen directly to D-Bus signals
-        // Following the Go implementation pattern: AddMatchSignal then listen to signal channel
-        // Use a stable ID so the subscription isn't recreated on every state change
+        // D-Bus status signal subscription
         #[cfg(feature = "ttsandstt")]
         let dbus_status_sub = if self.dbus_ttsstt_available {
-            use cosmic::iced_futures::stream;
-            use cosmic::iced_futures::futures::SinkExt;
-            use futures::StreamExt;
-            use zbus::{MessageStream, message::Type};
-            
-            let client = self.dbus_ttsstt_client.clone();
-            
-            // Use a stable UUID so cosmic doesn't recreate the subscription on every state change
-            // Generate a constant UUID for the D-Bus subscription (same ID every time)
-            // This ensures cosmic reuses the same subscription instead of creating new ones
-            // Constant UUID for D-Bus subscription (hardcoded, safe to unwrap)
-            let dbus_sub_id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000")
-                .expect("Hardcoded UUID should always parse");
-            
-            Subscription::run_with_id(
-                dbus_sub_id,
-                stream::channel(100, move |mut output| async move {
-                    tracing::debug!("Starting D-Bus signal subscription");
-                    
-                    // Get connection
-                    let conn = match client.get_connection_for_signals().await {
-                        Ok(c) => c,
-                        Err(e) => {
-                            tracing::error!(error = %e, "Failed to get D-Bus connection for signals");
-                            return;
-                        }
-                    };
-                    
-                    // Add match rule using org.freedesktop.DBus.AddMatch (like Go's AddMatchSignal)
-                    // Call the AddMatch method directly on the connection
-                    let match_rule_str = format!(
-                        "type='signal',path='{}',interface='{}',member='StatusChanged'",
-                        crate::dbus::SERVICE_PATH, crate::dbus::SERVICE_INTERFACE
-                    );
-                    
-                    use zbus::names::BusName;
-                    use zbus::zvariant::ObjectPath;
-                    let dbus_name: BusName = match "org.freedesktop.DBus".try_into() {
-                        Ok(name) => name,
-                        Err(e) => {
-                            tracing::error!(error = %e, "Failed to parse D-Bus bus name");
-                            return;
-                        }
-                    };
-                    let dbus_path: ObjectPath = match "/org/freedesktop/DBus".try_into() {
-                        Ok(path) => path,
-                        Err(e) => {
-                            tracing::error!(error = %e, "Failed to parse D-Bus object path");
-                            return;
-                        }
-                    };
-                    
-                    // Call AddMatch method
-                    match conn.call_method(
-                        Some(&dbus_name),
-                        &dbus_path,
-                        Some("org.freedesktop.DBus"),
-                        "AddMatch",
-                        &(match_rule_str.clone()),
-                    ).await {
-                        Ok(_) => tracing::debug!("Added match rule for StatusChanged signals"),
-                        Err(e) => {
-                            tracing::warn!(error = %e, "Failed to add match rule (will filter manually)");
-                            // Continue anyway, we'll filter manually
-                        }
-                    }
-                    
-                    // Create message stream (like Go's conn.Signal(signalChan))
-                    let mut stream = MessageStream::from(conn);
-                    tracing::debug!("MessageStream created, listening for StatusChanged signals");
-                    
-                    // Listen for signals
-                    while let Some(msg_result) = stream.next().await {
-                        match msg_result {
-                            Ok(message) => {
-                                let header = message.header();
-                                
-                                // Verify it's our signal
-                                if header.message_type() == Type::Signal {
-                                    if let Some(interface) = header.interface() {
-                                        if interface.as_str() == crate::dbus::SERVICE_INTERFACE {
-                                            if let Some(member) = header.member() {
-                                                if member.as_str() == "StatusChanged" {
-                                                    // Deserialize status
-                                                    if let Ok((status,)) = message.body().deserialize::<(String,)>() {
-                                                        tracing::debug!(status = %status, "Received StatusChanged signal");
-                                                        let _ = output.send(Message::DbusStatusChanged(status)).await;
-                                                    } else {
-                                                        tracing::error!("Failed to deserialize StatusChanged signal");
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::error!(error = %e, "Error receiving D-Bus message");
-                            }
-                        }
-                    }
-                    
-                    tracing::warn!("D-Bus signal stream ended");
-                })
+            crate::ui::subscriptions::dbus::create_dbus_status_subscription(
+                self.dbus_ttsstt_client.clone()
             )
         } else {
             Subscription::none()
@@ -2018,194 +1809,32 @@ impl Application for CosmicLlmApp {
 impl CosmicLlmApp {
     /// Update the nav model with current conversation title and recent conversations
     pub(crate) fn update_nav_model(&mut self) {
-        // Clear and rebuild the nav model
-        let mut model = widget::segmented_button::ModelBuilder::default().build();
-        
-        let current_conv_id = self.conversation_state.current_conversation_id;
-        
-        // Add "New Chat" as first item when there's no active conversation
-        if current_conv_id.is_none() {
-            model
-                .insert()
-                .text("New Chat")
-                .icon(crate::ui::icons::get_icon("chat-symbolic", 16))
-                .data(NavItem::Page(NavigationPage::Chat));
-        }
-        
-        // Ensure active conversation is always visible (in case it's not in top 11 yet)
-        // We'll add it first if it's not in the recent list
-        let mut added_conv_ids = std::collections::HashSet::new();
-        let active_conv_title = if let Some(active_conv_id) = current_conv_id {
-            // Check if active conversation is in recent list
-            let is_in_recent = self.conversation_state.recent_conversations.iter()
-                .any(|(id, _)| *id == active_conv_id);
-            
-            if !is_in_recent {
-                // Fetch the active conversation's title from storage
-                self.storage.get_conversation(&active_conv_id)
-                    .ok()
-                    .flatten()
-                    .map(|conv| (active_conv_id, conv.title))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        
-        // Add active conversation first if it wasn't in recent list
-        if let Some((active_conv_id, active_title)) = active_conv_title {
-            added_conv_ids.insert(active_conv_id);
-            model
-                .insert()
-                .text(active_title)
-                .icon(crate::ui::icons::get_icon("chat-bubble-text-symbolic", 16))
-                .data(NavItem::Conversation(active_conv_id));
-        }
-        
-        // Add all recent conversations (including active one if it was in the list, up to 11 items)
-        for (conv_id, title) in &self.conversation_state.recent_conversations {
-            if !added_conv_ids.contains(conv_id) {
-                added_conv_ids.insert(*conv_id);
-                model
-                    .insert()
-                    .text(title.clone())
-                    .icon(crate::ui::icons::get_icon("chat-bubble-text-symbolic", 16))
-                    .data(NavItem::Conversation(*conv_id));
-            }
-        }
-        
-        // Add "More history" (replaces History)
-        model
-            .insert()
-            .text("More history")
-            .icon(crate::ui::icons::get_icon("list-large-symbolic", 16))
-            .data(NavItem::Page(NavigationPage::History))
-            .divider_above(true);
-        
-        // Add MCP Config
-        model
-            .insert()
-            .text("MCP Config")
-            .icon(crate::ui::icons::get_icon("configure-symbolic", 16))
-            .data(NavItem::Page(NavigationPage::MCPConfig));
-        
-        // Add Settings
-        model
-            .insert()
-            .text("Settings")
-            .icon(crate::ui::icons::get_icon("settings-symbolic", 16))
-            .data(NavItem::Page(NavigationPage::Settings))
-            .divider_above(true);
-        
-        // Activate the current conversation or "New Chat" if no active conversation
-        let mut active_entity_opt = None;
-        let mut first_entity_opt = None;
-        
-        for entity in model.iter() {
-            if first_entity_opt.is_none() {
-                first_entity_opt = Some(entity);
-            }
-            
-            if let Some(nav_item) = model.data::<NavItem>(entity) {
-                match nav_item {
-                    NavItem::Conversation(id) => {
-                        if let Some(conv_id) = current_conv_id {
-                            if id == &conv_id {
-                                active_entity_opt = Some(entity);
-                                break; // Found the active conversation, no need to continue
-                            }
-                        }
-                    }
-                    NavItem::Page(NavigationPage::Chat) => {
-                        // "New Chat" item - activate if no active conversation
-                        if current_conv_id.is_none() && active_entity_opt.is_none() {
-                            active_entity_opt = Some(entity);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        
-        // Activate the found entity or fallback to first
-        if let Some(entity) = active_entity_opt {
-            model.activate(entity);
-        } else if let Some(entity) = first_entity_opt {
-            model.activate(entity);
-        }
-        
-        self.nav_model = model;
+        crate::ui::helpers::navigation::update_nav_model(
+            &mut self.nav_model,
+            &self.conversation_state,
+            &self.storage,
+        );
     }
     
     /// Load recent conversations from storage (last 11 to accommodate active conversation)
     pub(crate) fn load_recent_conversations(&mut self) {
-        match self.storage.list_conversations_paginated(None, Some(11)) {
-            Ok(conversations) => {
-                self.conversation_state.recent_conversations = conversations
-                    .into_iter()
-                    .map(|c| (c.id, c.title))
-                    .collect();
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to load recent conversations");
-                self.conversation_state.recent_conversations.clear();
-            }
-        }
+        crate::ui::helpers::navigation::load_recent_conversations(
+            &mut self.conversation_state,
+            &self.storage,
+        );
     }
     
     pub(crate) fn error_banner(&self) -> Option<Element<Message>> {
-        self.chat_page.current_error.as_ref().map(|error| {
-            let content = widget::row::with_children(vec![
-                crate::ui::icons::get_icon("dialog-warning-symbolic", 16).into(),
-                widget::text(error.clone()).size(14).into(),
-                widget::Space::with_width(cosmic::iced::Length::Fill).into(),
-                widget::button::standard("Dismiss")
-                    .on_press(Message::DismissError)
-                    .padding([4, 12])
-                    .into(),
-            ])
-            .spacing(12)
-            .align_y(cosmic::iced::Alignment::Center);
-
-            widget::container(content)
-                .padding(12)
-                .width(cosmic::iced::Length::Fill)
-                .class(cosmic::style::Container::Card)
-                .into()
-        })
+        self.chat_page.current_error.as_ref()
+            .map(|error| crate::ui::widgets::error_banner::error_banner(error))
     }
 
     fn load_active_profile_prompt(&mut self) -> Option<String> {
-        let profile = self.config.get_default_profile()?;
-        let path = profile.profile_prompt_file.as_deref()?;
-
-        let resolved_path = crate::config::AppConfig::resolve_config_path(path);
-        let resolved = resolved_path.to_string_lossy().to_string();
-
-        match self.prompt_manager.load_profile_prompt(&resolved) {
-            Ok(content) => {
-                if self
-                    .chat_page.current_error
-                    .as_deref()
-                    .map(|msg| msg.starts_with("Profile prompt"))
-                    .unwrap_or(false)
-                {
-                    self.chat_page.current_error = None;
-                }
-                Some(content)
-            }
-            Err(err) => {
-                let message = match &err {
-                    ProfilePromptError::NotFound(_) => {
-                        format!("Profile prompt not found: {}", resolved)
-                    }
-                    _ => err.to_string(),
-                };
-                self.chat_page.current_error = Some(message);
-                None
-            }
-        }
+        crate::ui::helpers::profile::load_active_profile_prompt(
+            &self.config,
+            &self.prompt_manager,
+            &mut self.chat_page,
+        )
     }
 
     pub(crate) fn profile_tool_defaults_task(&self) -> Option<app::Task<Message>> {
@@ -2215,49 +1844,10 @@ impl CosmicLlmApp {
         let allowed_servers = profile.enabled_mcp.clone();
         let registry = self.mcp_registry.clone();
 
-        Some(cosmic::Task::perform(
-            async move {
-                let mut registry = registry.write().await;
-                registry.apply_profile_tool_defaults(&allowed_servers);
-                cosmic::Action::App(Message::RefreshMCPTools)
-            },
-            |msg| msg,
-        ))
+        Some(MCPService::profile_tool_defaults_task(registry, allowed_servers))
     }
 
     fn create_menu_bar(&self) -> Element<Message> {
-        use cosmic::widget::menu::{items, root, Item, ItemHeight, ItemWidth, MenuBar, Tree};
-        use cosmic::widget::RcElementWrapper;
-
-        MenuBar::new(vec![
-            Tree::with_children(
-                RcElementWrapper::new(Element::from(root("File"))),
-                items(
-                    &self.key_binds,
-                    vec![
-                        Item::Button("Summarize Conversation", None, MenuAction::SummarizeConversation),
-                        Item::Button("Quit", None, MenuAction::Quit),
-                    ],
-                ),
-            ),
-            Tree::with_children(
-                RcElementWrapper::new(Element::from(root("View"))),
-                items(
-                    &self.key_binds,
-                    vec![Item::Button("Settings", None, MenuAction::Settings)],
-                ),
-            ),
-            Tree::with_children(
-                RcElementWrapper::new(Element::from(root("Help"))),
-                items(
-                    &self.key_binds,
-                    vec![Item::Button("About", None, MenuAction::About)],
-                ),
-            ),
-        ])
-        .item_height(ItemHeight::Dynamic(40))
-        .item_width(ItemWidth::Uniform(200))
-        .spacing(4.0)
-        .into()
+        crate::ui::widgets::menu_bar::create_menu_bar(&self.key_binds)
     }
 }
