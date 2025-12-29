@@ -76,10 +76,22 @@ impl IconCache {
 }
 
 pub fn get_icon(name: &str, size: u16) -> icon::Icon {
-    let mut icon_cache = ICON_CACHE.get()
-        .expect("Icon cache should be initialized")
-        .lock()
-        .expect("Icon cache lock should not be poisoned");
+    let icon_cache = match ICON_CACHE.get() {
+        Some(cache) => cache,
+        None => {
+            tracing::error!("Icon cache not initialized, using fallback icon");
+            return icon::from_name(name).size(size).icon();
+        }
+    };
+    
+    let mut icon_cache = match icon_cache.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            tracing::warn!("Icon cache lock was poisoned, recovering");
+            poisoned.into_inner()
+        }
+    };
+    
     icon_cache.get_icon(name, size)
 }
 
@@ -95,10 +107,22 @@ fn get_bundled_icons_path() -> PathBuf {
 }
 
 pub fn get_handle(name: &str, size: u16) -> icon::Handle {
-    let mut icon_cache = ICON_CACHE.get()
-        .expect("Icon cache should be initialized")
-        .lock()
-        .expect("Icon cache lock should not be poisoned");
+    let icon_cache = match ICON_CACHE.get() {
+        Some(cache) => cache,
+        None => {
+            tracing::error!("Icon cache not initialized, using fallback icon handle");
+            return icon::from_name(name).size(size).handle();
+        }
+    };
+    
+    let mut icon_cache = match icon_cache.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            tracing::warn!("Icon cache lock was poisoned, recovering");
+            poisoned.into_inner()
+        }
+    };
+    
     let key = IconCacheKey {
         name: name.to_string(),
         size,
@@ -108,7 +132,19 @@ pub fn get_handle(name: &str, size: u16) -> icon::Handle {
     }
     let (handle, bytes) = if icon_cache.bundled_icons.contains(name) {
         let path = get_bundled_icons_path().join(format!("{}.svg", name));
-        let data = fs::read(&path).expect(format!("Failed to read bundled icon {name}").as_str());
+        let data = match fs::read(&path) {
+            Ok(data) => data,
+            Err(e) => {
+                tracing::error!(
+                    icon_name = name,
+                    path = %path.display(),
+                    error = %e,
+                    "Failed to read bundled icon, using fallback"
+                );
+                // Return fallback handle
+                return icon::from_name(name).size(size).handle();
+            }
+        };
         let handle = icon::from_svg_bytes(data.clone()).symbolic(true);
         (handle, Some(data))
     } else {

@@ -761,8 +761,13 @@ mod tests {
 
         // Test conversation retrieval
         let conversation = storage.get_conversation(&conv_id)?;
-        assert!(conversation.is_some());
-        assert_eq!(conversation.unwrap().title, "Updated Title");
+        let conv = conversation.ok_or_else(|| {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERNAL),
+                Some("Conversation should exist after update".to_string())
+            )
+        })?;
+        assert_eq!(conv.title, "Updated Title");
 
         // Test conversation listing
         let conversations = storage.list_conversations()?;
@@ -797,8 +802,13 @@ mod tests {
 
         let messages = storage.load_conversation(&conv_id)?;
         assert_eq!(messages.len(), 1);
-        assert!(messages[0].embedding.is_some());
-        assert_eq!(messages[0].embedding.as_ref().unwrap(), &embedding);
+        let msg_embedding = messages[0].embedding.as_ref().ok_or_else(|| {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERNAL),
+                Some("Message embedding should exist".to_string())
+            )
+        })?;
+        assert_eq!(msg_embedding, &embedding);
 
         let _ = fs::remove_file(&db_path);
         Ok(())

@@ -69,7 +69,7 @@ pub fn main() -> cosmic::iced::Result {
         if let Err(err) = server::run(server::ServerOptions {
             config_path: cli.config,
         }) {
-            eprintln!("Server failed: {err:#}");
+            tracing::error!(error = %err, "Server failed");
             std::process::exit(1);
         }
         Ok(())

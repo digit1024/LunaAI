@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use rusqlite::Result as SqliteResult;
 use std::path::Path;
+use tracing;
 use uuid::Uuid;
 
 use super::conversation_storage::{Conversation as FileConversation, StoredMessage, Turn};
@@ -303,7 +304,10 @@ impl Storage {
 impl Default for Storage {
     fn default() -> Self {
         Self::new_default().unwrap_or_else(|e| {
-            eprintln!("Failed to initialize SQLite storage: {}", e);
+            tracing::error!(
+                error = %e,
+                "Failed to initialize SQLite storage"
+            );
             // Fallback to a temporary database
             Self::new(std::env::temp_dir().join("cosmic_llm_temp.db"))
                 .unwrap_or_else(|e| {

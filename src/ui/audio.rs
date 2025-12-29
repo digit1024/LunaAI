@@ -1,5 +1,6 @@
 use crate::resources::AudioAssets;
 use std::io::Cursor;
+use tracing;
 
 /// Simple audio service for playing sound effects
 /// Uses embedded audio files, so sounds work regardless of launch location
@@ -12,7 +13,11 @@ impl AudioService {
         let filename = filename.to_string();
         tokio::spawn(async move {
             if let Err(e) = Self::play_sound_internal(&filename) {
-                eprintln!("Failed to play sound '{}': {}", filename, e);
+                tracing::error!(
+                    filename = %filename,
+                    error = %e,
+                    "Failed to play sound"
+                );
             }
         });
     }

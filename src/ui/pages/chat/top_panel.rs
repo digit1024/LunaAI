@@ -4,6 +4,7 @@ use crate::llm::tokenizer::TokenCounter;
 use crate::storage::conversation_storage::Conversation as StoredConversation;
 use crate::prompts::PromptManager;
 use cosmic::{iced::Length, widget, Element};
+use tracing;
 
 pub fn top_panel(app: &CosmicLlmApp) -> Element<Message> {
     // Count enabled/disabled tools
@@ -23,7 +24,10 @@ pub fn top_panel(app: &CosmicLlmApp) -> Element<Message> {
                 .storage
                 .list_conversations_from_index()
                 .unwrap_or_else(|e| {
-                    eprintln!("Failed to list conversations: {}", e);
+                    tracing::error!(
+                        error = %e,
+                        "Failed to list conversations from index"
+                    );
                     Vec::new()
                 });
             let latest_title = index

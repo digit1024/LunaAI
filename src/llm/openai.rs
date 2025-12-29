@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tracing;
 
 #[derive(Debug, Serialize)]
 struct OpenAIRequest {
@@ -139,9 +140,11 @@ impl OpenAIClient {
         messages
             .into_iter()
             .map(|msg| {
-                println!(
-                    "🔍 DEBUG: Converting message to OpenAI (tools): role={:?}, content={}, attachments={:?}",
-                    msg.role, msg.content, msg.attachments
+                tracing::debug!(
+                    role = ?msg.role,
+                    content_length = msg.content.len(),
+                    attachment_count = msg.attachments.as_ref().map(|a| a.len()).unwrap_or(0),
+                    "Converting message to OpenAI format"
                 );
 
                 let tool_calls = msg.tool_calls.map(|tool_calls| {

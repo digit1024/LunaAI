@@ -2,6 +2,7 @@ use crate::llm::Attachment;
 use anyhow::Result;
 use std::fs;
 use std::path::Path;
+use tracing;
 
 /// Supported file types for LLM processing
 #[derive(Debug, Clone, PartialEq)]
@@ -62,10 +63,10 @@ pub fn create_attachment(file_path: &str) -> Result<Attachment> {
             // For document files (PDF, DOCX, XLSX, etc.), convert to markdown
             match markdownify::convert(path) {
                 Ok(markdown_content) => {
-                    eprintln!(
-                        "✅ Converted {} to markdown ({} bytes)",
-                        file_name,
-                        markdown_content.len()
+                    tracing::debug!(
+                        file_name = %file_name,
+                        content_length = markdown_content.len(),
+                        "Converted file to markdown"
                     );
                     // Update file name to indicate it's now markdown
                     let markdown_file_name = if let Some(base_name) = path
@@ -83,10 +84,10 @@ pub fn create_attachment(file_path: &str) -> Result<Attachment> {
                     )
                 }
                 Err(e) => {
-                    eprintln!(
-                        "⚠️ Failed to convert {} to markdown: {}. Storing without content.",
-                        file_name,
-                        e
+                    tracing::warn!(
+                        file_name = %file_name,
+                        error = %e,
+                        "Failed to convert file to markdown, storing without content"
                     );
                     // Fall back to storing original file without content
                     (None, mime_type, file_name)

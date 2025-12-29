@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tracing;
 
 #[derive(Debug, Serialize)]
 struct GeminiRequest {
@@ -160,9 +161,11 @@ impl GeminiClient {
         let mut current_parts: Vec<GeminiPart> = Vec::new();
 
         for msg in messages {
-            println!(
-                "🔍 DEBUG: Converting message to Gemini: role={:?}, content={}, attachments={:?}",
-                msg.role, msg.content, msg.attachments
+            tracing::debug!(
+                role = ?msg.role,
+                content_length = msg.content.len(),
+                attachment_count = msg.attachments.as_ref().map(|a| a.len()).unwrap_or(0),
+                "Converting message to Gemini format"
             );
 
             let role = match msg.role {

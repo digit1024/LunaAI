@@ -6,7 +6,7 @@ use std::fmt;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PromptConfig {
     pub system_prompt_file: Option<String>,
-    pub user_prompt_file: Option<String>,
+    
 }
 
 impl Default for PromptConfig {
@@ -22,13 +22,8 @@ impl Default for PromptConfig {
                     .join("system_prompt.md")
                     .to_string_lossy()
                     .to_string(),
-            ),
-            user_prompt_file: Some(
-                data_dir
-                    .join("user_prompt.md")
-                    .to_string_lossy()
-                    .to_string(),
-            ),
+            )
+    
         }
     }
 }

@@ -158,20 +158,21 @@ fn spawn_title_generation_thread(
 
             // Get the profile to use for title generation
             // This should always be Some since we only start the thread if profile is configured
-            let profile = match &title_config.title_generation_profile {
-                Some(profile_name) => config.get_profile(profile_name),
+            let profile_name = match &title_config.title_generation_profile {
+                Some(name) => name,
                 None => {
                     tracing::warn!("Title generation profile not configured, stopping thread");
                     break;
                 }
             };
 
-            let profile = match profile {
+            let profile = match config.get_profile(profile_name) {
                 Some(p) => p.clone(),
                 None => {
-                    tracing::warn!("Title generation profile '{}' not found, stopping thread", 
-                        title_config.title_generation_profile.as_ref()
-                            .expect("Title generation profile should be set at this point"));
+                    tracing::warn!(
+                        profile_name = %profile_name,
+                        "Title generation profile not found, stopping thread"
+                    );
                     break;
                 }
             };

@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use tracing;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,7 +220,11 @@ impl Storage {
     fn load_conversations(&mut self) {
         // Create conversations directory if it doesn't exist
         if let Err(e) = fs::create_dir_all(&self.conversations_dir) {
-            eprintln!("Failed to create conversations directory: {}", e);
+            tracing::error!(
+                directory = %self.conversations_dir.display(),
+                error = %e,
+                "Failed to create conversations directory"
+            );
             return;
         }
 
@@ -251,7 +256,7 @@ impl Storage {
     }
 
     fn save_conversation_index(&self) {
-        println!("💾 Saving conversation index...");
+        tracing::debug!("Saving conversation index");
         let index: Vec<ConversationIndex> = self
             .conversations
             .values()
@@ -263,9 +268,16 @@ impl Storage {
             })
             .collect();
 
-        println!("📝 Index contains {} conversations", index.len());
+        tracing::debug!(
+            conversation_count = index.len(),
+            "Index contains conversations"
+        );
         for conv in &index {
-            println!("  - {}: '{}'", conv.id, conv.title);
+            tracing::debug!(
+                conversation_id = %conv.id,
+                title = %conv.title,
+                "Conversation in index"
+            );
         }
 
         if let Some(parent) = self.index_file.parent() {
@@ -273,11 +285,22 @@ impl Storage {
         }
         if let Ok(data) = serde_json::to_string_pretty(&index) {
             match fs::write(&self.index_file, data) {
-                Ok(_) => println!("✅ Index file saved successfully to {:?}", self.index_file),
-                Err(e) => println!("❌ Failed to save index file: {}", e),
+                Ok(_) => {
+                    tracing::debug!(
+                        index_file = %self.index_file.display(),
+                        "Index file saved successfully"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        index_file = %self.index_file.display(),
+                        error = %e,
+                        "Failed to save index file"
+                    );
+                }
             }
         } else {
-            println!("❌ Failed to serialize index data");
+            tracing::error!("Failed to serialize index data");
         }
     }
 

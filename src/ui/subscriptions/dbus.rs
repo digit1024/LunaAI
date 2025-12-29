@@ -21,8 +21,14 @@ pub fn create_dbus_status_subscription(
     
     // Use a stable UUID so cosmic doesn't recreate the subscription on every state change
     // Constant UUID for D-Bus subscription (hardcoded, safe to unwrap)
-    let dbus_sub_id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000")
-        .expect("Hardcoded UUID should always parse");
+    // Using const to ensure it's always valid at compile time
+    const DBUS_SUB_UUID_STR: &str = "550e8400-e29b-41d4-a716-446655440000";
+    let dbus_sub_id = uuid::Uuid::parse_str(DBUS_SUB_UUID_STR)
+        .unwrap_or_else(|_| {
+            // This should never happen with a valid hardcoded UUID, but handle gracefully
+            tracing::error!("Failed to parse hardcoded D-Bus subscription UUID, using fallback");
+            uuid::Uuid::new_v4()
+        });
     
     Subscription::run_with_id(
         dbus_sub_id,

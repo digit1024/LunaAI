@@ -7,6 +7,7 @@ use serde_json::json;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tracing;
 
 #[derive(Debug, Serialize)]
 struct AnthropicRequest {
@@ -126,8 +127,12 @@ impl LlmClient for AnthropicClient {
         let anthropic_messages: Vec<AnthropicMessage> = user_assistant
             .into_iter()
             .map(|m| {
-                println!("🔍 DEBUG: Converting message to Anthropic: role={:?}, content={}, attachments={:?}", 
-                    m.role, m.content, m.attachments);
+                tracing::debug!(
+                    role = ?m.role,
+                    content_length = m.content.len(),
+                    attachment_count = m.attachments.as_ref().map(|a| a.len()).unwrap_or(0),
+                    "Converting message to Anthropic format"
+                );
                 
                 let mut content_blocks = vec![AnthropicContentBlock::Text { text: m.content }];
                 
@@ -271,8 +276,12 @@ impl LlmClient for AnthropicClient {
         for m in user_assistant.into_iter() {
             match m.role {
                 Role::User => {
-                    println!("🔍 DEBUG: Converting message to Anthropic (tools): role={:?}, content={}, attachments={:?}", 
-                        m.role, m.content, m.attachments);
+                    tracing::debug!(
+                        role = ?m.role,
+                        content_length = m.content.len(),
+                        attachment_count = m.attachments.as_ref().map(|a| a.len()).unwrap_or(0),
+                        "Converting message to Anthropic format (tools)"
+                    );
 
                     let mut content_blocks = vec![AnthropicContentBlock::Text { text: m.content }];
 

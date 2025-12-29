@@ -325,10 +325,13 @@ impl SettingsPage {
             SettingsMessage::DeleteProfile(profile_name) => {
                 config.profiles.remove(&profile_name);
                 if self.selected_profile == profile_name && !config.profiles.is_empty() {
-                    self.selected_profile = config.profiles.keys().next()
-                        .expect("Checked that profiles is not empty")
-                        .clone();
-                    config.default = self.selected_profile.clone();
+                    // Safe: we just checked that profiles is not empty
+                    if let Some(first_profile) = config.profiles.keys().next() {
+                        self.selected_profile = first_profile.clone();
+                        config.default = self.selected_profile.clone();
+                    } else {
+                        tracing::warn!("Profiles map became empty after deletion, this should not happen");
+                    }
                 }
             }
             SettingsMessage::AddNewProfile => {

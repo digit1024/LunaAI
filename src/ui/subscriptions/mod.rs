@@ -4,4 +4,5 @@
 
 #[cfg(feature = "ttsandstt")]
 pub mod dbus;
+pub mod streaming;
 

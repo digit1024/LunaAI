@@ -440,134 +440,14 @@ impl CosmicLlmApp {
     }
 
     fn create_streaming_subscription(&self, streaming_id: Option<Uuid>) -> Subscription<Message> {
-        use cosmic::iced_futures::futures::SinkExt;
-        use cosmic::iced_futures::stream;
-        use tokio::sync::mpsc;
-
-        // Create a streaming subscription using the channel pattern
-        let id = streaming_id.unwrap_or_else(|| uuid::Uuid::new_v4());
-        let llm_client = self.llm_client.clone();
-        let prompt_manager = self.prompt_manager.clone();
-        let messages = self.conversation_state.messages.clone();
-        let mcp_registry = self.mcp_registry.clone();
-        let pending_messages = self.attachment_state.pending_llm_messages.clone();
-        let profile = self.config.get_default_profile().cloned();
-
-        Subscription::run_with_id(
-            id,
-            stream::channel(100, move |mut output| async move {
-                // Use prepared messages if available (which includes attachments), otherwise rebuild
-                let llm_messages = if let Some(prepared_messages) = pending_messages {
-                    tracing::debug!("Using prepared messages with attachments");
-                    prepared_messages
-                } else {
-                    tracing::debug!("Rebuilding messages from history");
-                    // Build LLM messages from conversation history (without prompts - ContextService will add them)
-                    let mut llm_messages = Vec::new();
-
-                    // Add conversation history, filtering out placeholder assistant messages
-                    for msg in &messages {
-                        let content_trimmed = msg.content.trim();
-                        if !msg.is_user {
-                            // Skip placeholder or empty assistant messages
-                            if content_trimmed.is_empty() || content_trimmed == "🤔 Thinking..." {
-                                continue;
-                            }
-                        }
-
-                        let role = if msg.is_user {
-                            crate::llm::Role::User
-                        } else {
-                            crate::llm::Role::Assistant
-                        };
-                        llm_messages.push(crate::llm::Message::new(role, msg.content.clone()));
-                    }
-
-                    llm_messages
-                };
-
-                // === CONTEXT MANAGEMENT ===
-                // Use ContextService to prepare context (inject prompts, apply truncation)
-                let final_messages = if let Some(ref prof) = profile {
-                    let context_service = ContextService;
-                    // Clone llm_messages for fallback in error case
-                    let llm_messages_fallback = llm_messages.clone();
-                    match context_service.prepare_context(llm_messages, prof, &prompt_manager) {
-                        Ok(prepared) => {
-                            // Check if truncation occurred and notify user if needed
-                            use crate::llm::tokenizer::TokenCounter;
-                            let token_counter = TokenCounter::new(prof);
-                            let safe_limit = token_counter.get_safe_context_limit(prof);
-                            let final_tokens: usize = prepared.iter()
-                                .map(|msg| token_counter.count_message_tokens(msg))
-                                .sum();
-                            
-                            if final_tokens > safe_limit * 9 / 10 {
-                                // Close to limit, warn user
-                                let _ = output.send(Message::InlineError(format!(
-                                    "Context size ({} tokens) is close to limit ({}). Some messages may have been truncated.",
-                                    final_tokens, safe_limit
-                                ))).await;
-                            }
-                            
-                            prepared
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "Failed to prepare context");
-                            // Try to handle profile prompt errors gracefully
-                            if let Some(err_msg) = e.to_string().as_str().strip_prefix("Profile prompt error: ") {
-                                let _ = output.send(Message::InlineError(format!(
-                                    "Profile prompt error: {}",
-                                    err_msg
-                                ))).await;
-                            } else {
-                                let _ = output.send(Message::InlineError(format!(
-                                    "Failed to prepare context: {}",
-                                    e
-                                ))).await;
-                            }
-                            llm_messages_fallback // Fallback to original messages
-                        }
-                    }
-                } else {
-                    llm_messages
-                };
-
-                // Create channel for agent updates
-                let (tx_agent, mut rx_agent) = mpsc::unbounded_channel::<AgentUpdate>();
-
-                // Start agentic processing in background
-                let llm_client_clone = llm_client.clone();
-                let mcp_registry_clone = mcp_registry.clone();
-                let llm_messages_clone = final_messages.clone();
-
-                tokio::spawn(async move {
-                    let mut agentic_loop = crate::agentic::loop_engine::AgenticLoop::new(
-                        mcp_registry_clone,
-                        llm_client_clone,
-                    );
-
-                    match agentic_loop
-                        .process_message(llm_messages_clone, Some(tx_agent.clone()), Some(id))
-                        .await
-                    {
-                        Ok(_final_response) => {
-                            // Final response is sent via AgentUpdate::EndConversation
-                        }
-                        Err(e) => {
-                            // Send error via AgentUpdate - this handles cases where the loop fails completely
-                            let _ = tx_agent.send(AgentUpdate::ModelError {
-                                error: format!("Agent processing failed: {}", e),
-                            });
-                        }
-                    }
-                });
-
-                // Process AgentUpdate stream
-                while let Some(update) = rx_agent.recv().await {
-                    let _ = output.send(Message::AgentUpdate(update)).await;
-                }
-            }),
+        crate::ui::subscriptions::streaming::create_streaming_subscription(
+            streaming_id,
+            self.llm_client.clone(),
+            self.prompt_manager.clone(),
+            self.conversation_state.messages.clone(),
+            self.mcp_registry.clone(),
+            &self.attachment_state,
+            &self.config,
         )
     }
 
@@ -693,35 +573,17 @@ impl Application for CosmicLlmApp {
             .get_default_profile()
             .map(|profile| profile.enabled_mcp.clone())
             .unwrap_or_default();
-        let sqlite_settings = SqliteSettings::from(&config.server);
-        let storage =
-            Storage::new_default_with_settings(sqlite_settings.clone()).unwrap_or_else(|e| {
-                tracing::error!(error = %e, "Failed to initialize SQLite storage");
-                // Fallback to a temporary database
-                Storage::new_with_settings(
-                    std::env::temp_dir().join("cosmic_llm_temp.db"),
-                    sqlite_settings,
-                )
-                .unwrap_or_else(|e| {
-                    tracing::error!(error = %e, "Failed to create temporary database");
-                    std::process::exit(1);
-                })
-            });
+        // Initialize storage with fallback handling
+        let storage = match crate::ui::init_helpers::initialize_storage(&config) {
+            Ok(storage) => storage,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to initialize storage, exiting");
+                std::process::exit(1);
+            }
+        };
 
-        // Initialize prompt manager
-        let prompt_manager = crate::prompts::PromptManager::load_from_config(&config.prompts)
-            .unwrap_or_else(|e| {
-                tracing::error!(error = %e, "Failed to load prompts");
-                crate::prompts::PromptManager::load_from_config(
-                    &crate::prompts::PromptConfig::default(),
-                )
-                .unwrap_or_else(|e| {
-                    tracing::error!(error = %e, "Failed to load default prompt config, using empty PromptManager");
-                    crate::prompts::PromptManager {
-                        system_prompt: None,
-                    }
-                })
-            });
+        // Initialize prompt manager with fallback handling
+        let prompt_manager = crate::ui::init_helpers::initialize_prompt_manager(&config);
 
         // Initialize MCP registry (non-blocking)
         let mcp_registry = Arc::new(RwLock::new(MCPServerRegistry::new()));
@@ -747,13 +609,7 @@ impl Application for CosmicLlmApp {
         );
 
         // Initialize LLM client based on default profile's backend
-        let llm_client: Arc<dyn LlmClient> = {
-            let profile = config
-                .get_default_profile()
-                .unwrap_or(&crate::config::LlmProfile::default())
-                .clone();
-            llm::build_llm_client(&profile)
-        };
+        let llm_client = crate::ui::init_helpers::initialize_llm_client(&config);
 
         let mut app = Self::new(
             core,
@@ -772,37 +628,8 @@ impl Application for CosmicLlmApp {
         app.load_recent_conversations();
         app.update_nav_model();
 
-        // Load MCP tools on startup (same as refresh button)
-        let load_tools_task = cosmic::Task::perform(
-            async move {
-                // Wait for MCP servers to initialize (give them more time)
-                tokio::time::sleep(tokio::time::Duration::from_millis(5000)).await;
-                tracing::debug!("Startup: Attempting to refresh MCP tools");
-                cosmic::Action::App(Message::RefreshMCPTools)
-            },
-            |msg| msg,
-        );
-
-        let mut tasks = vec![load_tools_task];
-        
-        // Check D-Bus TTS/STT service availability at startup (only if feature enabled)
-        #[cfg(feature = "ttsandstt")]
-        {
-            let dbus_client = app.dbus_ttsstt_client.clone();
-            let dbus_check_task = cosmic::Task::perform(
-                async move {
-                    tracing::debug!("Checking D-Bus TTS/STT service availability");
-                    let available = dbus_client.check_availability().await;
-                    tracing::debug!(available, "D-Bus service check result");
-                    cosmic::Action::App(Message::DbusServiceAvailable(available))
-                },
-                |msg| msg,
-            );
-            tasks.push(dbus_check_task);
-        }
-        if let Some(task) = app.profile_tool_defaults_task() {
-            tasks.push(task);
-        }
+        // Create startup tasks
+        let tasks = crate::ui::init_helpers::create_startup_tasks(&app);
 
         (app, app::Task::batch(tasks))
     }
@@ -1278,10 +1105,15 @@ impl Application for CosmicLlmApp {
                         self.settings_page.staged_profiles.remove(&profile_name);
                         self.settings_page.expanded_profiles.remove(&profile_name);
                         self.settings_page.editing_profiles.remove(&profile_name);
-                        if self.settings_page.staged_default == profile_name && !self.settings_page.staged_profiles.is_empty() {
-                            self.settings_page.staged_default = self.settings_page.staged_profiles.keys().next()
-                                .expect("Checked that staged_profiles is not empty")
-                                .clone();
+                            if self.settings_page.staged_default == profile_name && !self.settings_page.staged_profiles.is_empty() {
+                                self.settings_page.staged_default = self.settings_page.staged_profiles.keys().next()
+                                    .map(|k| k.clone())
+                                    .unwrap_or_else(|| {
+                                        tracing::warn!("staged_profiles was empty after check, using first available profile");
+                                        self.config.profiles.keys().next()
+                                            .cloned()
+                                            .unwrap_or_else(|| "default".to_string())
+                                    });
                         }
                         self.settings_page.has_changes = true;
                     }

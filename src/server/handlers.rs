@@ -254,7 +254,11 @@ impl ServerHandler {
         if let Some(conv_id) = self.session.active_conversation_id {
             let storage = self.ctx.storage.lock().await;
             if let Err(e) = storage.update_conversation_profile(&conv_id, Some(&profile)) {
-                eprintln!("Failed to update active conversation profile: {}", e);
+                tracing::error!(
+                    conversation_id = %conv_id,
+                    error = %e,
+                    "Failed to update active conversation profile"
+                );
             }
         }
         

@@ -3,6 +3,7 @@ use crate::config::LlmProfile;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
+use tracing;
 
 // Ollama uses OpenAI-compatible API format
 #[derive(Debug, Serialize)]
@@ -103,8 +104,12 @@ impl LlmClient for OllamaClient {
         let ollama_messages: Vec<OllamaMessage> = messages
             .into_iter()
             .map(|msg| {
-                println!("🔍 DEBUG: Converting message to Ollama: role={:?}, content={}, attachments={:?}", 
-                    msg.role, msg.content, msg.attachments);
+                tracing::debug!(
+                    role = ?msg.role,
+                    content_length = msg.content.len(),
+                    attachment_count = msg.attachments.as_ref().map(|a| a.len()).unwrap_or(0),
+                    "Converting message to Ollama format"
+                );
                 
                 // Handle attachments by including them in the content
                 let mut content = msg.content;
@@ -227,8 +232,12 @@ impl LlmClient for OllamaClient {
         let ollama_messages: Vec<OllamaMessage> = messages
             .into_iter()
             .map(|msg| {
-                println!("🔍 DEBUG: Converting message to Ollama (tools): role={:?}, content={}, attachments={:?}", 
-                    msg.role, msg.content, msg.attachments);
+                tracing::debug!(
+                    role = ?msg.role,
+                    content_length = msg.content.len(),
+                    attachment_count = msg.attachments.as_ref().map(|a| a.len()).unwrap_or(0),
+                    "Converting message to Ollama format (tools)"
+                );
                 
                 let tool_calls = if let Some(tool_calls) = msg.tool_calls {
                     Some(tool_calls.into_iter().map(|tc| OllamaToolCall {
