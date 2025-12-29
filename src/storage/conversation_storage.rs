@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use tracing;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +61,7 @@ pub struct StoredMessage {
     #[serde(default)]
     pub is_summary: bool, // True if this message is a summary of previous messages
     #[serde(default)]
+    #[allow(dead_code)] // Field used for serialization/storage
     pub is_summarized: bool, // True if this message has been summarized (should be excluded from LLM payload)
     pub summarized_count: Option<usize>, // Count of messages summarized
 }
@@ -109,13 +111,16 @@ impl Conversation {
     }
 
     pub fn rebuild_llm_messages(&self) -> Vec<crate::llm::Message> {
+        use crate::llm::Role;
+        
         let mut llm_messages = Vec::new();
 
-        // Add user messages
+        // Add user messages - use Role::from() for conversion
         for msg in &self.messages {
-            if msg.role == "user" {
+            let role = Role::from(msg.role.as_str());
+            if role == Role::User {
                 llm_messages.push(crate::llm::Message::new(
-                    crate::llm::Role::User,
+                    role,
                     msg.content.clone(),
                 ));
             }
@@ -125,7 +130,7 @@ impl Conversation {
         for turn in &self.turns {
             if !turn.text.trim().is_empty() {
                 let msg = crate::llm::Message::new(
-                    crate::llm::Role::Assistant,
+                    Role::Assistant,
                     turn.text.clone(),
                 );
                 // Note: reasoning_content is not stored in turns, would need to be added to Turn struct if needed
@@ -166,8 +171,11 @@ pub struct ConversationIndex {
 
 #[derive(Debug, Clone)]
 pub struct Storage {
+    #[allow(dead_code)] // Fields used for file-based storage (legacy)
     conversations: HashMap<Uuid, Conversation>,
+    #[allow(dead_code)] // Fields used for file-based storage (legacy)
     conversations_dir: PathBuf,
+    #[allow(dead_code)] // Fields used for file-based storage (legacy)
     index_file: PathBuf,
 }
 
@@ -216,7 +224,11 @@ impl Storage {
     fn load_conversations(&mut self) {
         // Create conversations directory if it doesn't exist
         if let Err(e) = fs::create_dir_all(&self.conversations_dir) {
-            eprintln!("Failed to create conversations directory: {}", e);
+            tracing::error!(
+                directory = %self.conversations_dir.display(),
+                error = %e,
+                "Failed to create conversations directory"
+            );
             return;
         }
 
@@ -248,7 +260,7 @@ impl Storage {
     }
 
     fn save_conversation_index(&self) {
-        println!("💾 Saving conversation index...");
+        tracing::debug!("Saving conversation index");
         let index: Vec<ConversationIndex> = self
             .conversations
             .values()
@@ -260,9 +272,16 @@ impl Storage {
             })
             .collect();
 
-        println!("📝 Index contains {} conversations", index.len());
+        tracing::debug!(
+            conversation_count = index.len(),
+            "Index contains conversations"
+        );
         for conv in &index {
-            println!("  - {}: '{}'", conv.id, conv.title);
+            tracing::debug!(
+                conversation_id = %conv.id,
+                title = %conv.title,
+                "Conversation in index"
+            );
         }
 
         if let Some(parent) = self.index_file.parent() {
@@ -270,11 +289,22 @@ impl Storage {
         }
         if let Ok(data) = serde_json::to_string_pretty(&index) {
             match fs::write(&self.index_file, data) {
-                Ok(_) => println!("✅ Index file saved successfully to {:?}", self.index_file),
-                Err(e) => println!("❌ Failed to save index file: {}", e),
+                Ok(_) => {
+                    tracing::debug!(
+                        index_file = %self.index_file.display(),
+                        "Index file saved successfully"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        index_file = %self.index_file.display(),
+                        error = %e,
+                        "Failed to save index file"
+                    );
+                }
             }
         } else {
-            println!("❌ Failed to serialize index data");
+            tracing::error!("Failed to serialize index data");
         }
     }
 

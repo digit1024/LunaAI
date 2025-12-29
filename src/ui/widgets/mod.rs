@@ -1,3 +1,5 @@
+pub mod error_banner;
+pub mod menu_bar;
 pub mod tool_call;
 pub mod typing_indicator;
 

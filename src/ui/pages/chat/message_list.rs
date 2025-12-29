@@ -8,7 +8,7 @@ use cosmic::{
 
 pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
     // Show empty state placeholder when there are no messages and not streaming
-    if app.messages.is_empty() && !app.is_streaming {
+    if app.conversation_state.messages.is_empty() && !app.is_streaming {
         return cosmic::widget::container(
             cosmic::widget::column()
                 .spacing(8)
@@ -34,13 +34,13 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
         .into();
     }
 
-    let mut column = cosmic::widget::column::with_capacity(app.messages.len()).spacing(0);
+    let mut column = cosmic::widget::column::with_capacity(app.conversation_state.messages.len()).spacing(0);
 
     // Add regular chat messages
-    for (i, msg) in app.messages.iter().enumerate() {
+    for (i, msg) in app.conversation_state.messages.iter().enumerate() {
         // Check if this is a summary message - render it differently
         if msg.is_summary {
-            let expanded = app.expanded_summaries.contains(&i);
+            let expanded = app.context_state.expanded_summaries.contains(&i);
             let summary_count = msg.summarized_count.unwrap_or(0);
             
             let toggle_button = cosmic::widget::button::text(format!(
@@ -96,7 +96,7 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
         let mut tool_summaries: Vec<(String, String, String)> = Vec::new();
         if !msg.is_user {
             for anchored in app
-                .archived_tool_calls
+                .tool_call_state.archived_tool_calls
                 .iter()
                 .filter(|t| t.anchor_index == i)
             {
@@ -111,9 +111,9 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                     anchored.tool_call.parameters.clone(),
                 ));
             }
-            if let Some(current_anchor) = app.current_ai_message_index {
+            if let Some(current_anchor) = app.tool_call_state.current_ai_message_index {
                 if current_anchor == i {
-                    for active in &app.active_tool_calls {
+                    for active in &app.tool_call_state.active_tool_calls {
                         let summary_id = active
                             .id
                             .clone()
@@ -129,8 +129,8 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
         }
 
         // Determine adjacent messages for styling
-        let prev_msg = if i > 0 { app.messages.get(i - 1) } else { None };
-        let next_msg = app.messages.get(i + 1);
+        let prev_msg = if i > 0 { app.conversation_state.messages.get(i - 1) } else { None };
+        let next_msg = app.conversation_state.messages.get(i + 1);
         
         // Calculate border radius and margins for AI messages
         let (top_radius, bottom_left_radius, bottom_right_radius, top_margin, bottom_margin) = if msg.is_user {
@@ -190,7 +190,7 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
             let mut column = cosmic::widget::column::with_capacity(1).push(content_widget);
             for (summary_id, label, params) in tool_summaries {
                 let key = (i, summary_id.clone());
-                let expanded = app.expanded_tool_summaries.contains(&key);
+                let expanded = app.tool_call_state.expanded_tool_summaries.contains(&key);
                 let toggle = cosmic::widget::button::text(format!(
                     "{} {}",
                     if expanded { "▼" } else { "▶" },
@@ -219,9 +219,9 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
             if !msg.is_user && !msg.is_error {
                 if let Some(ref reasoning) = msg.reasoning_content {
                     if !reasoning.is_empty() {
-                        let expanded = app.expanded_reasoning.contains(&i);
+                        let expanded = app.context_state.expanded_reasoning.contains(&i);
                         // Auto-expand during streaming if not manually collapsed
-                        let should_show = expanded || (app.is_streaming && app.current_ai_message_index == Some(i));
+                        let should_show = expanded || (app.is_streaming && app.tool_call_state.current_ai_message_index == Some(i));
                         let toggle = cosmic::widget::button::text(format!(
                             "{} 💭 Thinking",
                             if should_show { "▼" } else { "▶" }
@@ -252,12 +252,51 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                 }
             }
 
-            cosmic::widget::row::with_capacity(2).push(column).push(
-                cosmic::widget::button::text("📋")
-                    .on_press(Message::ShowMessageDialog(content))
-                    .padding(4)
-                    .class(cosmic::style::Button::Text),
-            )
+            {
+                // Add buttons at bottom left: Copy and Play/Stop (if TTS available)
+                let mut button_row = cosmic::widget::row::with_capacity(3)
+                    .push(
+                        cosmic::widget::button::icon(crate::ui::icons::get_handle(
+                            "edit-copy-symbolic",
+                            16,
+                        ))
+                        .on_press(Message::ShowMessageDialog(content.clone()))
+                    );
+                
+                // Add Play/Stop button for TTS (only for non-user messages and if feature enabled)
+                #[cfg(feature = "ttsandstt")]
+                {
+                    if !msg.is_user && app.dbus_ttsstt_available {
+                        let is_playing = app.playing_message_id == Some(i);
+                        if is_playing {
+                            button_row = button_row.push(
+                                cosmic::widget::button::icon(crate::ui::icons::get_handle(
+                                    "process-stop-symbolic",
+                                    16,
+                                ))
+                                .on_press(Message::StopMessageTts)
+                            );
+                        } else {
+                            button_row = button_row.push(
+                                cosmic::widget::button::icon(crate::ui::icons::get_handle(
+                                    "media-playback-start-symbolic",
+                                    16,
+                                ))
+                                .on_press(Message::PlayMessageTts(i))
+                            );
+                        }
+                    }
+                }
+                
+                // Wrap content and buttons in a column, with buttons at bottom left
+                cosmic::widget::column::with_capacity(2)
+                    .push(column)
+                    .push(
+                        cosmic::widget::row::with_capacity(1)
+                            .push(cosmic::widget::Space::with_width(Length::Fill))
+                            .push(button_row.spacing(4))
+                    )
+            }
         })
         .padding(Padding::from([12, 16]))
         .style(move |theme| {
@@ -336,9 +375,9 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
         // Push the message first
         column = column.push(message_row);
         // If there are archived tool calls anchored to this message, render them right after
-        for (idx, anchored) in app.archived_tool_calls.iter().enumerate() {
+        for (idx, anchored) in app.tool_call_state.archived_tool_calls.iter().enumerate() {
             if anchored.anchor_index == i {
-                let is_expanded = app.expanded_tool_calls.contains(&idx);
+                let is_expanded = app.tool_call_state.expanded_tool_calls.contains(&idx);
                 let tool_call = &anchored.tool_call;
                 let tool_name = tool_call.tool_name.clone();
                 let parameters = tool_call.parameters.clone();
@@ -388,12 +427,12 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
             }
         }
         // If we're on the currently streaming AI message, also render active tool calls inline
-        if let Some(anchor) = app.current_ai_message_index {
+        if let Some(anchor) = app.tool_call_state.current_ai_message_index {
             if anchor == i {
-                let offset = app.archived_tool_calls.len();
-                for (j, tool_call) in app.active_tool_calls.iter().enumerate() {
+                let offset = app.tool_call_state.archived_tool_calls.len();
+                for (j, tool_call) in app.tool_call_state.active_tool_calls.iter().enumerate() {
                     let idx = offset + j;
-                    let is_expanded = app.expanded_tool_calls.contains(&idx);
+                    let is_expanded = app.tool_call_state.expanded_tool_calls.contains(&idx);
                     let tool_name = tool_call.tool_name.clone();
                     let parameters = tool_call.parameters.clone();
                     let status = match tool_call.status {
@@ -441,10 +480,10 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                     column = column.push(tool_call_row);
                 }
                 // If there are no active tool calls yet, but we're streaming, show typing indicator
-                if app.active_tool_calls.is_empty() && app.is_streaming {
+                if app.tool_call_state.active_tool_calls.is_empty() && app.is_streaming {
                     use crate::ui::widgets::typing_indicator;
                     let indicator_widget = cosmic::widget::container(
-                        typing_indicator(app.typing_indicator_progress)
+                        typing_indicator(app.chat_page.typing_indicator_progress)
                             .map(|_| Message::ScrollToBottom)
                     )
                     .width(Length::FillPortion(7)); // 70% width like AI messages
@@ -459,15 +498,15 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
     }
 
     // Show typing indicator at bottom if streaming and no messages yet, or after all messages
-    if app.is_streaming && app.active_tool_calls.is_empty() {
+    if app.is_streaming && app.tool_call_state.active_tool_calls.is_empty() {
         // Check if we already added it inside the loop
-        let already_shown = app.current_ai_message_index.is_some() && 
-            app.current_ai_message_index.map(|idx| idx < app.messages.len()).unwrap_or(false);
+        let already_shown = app.tool_call_state.current_ai_message_index.is_some() && 
+            app.tool_call_state.current_ai_message_index.map(|idx| idx < app.conversation_state.messages.len()).unwrap_or(false);
         
         if !already_shown {
             use crate::ui::widgets::typing_indicator;
             let indicator_widget = cosmic::widget::container(
-                typing_indicator(app.typing_indicator_progress)
+                typing_indicator(app.chat_page.typing_indicator_progress)
                     .map(|_| Message::ScrollToBottom)
             )
             .width(Length::FillPortion(7)); // 70% width like AI messages
@@ -486,7 +525,7 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
     scrollable(column)
         .scrollbar_width(8)
         .scrollbar_padding(4)
-        .id(app.scrollable_id.clone())
+        .id(app.chat_page.scrollable_id.clone())
         .anchor_bottom()
         .into()
 }

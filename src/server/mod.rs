@@ -3,8 +3,8 @@ mod handlers;
 mod http;
 mod websocket;
 
-use self::handlers::ServerContext;
-use self::http::AttachmentStorage;
+use crate::server::handlers::ServerContext;
+use crate::server::http::AttachmentStorage;
 use crate::{
     config::{AppConfig, MCPConfig},
     prompts::PromptManager,
@@ -32,7 +32,12 @@ async fn launch(options: ServerOptions) -> Result<()> {
     let prompt_manager = PromptManager::load_from_config(&config.prompts).unwrap_or_else(|err| {
         tracing::warn!("Failed to load prompts: {}", err);
         PromptManager::load_from_config(&crate::prompts::PromptConfig::default())
-            .expect("Prompt defaults must load")
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "Failed to load default prompt config, using empty PromptManager");
+                PromptManager {
+                    system_prompt: None,
+                }
+            })
     });
     let sqlite_settings = SqliteSettings::from(&config.server);
     let storage =
@@ -42,7 +47,10 @@ async fn launch(options: ServerOptions) -> Result<()> {
                 std::env::temp_dir().join("cosmic_llm_server.db"),
                 sqlite_settings,
             )
-            .expect("temporary sqlite init must succeed")
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "Failed to create temporary database");
+                std::process::exit(1);
+            })
         });
 
     let storage = Arc::new(Mutex::new(storage));
@@ -75,7 +83,7 @@ async fn launch(options: ServerOptions) -> Result<()> {
         .await
         .context("failed to bind HTTP server")?;
     
-    tracing::info!("📡 HTTP server for file attachments listening on http://{}", http_addr);
+    tracing::info!(address = %http_addr, "HTTP server for file attachments listening");
     
     // Spawn HTTP server in background
     tokio::spawn(async move {
@@ -150,19 +158,21 @@ fn spawn_title_generation_thread(
 
             // Get the profile to use for title generation
             // This should always be Some since we only start the thread if profile is configured
-            let profile = match &title_config.title_generation_profile {
-                Some(profile_name) => config.get_profile(profile_name),
+            let profile_name = match &title_config.title_generation_profile {
+                Some(name) => name,
                 None => {
                     tracing::warn!("Title generation profile not configured, stopping thread");
                     break;
                 }
             };
 
-            let profile = match profile {
+            let profile = match config.get_profile(profile_name) {
                 Some(p) => p.clone(),
                 None => {
-                    tracing::warn!("Title generation profile '{}' not found, stopping thread", 
-                        title_config.title_generation_profile.as_ref().unwrap());
+                    tracing::warn!(
+                        profile_name = %profile_name,
+                        "Title generation profile not found, stopping thread"
+                    );
                     break;
                 }
             };

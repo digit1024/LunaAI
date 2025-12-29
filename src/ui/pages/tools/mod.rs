@@ -50,7 +50,7 @@ pub fn tools_context_view(app: &CosmicLlmApp) -> Element<Message> {
         let is_server_enabled = enabled_count > 0;
         
         // Check if this server is expanded
-        let is_expanded = app.expanded_mcp_servers.contains(server_name);
+        let is_expanded = app.context_state.expanded_mcp_servers.contains(server_name);
         let expand_icon = if is_expanded { "▼" } else { "▶" };
 
         // Server header row with toggle and expand/collapse

@@ -1,7 +1,8 @@
 use crate::llm::Attachment;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
+use tracing;
 
 /// Supported file types for LLM processing
 #[derive(Debug, Clone, PartialEq)]
@@ -9,6 +10,7 @@ pub enum FileType {
     Text,
     Image,
     Document,
+    #[allow(dead_code)] // Reserved for future use
     Unsupported,
 }
 
@@ -34,13 +36,14 @@ pub fn create_attachment(file_path: &str) -> Result<Attachment> {
     let path = Path::new(file_path);
 
     if !path.exists() {
-        return Err(anyhow::anyhow!("File does not exist: {}", file_path));
+        anyhow::bail!("File does not exist: {}", file_path);
     }
 
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("Invalid file name"))?
+        .ok_or_else(|| anyhow::anyhow!("Failed to extract file name from path: invalid file name"))
+        .with_context(|| format!("Invalid file name for path: {}", file_path))?
         .to_string();
 
     let metadata = fs::metadata(path)?;
@@ -62,10 +65,10 @@ pub fn create_attachment(file_path: &str) -> Result<Attachment> {
             // For document files (PDF, DOCX, XLSX, etc.), convert to markdown
             match markdownify::convert(path) {
                 Ok(markdown_content) => {
-                    eprintln!(
-                        "✅ Converted {} to markdown ({} bytes)",
-                        file_name,
-                        markdown_content.len()
+                    tracing::debug!(
+                        file_name = %file_name,
+                        content_length = markdown_content.len(),
+                        "Converted file to markdown"
                     );
                     // Update file name to indicate it's now markdown
                     let markdown_file_name = if let Some(base_name) = path
@@ -83,10 +86,10 @@ pub fn create_attachment(file_path: &str) -> Result<Attachment> {
                     )
                 }
                 Err(e) => {
-                    eprintln!(
-                        "⚠️ Failed to convert {} to markdown: {}. Storing without content.",
-                        file_name,
-                        e
+                    tracing::warn!(
+                        file_name = %file_name,
+                        error = %e,
+                        "Failed to convert file to markdown, storing without content"
                     );
                     // Fall back to storing original file without content
                     (None, mime_type, file_name)
@@ -190,10 +193,7 @@ pub fn validate_file_for_llm(attachment: &Attachment) -> Result<()> {
         FileType::Image => {
             // Check file size limit for images (e.g., 50MB)
             if attachment.file_size > 50 * 1024 * 1024 {
-                Err(anyhow::anyhow!(
-                    "Image file too large: {} bytes",
-                    attachment.file_size
-                ))
+                anyhow::bail!("Image file too large: {} bytes", attachment.file_size)
             } else {
                 Ok(())
             }
@@ -201,10 +201,7 @@ pub fn validate_file_for_llm(attachment: &Attachment) -> Result<()> {
         FileType::Document => {
             // Check file size limit for documents (e.g., 100MB)
             if attachment.file_size > 100 * 1024 * 1024 {
-                Err(anyhow::anyhow!(
-                    "Document file too large: {} bytes",
-                    attachment.file_size
-                ))
+                anyhow::bail!("Document file too large: {} bytes", attachment.file_size)
             } else {
                 Ok(())
             }
@@ -212,10 +209,7 @@ pub fn validate_file_for_llm(attachment: &Attachment) -> Result<()> {
         FileType::Text => {
             // Check file size limit for text files (e.g., 10MB)
             if attachment.file_size > 10 * 1024 * 1024 {
-                Err(anyhow::anyhow!(
-                    "Text file too large: {} bytes",
-                    attachment.file_size
-                ))
+                anyhow::bail!("Text file too large: {} bytes", attachment.file_size)
             } else {
                 Ok(())
             }

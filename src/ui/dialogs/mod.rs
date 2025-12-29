@@ -8,9 +8,12 @@ use crate::ui::app::Message;
 /// Dialog actions for managing popup dialogs
 #[derive(Debug, Clone)]
 pub enum DialogAction {
+    #[allow(dead_code)] // Used in app.rs but compiler doesn't detect
     Open(DialogPage),
+    #[allow(dead_code)] // Used in app.rs but compiler doesn't detect
     Update(DialogPage),
     Close,
+    #[allow(dead_code)] // Used in app.rs but compiler doesn't detect
     Complete,
     CopyText,
     TextEditorAction(text_editor::Action),
@@ -24,7 +27,7 @@ pub enum DialogPage {
 
 impl DialogPage {
     /// Create a dialog for displaying and copying message text
-    pub fn view<'a>(&'a self, content: &'a text_editor::Content) -> widget::Dialog<Message> {
+    pub fn view<'a>(&'a self, content: &'a text_editor::Content) -> widget::Dialog<'a, Message> {
         let spacing = cosmic::theme::active().cosmic().spacing;
 
         match self {
@@ -66,6 +69,7 @@ impl DialogPage {
     }
     
     /// Get the text content for MessageText dialog
+    #[allow(dead_code)] // Public API method
     pub fn text(&self) -> Option<&str> {
         match self {
             DialogPage::MessageText(text) => Some(text),

@@ -1,3 +1,4 @@
+use anyhow::Context;
 use config::{Config, ConfigError, File};
 use serde::{
     de::{self, Deserializer, SeqAccess, Visitor},
@@ -267,6 +268,7 @@ impl AppConfig {
         self.profiles.get(name)
     }
 
+    #[allow(dead_code)] // Public API method
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         use std::fs;
         use toml;
@@ -286,7 +288,10 @@ impl AppConfig {
                 "config_bcp_{}.toml",
                 now.format("%Y_%m_%d_%H_%M_%S")
             );
-            let backup_path = config_path.parent().unwrap().join(backup_filename);
+            let backup_path = config_path.parent()
+                .ok_or_else(|| anyhow::anyhow!("Config path has no parent directory"))
+                .with_context(|| format!("Failed to create backup path for {}", config_path.display()))?
+                .join(backup_filename);
             fs::copy(&config_path, &backup_path)?;
         }
 

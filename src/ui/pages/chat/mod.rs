@@ -1,11 +1,15 @@
 pub mod input_area;
 pub mod message_list;
+pub mod page;
 pub mod top_panel;
 
-use crate::ui::app::{CosmicLlmApp, Message};
+pub use page::{Message, Page};
+
+use crate::ui::app::CosmicLlmApp;
 use cosmic::{iced::Length, Element};
 
-pub fn chat_view(app: &CosmicLlmApp) -> Element<Message> {
+/// Legacy view function (to be replaced by Page::view)
+pub fn chat_view(app: &CosmicLlmApp) -> Element<crate::ui::app::Message> {
     let mut layout = cosmic::widget::column::with_capacity(6)
         .push(
             // Combined top panel with tools

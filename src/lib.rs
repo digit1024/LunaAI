@@ -1,8 +1,11 @@
 pub mod agentic;
 pub mod config;
+pub mod dbus;
 pub mod llm;
 pub mod mcp;
 pub mod prompts;
 pub mod resources;
+pub mod services;
 pub mod storage;
+pub mod types;
 pub mod ui;
