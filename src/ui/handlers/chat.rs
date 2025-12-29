@@ -46,11 +46,11 @@ pub fn handle_chat_messages(
         Message::ScrollToBottom => None, // Handled by UI
         Message::InlineError(error) => {
             app.chat_page.current_error = Some(error);
-            None
+            Some(app::Task::none())
         }
         Message::DismissError => {
             app.chat_page.current_error = None;
-            None
+            Some(app::Task::none())
         }
         Message::TypingIndicatorTick(instant) => {
             if let Some(start_time) = app.chat_page.typing_indicator_start_time {
@@ -58,7 +58,7 @@ pub fn handle_chat_messages(
                 // Update animation progress (cycles every 1.2 seconds)
                 app.chat_page.typing_indicator_progress = (elapsed.as_secs_f32() / 1.2) % 1.0;
             }
-            None
+            Some(app::Task::none())
         }
         _ => None, // Not a chat message
     }

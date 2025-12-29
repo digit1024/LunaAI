@@ -7,6 +7,7 @@ use cosmic::widget::text_editor;
 use std::sync::Arc;
 
 use crate::ui::app::{CosmicLlmApp, Message};
+use crate::ui::helpers::utils::strip_markdown_for_tts;
 
 #[cfg(feature = "ttsandstt")]
 pub fn handle_dbus_messages(app: &mut CosmicLlmApp, message: &Message) -> Option<app::Task<Message>> {
@@ -58,18 +59,15 @@ pub fn handle_dbus_messages(app: &mut CosmicLlmApp, message: &Message) -> Option
             if let Some(msg) = app.conversation_state.messages.get(*message_idx) {
                 app.playing_message_id = Some(*message_idx);
                 
-                let text = msg.content
-                    .lines()
-                    .filter_map(|line| {
-                        let trimmed = line.trim();
-                        if trimmed.starts_with('#') || trimmed.starts_with("```") || trimmed.starts_with('[') {
-                            None
-                        } else {
-                            Some(trimmed)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ");
+                let text = strip_markdown_for_tts(&msg.content);
+                
+                tracing::debug!(
+                    original_length = msg.content.len(),
+                    cleaned_length = text.len(),
+                    original_preview = msg.content.chars().take(100).collect::<String>(),
+                    cleaned_preview = text.chars().take(100).collect::<String>(),
+                    "TTS text cleaning: original vs cleaned"
+                );
                 
                 let client = app.dbus_ttsstt_client.clone();
                 Some(cosmic::Task::perform(
