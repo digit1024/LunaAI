@@ -323,122 +323,28 @@ fn handle_context_management(
     current_user_message: &crate::llm::Message,
 ) -> Option<()> {
     let profile = app.config.get_default_profile()?;
-    use crate::llm::tokenizer::TokenCounter;
-    
-    let token_counter = TokenCounter::new(profile);
-    let total_tokens: usize = llm_messages.iter()
-        .map(|msg| token_counter.count_message_tokens(msg))
-        .sum();
-    
-    let context_limit = token_counter.get_context_limit(profile);
-    let summarize_threshold_tokens = token_counter.get_summarize_threshold_tokens(profile);
-    
-    tracing::debug!(
-        total_tokens,
-        usage_percent = (total_tokens as f32 / context_limit as f32 * 100.0),
-        context_limit,
-        "Desktop context usage"
-    );
-    
-    // Check if summarization is needed
-    if total_tokens <= summarize_threshold_tokens {
-        return Some(());
-    }
-
-    tracing::info!(
-        total_tokens,
-        summarize_threshold_tokens,
-        "Summarization threshold exceeded"
-    );
-    
     let conv_id = app.conversation_state.current_conversation_id?;
-    
-    // Load messages from DB for summarization
-    let db_messages = app.storage.load_conversation_messages(&conv_id.to_string()).ok()?;
-    
-    // Filter to regular messages (exclude summaries, tools, and already summarized messages)
-    let regular_messages: Vec<_> = db_messages.iter()
-        .filter(|msg| !msg.is_summary && !msg.is_summarized && msg.role != "tool")
-        .collect();
-    
-    let keep_recent_count = 10;
-    let messages_to_summarize_count = regular_messages.len().saturating_sub(keep_recent_count);
-    
-    if messages_to_summarize_count == 0 {
-        return Some(());
-    }
-
-    tracing::debug!(
-        messages_to_summarize = messages_to_summarize_count,
-        keep_recent_count,
-        "Will summarize messages"
-    );
-    
-    // Get IDs to summarize
-    let ids_to_summarize: Vec<i64> = regular_messages[..messages_to_summarize_count]
-        .iter()
-        .map(|msg| msg.id)
-        .collect();
-    
-    // Get full messages to summarize
-    let msgs_to_summarize: Vec<_> = db_messages.iter()
-        .filter(|msg| ids_to_summarize.contains(&msg.id))
-        .cloned()
-        .collect();
-    
-    // Convert to LlmMessage for summarization
-    let llm_msgs_to_summarize: Vec<crate::llm::Message> = msgs_to_summarize.iter()
-        .filter_map(|msg| {
-            let role = match msg.role.as_str() {
-                "user" => crate::llm::Role::User,
-                "assistant" => crate::llm::Role::Assistant,
-                "system" => crate::llm::Role::System,
-                _ => return None,
-            };
-            Some(crate::llm::Message::new(role, msg.content.clone()))
-        })
-        .collect();
-    
-    if llm_msgs_to_summarize.is_empty() {
-        return Some(());
-    }
-
-    // Generate summary synchronously (blocking but necessary for desktop)
-    tracing::debug!("Generating summary");
     let llm_client = app.llm_client.clone();
-    let profile_clone = profile.clone();
+    let storage = &app.storage;
     
-    // Use tokio runtime for async summarization
-    let summary_result = tokio::task::block_in_place(|| {
+    // Use ContextService to check and trigger summarization
+    // Desktop needs to block on async operation
+    let result = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
-            crate::llm::context_manager::SmartContextManager::summarize_messages(
-                llm_msgs_to_summarize,
-                &profile_clone,
-                llm_client.as_ref(),
+            crate::services::ContextService::check_and_trigger_summarization(
+                llm_messages,
+                conv_id,
+                storage,
+                &llm_client,
+                profile,
             ).await
         })
     });
     
-    match summary_result {
-        Ok(summary_msg) => {
-            tracing::info!(
-                summary_length = summary_msg.content.len(),
-                "Summary generated"
-            );
-            
-            // Perform database summarization
-            if let Err(e) = app.storage.perform_summarization(
-                &conv_id.to_string(),
-                &msgs_to_summarize,
-                &summary_msg.content,
-            ) {
-                tracing::error!(error = %e, "Failed to save summary to DB");
-                return Some(());
-            }
-            
-            tracing::debug!("Summary saved to database");
-            
-            // Rebuild llm_messages from the updated database using services
+    match result {
+        Ok(()) => {
+            tracing::debug!("Context management check completed");
+            // If summarization happened, rebuild messages from DB
             if let Ok(updated_msgs) = app.storage.load_conversation_messages(&conv_id.to_string()) {
                 // Use MessageConverter service (single source of truth)
                 *llm_messages = MessageConverter::db_to_llm(&updated_msgs, true);
@@ -460,26 +366,18 @@ fn handle_context_management(
                 // Re-add current user message
                 llm_messages.push(current_user_message.clone());
                 
-                let new_tokens: usize = llm_messages.iter()
-                    .map(|msg| token_counter.count_message_tokens(msg))
-                    .sum();
-                tracing::debug!(
-                    total_tokens = new_tokens,
-                    "After summarization"
-                );
-                
                 // Rebuild UI messages from DB
                 if let Ok(Some(conv)) = app.storage.get_conversation(&conv_id) {
                     app.rebuild_conversation_view(conv);
                 }
             }
+            Some(())
         }
         Err(e) => {
-            tracing::error!(error = %e, "Summarization failed");
+            tracing::error!(error = %e, "Failed to check/trigger summarization");
+            Some(()) // Continue anyway
         }
     }
-
-    Some(())
 }
 
 /// Handle StopMessage

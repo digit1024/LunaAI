@@ -159,18 +159,9 @@ impl ContextService {
             .cloned()
             .collect();
         
-        // Convert to LlmMessage for summarization
-        let llm_msgs_to_summarize: Vec<crate::llm::Message> = msgs_to_summarize.iter()
-            .filter_map(|msg| {
-                let role = match msg.role.as_str() {
-                    "user" => crate::llm::Role::User,
-                    "assistant" => crate::llm::Role::Assistant,
-                    "system" => crate::llm::Role::System,
-                    _ => return None,
-                };
-                Some(crate::llm::Message::new(role, msg.content.clone()))
-            })
-            .collect();
+        // Convert to LlmMessage for summarization using MessageConverter (single source of truth)
+        use crate::services::MessageConverter;
+        let llm_msgs_to_summarize = MessageConverter::db_to_llm(&msgs_to_summarize, false);
         
         if llm_msgs_to_summarize.is_empty() {
             return Err(anyhow::anyhow!("No valid messages to summarize").context("Summarization failed"));
@@ -203,6 +194,140 @@ impl ContextService {
         tracing::debug!("Summary saved to database");
         
         Ok(summary_msg.content)
+    }
+
+    /// Check if automatic summarization is needed and trigger it
+    ///
+    /// This unifies the automatic summarization trigger logic that's duplicated in:
+    /// - `src/ui/handlers/chat.rs` (handle_context_management)
+    /// - `src/server/handlers.rs` (handle_send_message)
+    ///
+    /// # Arguments
+    /// - `llm_messages`: Current LLM messages to check token count
+    /// - `conv_id`: Conversation ID
+    /// - `storage`: Storage instance
+    /// - `llm_client`: LLM client for summarization
+    /// - `profile`: LLM profile with context limits
+    ///
+    /// # Returns
+    /// Ok(()) if summarization was triggered or not needed, Err if it failed
+    pub async fn check_and_trigger_summarization(
+        llm_messages: &[LlmMessage],
+        conv_id: uuid::Uuid,
+        storage: &crate::storage::Storage,
+        llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
+        profile: &crate::config::LlmProfile,
+    ) -> Result<()> {
+        use anyhow::Context;
+        use crate::llm::tokenizer::TokenCounter;
+
+        let token_counter = TokenCounter::new(profile);
+        let total_tokens: usize = llm_messages
+            .iter()
+            .map(|msg| token_counter.count_message_tokens(msg))
+            .sum();
+
+        let context_limit = token_counter.get_context_limit(profile);
+        let summarize_threshold_tokens = token_counter.get_summarize_threshold_tokens(profile);
+
+        tracing::debug!(
+            total_tokens,
+            usage_percent = (total_tokens as f32 / context_limit as f32 * 100.0),
+            context_limit,
+            summarize_threshold_tokens,
+            "Context usage check"
+        );
+
+        // Check if summarization is needed
+        if total_tokens <= summarize_threshold_tokens {
+            return Ok(());
+        }
+
+        tracing::info!(
+            total_tokens,
+            summarize_threshold_tokens,
+            "Summarization threshold exceeded, triggering automatic summarization"
+        );
+
+        // Load messages from DB for summarization
+        let db_messages = storage
+            .load_conversation_messages(&conv_id.to_string())
+            .context("failed to load conversation for summarization")?;
+
+        // Filter to regular messages (exclude summaries, tools, and already summarized messages)
+        let regular_messages: Vec<_> = db_messages
+            .iter()
+            .filter(|msg| !msg.is_summary && !msg.is_summarized && msg.role != "tool")
+            .collect();
+
+        let keep_recent_count = 10;
+        let messages_to_summarize_count = regular_messages.len().saturating_sub(keep_recent_count);
+
+        if messages_to_summarize_count == 0 {
+            tracing::debug!(
+                conversation_id = %conv_id,
+                "All messages are recent, nothing to summarize"
+            );
+            return Ok(());
+        }
+
+        tracing::debug!(
+            conversation_id = %conv_id,
+            messages_to_summarize = messages_to_summarize_count,
+            keep_recent_count,
+            "Will summarize messages"
+        );
+
+        // Get IDs to summarize
+        let ids_to_summarize: Vec<i64> = regular_messages[..messages_to_summarize_count]
+            .iter()
+            .map(|msg| msg.id)
+            .collect();
+
+        // Get full messages to summarize
+        let msgs_to_summarize: Vec<_> = db_messages
+            .iter()
+            .filter(|msg| ids_to_summarize.contains(&msg.id))
+            .cloned()
+            .collect();
+
+        // Convert to LlmMessage for summarization using MessageConverter
+        use crate::services::MessageConverter;
+        let llm_msgs_to_summarize = MessageConverter::db_to_llm(&msgs_to_summarize, false);
+
+        if llm_msgs_to_summarize.is_empty() {
+            tracing::warn!(conversation_id = %conv_id, "No valid messages to summarize");
+            return Ok(()); // Not an error, just nothing to do
+        }
+
+        // Generate summary
+        tracing::debug!(conversation_id = %conv_id, "Generating summary");
+        let summary_msg = crate::llm::context_manager::SmartContextManager::summarize_messages(
+            llm_msgs_to_summarize,
+            profile,
+            llm_client.as_ref(),
+        )
+        .await
+        .context("failed to generate summary")?;
+
+        tracing::info!(
+            conversation_id = %conv_id,
+            summary_length = summary_msg.content.len(),
+            "Summary generated"
+        );
+
+        // Perform database summarization
+        storage
+            .perform_summarization(
+                &conv_id.to_string(),
+                &msgs_to_summarize,
+                &summary_msg.content,
+            )
+            .context("failed to save summary to database")?;
+
+        tracing::debug!(conversation_id = %conv_id, "Summary saved to database");
+
+        Ok(())
     }
 
     /// Inject system prompts into message history
