@@ -1,9 +1,9 @@
 use super::MCPTransport;
 use crate::llm::ToolResult;
 use crate::llm::{ToolCall, ToolDefinition};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
-use log::debug;
+use tracing::debug;
 use serde_json;
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -64,10 +64,10 @@ impl StdioMCPClient {
                     let response: super::protocol::MCPResponse = serde_json::from_str(&line)?;
                     Ok(response)
                 }
-                Err(e) => Err(anyhow::anyhow!("Failed to read response: {}", e)),
+                Err(e) => Err(e).context("Failed to read response"),
             }
         } else {
-            Err(anyhow::anyhow!("No stdout available"))
+            anyhow::bail!("No stdout available")
         }
     }
 
@@ -110,11 +110,11 @@ impl MCPTransport for StdioMCPClient {
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| anyhow::anyhow!("Failed to get stdin"))?;
+            .context("Failed to get stdin handle")?;
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| anyhow::anyhow!("Failed to get stdout"))?;
+            .context("Failed to get stdout handle")?;
 
         self.stdin = Some(stdin);
         self.stdout = Some(BufReader::new(stdout));
@@ -193,11 +193,11 @@ impl MCPTransport for StdioMCPClient {
                         {
                             // Check size limit
                             if text_content.len() > MAX_TOOL_RESULT_SIZE {
-                                log::warn!(
-                                    "⚠️ Tool '{}' result too large: {} bytes (max: {} bytes)",
-                                    tool_name,
-                                    text_content.len(),
-                                    MAX_TOOL_RESULT_SIZE
+                                tracing::warn!(
+                                    tool_name = %tool_name,
+                                    content_size = text_content.len(),
+                                    max_size = MAX_TOOL_RESULT_SIZE,
+                                    "Tool result too large"
                                 );
                                 return Ok(ToolResult {
                                     content: format!(
@@ -224,11 +224,11 @@ impl MCPTransport for StdioMCPClient {
                 Ok(content) => {
                     // Check size limit for fallback path too
                     if content.len() > MAX_TOOL_RESULT_SIZE {
-                        log::warn!(
-                            "⚠️ Tool '{}' result too large: {} bytes (max: {} bytes)",
-                            tool_name,
-                            content.len(),
-                            MAX_TOOL_RESULT_SIZE
+                        tracing::warn!(
+                            tool_name = %tool_name,
+                            content_size = content.len(),
+                            max_size = MAX_TOOL_RESULT_SIZE,
+                            "Tool result too large"
                         );
                         return Ok(ToolResult {
                             content: format!(

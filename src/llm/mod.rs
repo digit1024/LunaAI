@@ -7,12 +7,54 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::sync::Arc;
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub enum Role {
     User,
     Assistant,
     System,
     Tool,
+}
+
+impl Role {
+    /// Convert role to lowercase string (for API compatibility)
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Role::User => "user",
+            Role::Assistant => "assistant",
+            Role::System => "system",
+            Role::Tool => "tool",
+        }
+    }
+}
+
+impl From<&str> for Role {
+    fn from(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "user" => Role::User,
+            "assistant" => Role::Assistant,
+            "system" => Role::System,
+            "tool" => Role::Tool,
+            _ => Role::User, // Default fallback
+        }
+    }
+}
+
+impl From<String> for Role {
+    fn from(s: String) -> Self {
+        Self::from(s.as_str())
+    }
+}
+
+impl From<Role> for String {
+    fn from(role: Role) -> Self {
+        role.as_str().to_string()
+    }
+}
+
+impl std::fmt::Display for Role {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -31,6 +73,7 @@ pub struct Message {
 pub struct Attachment {
     pub file_path: String,
     pub file_name: String,
+    #[allow(dead_code)] // Field used for serialization
     pub mime_type: String,
     pub file_size: u64,
     pub content: Option<String>, // For text files, store content directly

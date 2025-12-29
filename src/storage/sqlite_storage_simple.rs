@@ -1,7 +1,7 @@
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Result as SqliteResult};
 use serde::{Deserialize, Serialize};
-use serde_json::{self, Value};
+use serde_json::Value;
 use std::path::Path;
 use std::time::Duration;
 use uuid::Uuid;
@@ -38,6 +38,7 @@ pub struct Message {
     #[serde(default)]
     pub is_summary: bool, // True if this message is a summary of previous messages
     #[serde(default)]
+    #[allow(dead_code)] // Field used for serialization/storage
     pub is_summarized: bool, // True if this message has been summarized (should be excluded from LLM payload)
     pub summarized_message_ids: Option<Vec<i64>>, // IDs of messages that were summarized
     pub summarized_count: Option<usize>, // Count of messages summarized
@@ -386,7 +387,7 @@ impl SqliteStorage {
                 .as_deref()
                 .map(|json| {
                     serde_json::from_str(json).map_err(|err| {
-                        log::warn!("Failed to deserialize tool_calls JSON: {}", err);
+                        tracing::warn!("Failed to deserialize tool_calls JSON: {}", err);
                         err
                     })
                 })
@@ -451,7 +452,7 @@ impl SqliteStorage {
              LIMIT ?2",
         )?;
 
-        let snippet_iter = stmt.query_map(params![query, limit], |row| {
+        let snippet_iter = stmt.query_map(params![query, limit as i64], |row| {
             Ok(Snippet {
                 conversation_id: row.get(0)?,
                 content: row.get(1)?,
@@ -761,8 +762,13 @@ mod tests {
 
         // Test conversation retrieval
         let conversation = storage.get_conversation(&conv_id)?;
-        assert!(conversation.is_some());
-        assert_eq!(conversation.unwrap().title, "Updated Title");
+        let conv = conversation.ok_or_else(|| {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERNAL),
+                Some("Conversation should exist after update".to_string())
+            )
+        })?;
+        assert_eq!(conv.title, "Updated Title");
 
         // Test conversation listing
         let conversations = storage.list_conversations()?;
@@ -797,8 +803,13 @@ mod tests {
 
         let messages = storage.load_conversation(&conv_id)?;
         assert_eq!(messages.len(), 1);
-        assert!(messages[0].embedding.is_some());
-        assert_eq!(messages[0].embedding.as_ref().unwrap(), &embedding);
+        let msg_embedding = messages[0].embedding.as_ref().ok_or_else(|| {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERNAL),
+                Some("Message embedding should exist".to_string())
+            )
+        })?;
+        assert_eq!(msg_embedding, &embedding);
 
         let _ = fs::remove_file(&db_path);
         Ok(())
@@ -852,7 +863,7 @@ impl SqliteStorage {
         raw.and_then(|json| match serde_json::from_str(&json) {
             Ok(value) => Some(value),
             Err(err) => {
-                log::warn!("Failed to deserialize JSON payload: {}", err);
+                tracing::warn!("Failed to deserialize JSON payload: {}", err);
                 None
             }
         })

@@ -1,8 +1,8 @@
 use crate::config::MCPConfig;
 use crate::llm::{ToolCall, ToolDefinition, ToolResult};
 use crate::mcp::transport::MCPTransport;
-use anyhow::Result;
-use log::{error, info};
+use anyhow::{Context, Result};
+use tracing::{error, info};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -137,6 +137,7 @@ impl MCPServerRegistry {
         }
     }
 
+    #[allow(dead_code)] // Public API method
     pub fn is_server_enabled(&self, server_name: &str) -> bool {
         // A server is considered enabled if at least one of its tools is enabled
         // This is a simple heuristic - we could also check if all tools are enabled
@@ -153,7 +154,7 @@ impl MCPServerRegistry {
     pub fn get_server_for_tool(&self, tool_name: &str) -> Result<&String> {
         self.tool_index
             .get(tool_name)
-            .ok_or_else(|| anyhow::anyhow!("Tool {} not found", tool_name))
+            .context(format!("Tool {} not found", tool_name))
     }
 
     pub async fn call_tool(&mut self, tool_call: ToolCall) -> Result<ToolResult> {
@@ -161,7 +162,7 @@ impl MCPServerRegistry {
         let server = self
             .servers
             .get(server_name)
-            .ok_or_else(|| anyhow::anyhow!("Server {} not found", server_name))?;
+            .context(format!("Server {} not found", server_name))?;
 
         let mut server_guard = server.write().await;
         server_guard.call_tool(tool_call).await
@@ -230,11 +231,7 @@ impl MCPServerRegistry {
                 );
             }
             Err(e) => {
-                return Err(anyhow::anyhow!(
-                    "Failed to connect to MCP server {}: {}",
-                    name,
-                    e
-                ));
+                return Err(e).context(format!("Failed to connect to MCP server: {}", name));
             }
         }
         Ok(())

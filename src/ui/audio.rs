@@ -1,5 +1,6 @@
 use crate::resources::AudioAssets;
 use std::io::Cursor;
+use tracing;
 
 /// Simple audio service for playing sound effects
 /// Uses embedded audio files, so sounds work regardless of launch location
@@ -12,7 +13,11 @@ impl AudioService {
         let filename = filename.to_string();
         tokio::spawn(async move {
             if let Err(e) = Self::play_sound_internal(&filename) {
-                eprintln!("Failed to play sound '{}': {}", filename, e);
+                tracing::error!(
+                    filename = %filename,
+                    error = %e,
+                    "Failed to play sound"
+                );
             }
         });
     }
@@ -25,9 +30,11 @@ impl AudioService {
         // Convert to owned bytes for the cursor
         let audio_bytes = audio_data.data.into_owned();
 
-        // Create audio stream
-        let (_stream, stream_handle) = rodio::OutputStream::try_default()?;
-        let sink = rodio::Sink::try_new(&stream_handle)?;
+        // Create audio stream using rodio's API
+        let stream = rodio::OutputStreamBuilder::open_default_stream()
+            .map_err(|e| format!("Failed to open audio stream: {}", e))?;
+        let mixer = stream.mixer();
+        let sink = rodio::Sink::connect_new(mixer);
 
         // Decode from memory using Cursor
         let cursor = Cursor::new(audio_bytes);

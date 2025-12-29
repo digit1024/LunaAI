@@ -1,12 +1,12 @@
 use anyhow::Result;
-use log::{debug, warn};
+use tracing::{debug, warn};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PromptConfig {
     pub system_prompt_file: Option<String>,
-    pub user_prompt_file: Option<String>,
+    
 }
 
 impl Default for PromptConfig {
@@ -22,20 +22,15 @@ impl Default for PromptConfig {
                     .join("system_prompt.md")
                     .to_string_lossy()
                     .to_string(),
-            ),
-            user_prompt_file: Some(
-                data_dir
-                    .join("user_prompt.md")
-                    .to_string_lossy()
-                    .to_string(),
-            ),
+            )
+    
         }
     }
 }
 
 #[derive(Clone)]
 pub struct PromptManager {
-    system_prompt: Option<String>,
+    pub(crate) system_prompt: Option<String>,
 }
 
 impl PromptManager {
@@ -43,11 +38,11 @@ impl PromptManager {
         let system_prompt = if let Some(path) = &config.system_prompt_file {
             match std::fs::read_to_string(path) {
                 Ok(content) => {
-                    debug!("✅ Loaded system prompt from: {}", path);
+                    debug!(path = %path, "Loaded system prompt");
                     Some(content.trim().to_string())
                 }
                 Err(e) => {
-                    warn!("⚠️ Failed to load system prompt from {}: {}", path, e);
+                    warn!(path = %path, error = %e, "Failed to load system prompt");
                     None
                 }
             }
@@ -66,15 +61,15 @@ impl PromptManager {
     pub fn load_profile_prompt(&self, path: &str) -> Result<String, ProfilePromptError> {
         match std::fs::read_to_string(path) {
             Ok(content) => {
-                debug!("✅ Loaded profile prompt from: {}", path);
+                debug!(path = %path, "Loaded profile prompt");
                 Ok(content.trim().to_string())
             }
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::NotFound {
-                    warn!("⚠️ Profile prompt not found: {}", path);
+                    warn!(path = %path, "Profile prompt not found");
                     Err(ProfilePromptError::NotFound(path.to_string()))
                 } else {
-                    warn!("⚠️ Failed to load profile prompt from {}: {}", path, e);
+                    warn!(path = %path, error = %e, "Failed to load profile prompt");
                     Err(ProfilePromptError::IoError {
                         path: path.to_string(),
                         error: e.to_string(),
@@ -92,6 +87,7 @@ pub enum ProfilePromptError {
 }
 
 impl ProfilePromptError {
+    #[allow(dead_code)] // Public API method
     pub fn path(&self) -> &str {
         match self {
             ProfilePromptError::NotFound(path) => path,

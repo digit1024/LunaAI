@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tracing;
 
 #[derive(Debug, Serialize)]
 struct OpenAIRequest {
@@ -139,9 +140,11 @@ impl OpenAIClient {
         messages
             .into_iter()
             .map(|msg| {
-                println!(
-                    "🔍 DEBUG: Converting message to OpenAI (tools): role={:?}, content={}, attachments={:?}",
-                    msg.role, msg.content, msg.attachments
+                tracing::debug!(
+                    role = ?msg.role,
+                    content_length = msg.content.len(),
+                    attachment_count = msg.attachments.as_ref().map(|a| a.len()).unwrap_or(0),
+                    "Converting message to OpenAI format"
                 );
 
                 let tool_calls = msg.tool_calls.map(|tool_calls| {
@@ -279,7 +282,7 @@ impl OpenAIClient {
             match serde_json::from_str::<OpenAIStreamResponse>(payload) {
                 Ok(parsed) => events.extend(Self::extract_stream_events(parsed, tool_states)),
                 Err(err) => {
-                    log::warn!("Failed to parse OpenAI stream payload: {}", err);
+                    tracing::warn!("Failed to parse OpenAI stream payload: {}", err);
                 }
             }
         }
@@ -308,7 +311,7 @@ impl LlmClient for OpenAIClient {
         };
 
         if let Ok(payload) = serde_json::to_string(&request) {
-            log::debug!("⬆️ OpenAI stream request: {}", payload);
+            tracing::debug!(payload = %payload, "OpenAI stream request");
         }
 
         let response = self
@@ -320,7 +323,7 @@ impl LlmClient for OpenAIClient {
             .send()
             .await?;
 
-        log::debug!("⬇️ OpenAI stream status: {}", response.status());
+        tracing::debug!(status = %response.status(), "OpenAI stream response");
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
@@ -420,7 +423,7 @@ impl LlmClient for OpenAIClient {
         };
 
         if let Ok(payload) = serde_json::to_string(&request) {
-            log::debug!("⬆️ OpenAI tool request: {}", payload);
+            tracing::debug!(payload = %payload, "OpenAI tool request");
         }
 
         let response = self
@@ -432,7 +435,7 @@ impl LlmClient for OpenAIClient {
             .send()
             .await?;
 
-        log::debug!("⬇️ OpenAI tool response status: {}", response.status());
+        tracing::debug!(status = %response.status(), "OpenAI tool response");
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
@@ -527,7 +530,7 @@ impl LlmClient for OpenAIClient {
         };
 
         if let Ok(payload) = serde_json::to_string(&request) {
-            log::debug!("⬆️ OpenAI streaming tool request: {}", payload);
+            tracing::debug!(payload = %payload, "OpenAI streaming tool request");
         }
 
         let response = self
@@ -539,7 +542,7 @@ impl LlmClient for OpenAIClient {
             .send()
             .await?;
 
-        log::debug!(
+        tracing::debug!(
             "⬇️ OpenAI streaming tool response status: {}",
             response.status()
         );

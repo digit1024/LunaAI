@@ -1,11 +1,14 @@
 mod agentic;
 mod config;
+mod dbus;
 mod llm;
 mod mcp;
 mod prompts;
 mod resources;
 mod server;
+mod services;
 mod storage;
+mod types;
 mod ui;
 
 use clap::Parser;
@@ -30,13 +33,27 @@ struct Cli {
 }
 
 pub fn tracing() {
-    let filter = EnvFilter::from_default_env()
-        .add_directive("wgpu_core=error".parse().unwrap())
-        .add_directive("naga=error".parse().unwrap())
-        .add_directive("cosmic_text=error".parse().unwrap())
-        .add_directive("sctk=error".parse().unwrap())
-        .add_directive("wgpu_hal=error".parse().unwrap())
-        .add_directive("iced_wgpu=error".parse().unwrap());
+    let mut filter = EnvFilter::from_default_env();
+    
+    // Add directives, ignoring parse errors (they're just noise filters)
+    if let Ok(directive) = "wgpu_core=error".parse() {
+        filter = filter.add_directive(directive);
+    }
+    if let Ok(directive) = "naga=error".parse() {
+        filter = filter.add_directive(directive);
+    }
+    if let Ok(directive) = "cosmic_text=error".parse() {
+        filter = filter.add_directive(directive);
+    }
+    if let Ok(directive) = "sctk=error".parse() {
+        filter = filter.add_directive(directive);
+    }
+    if let Ok(directive) = "wgpu_hal=error".parse() {
+        filter = filter.add_directive(directive);
+    }
+    if let Ok(directive) = "iced_wgpu=error".parse() {
+        filter = filter.add_directive(directive);
+    }
 
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
@@ -48,16 +65,16 @@ pub fn main() -> cosmic::iced::Result {
     let cli = Cli::parse();
 
     if cli.server {
-        info!("🛰️ Launching Luna server mode...");
+        info!("Launching Luna server mode");
         if let Err(err) = server::run(server::ServerOptions {
             config_path: cli.config,
         }) {
-            eprintln!("Server failed: {err:#}");
+            tracing::error!(error = %err, "Server failed");
             std::process::exit(1);
         }
         Ok(())
     } else {
-        info!("🚀 Starting cosmic_llm UI...");
+        info!("Starting cosmic_llm UI");
         // Run the cosmic application
         cosmic::app::run::<ui::CosmicLlmApp>(ui::settings(), ui::flags())
     }

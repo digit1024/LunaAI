@@ -1,7 +1,7 @@
 use super::protocol::{AgentUpdate, PlannedTool};
 use crate::llm::{ChatStreamEvent, LlmClient, LlmError, Message, Role, ToolCall, ToolResult};
 use crate::mcp::MCPServerRegistry;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures::StreamExt;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -35,7 +35,7 @@ impl AgenticLoop {
             let available_tools = {
                 let registry = self.mcp_registry.read().await;
                 let tools = registry.get_enabled_tools();
-                log::debug!("🔧 Enabled tools count: {}", tools.len());
+                tracing::debug!(tool_count = tools.len(), "Enabled tools");
                 tools
             };
 
@@ -46,20 +46,20 @@ impl AgenticLoop {
             {
                 Ok(stream) => stream,
                 Err(LlmError::Config(e)) => {
-                    log::warn!(
+                    tracing::warn!(
                         "Tool streaming unsupported for backend, falling back to non-streaming mode: {}",
                         e
                     );
                     return self.process_non_streaming(messages, agent_tx).await;
                 }
                 Err(e) => {
-                    log::error!("❌ LLM streaming call failed: {}", e);
+                    tracing::error!(error = %e, "LLM streaming call failed");
                     if let Some(tx) = agent_tx.as_ref() {
                         let _ = tx.send(AgentUpdate::ModelError {
                             error: format!("Model communication failed: {}", e),
                         });
                     }
-                    return Err(anyhow::anyhow!("LLM call failed: {}", e));
+                    return Err(e).context("LLM call failed");
                 }
             };
 
@@ -113,13 +113,13 @@ impl AgenticLoop {
                         planned_tools.push(tool_call);
                     }
                     Err(e) => {
-                        log::error!("❌ Streaming event error: {}", e);
+                        tracing::error!(error = %e, "Streaming event error");
                         if let Some(tx) = agent_tx.as_ref() {
                             let _ = tx.send(AgentUpdate::ModelError {
                                 error: format!("Streaming error: {}", e),
                             });
                         }
-                        return Err(anyhow::anyhow!("Streaming error: {}", e));
+                        return Err(e).context("Streaming error");
                     }
                 }
             }
@@ -259,13 +259,13 @@ impl AgenticLoop {
             {
                 Ok(resp) => resp,
                 Err(e) => {
-                    log::error!("❌ Non-streaming LLM call failed: {}", e);
+                    tracing::error!(error = %e, "Non-streaming LLM call failed");
                     if let Some(tx) = agent_tx.as_ref() {
                         let _ = tx.send(AgentUpdate::ModelError {
                             error: format!("Model communication failed: {}", e),
                         });
                     }
-                    return Err(anyhow::anyhow!("LLM call failed: {}", e));
+                    return Err(e).context("LLM call failed");
                 }
             };
 

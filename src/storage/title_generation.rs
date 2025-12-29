@@ -1,7 +1,7 @@
 use crate::config::LlmProfile;
 use crate::llm::{build_llm_client, Message as LlmMessage, Role};
 use crate::storage::sqlite_storage_simple::Message as SqliteMessage;
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 const MAX_TITLE_LENGTH: usize = 100;
 
@@ -28,11 +28,13 @@ pub async fn generate_title_from_messages(
     let mut char_count = 0;
 
     for msg in &filtered_messages {
-        let role_label = match msg.role.as_str() {
-            "user" => "User",
-            "assistant" => "Assistant",
-            "system" => "System",
-            _ => continue,
+        use crate::llm::Role;
+        let role = Role::from(msg.role.as_str());
+        let role_label = match role {
+            Role::User => "User",
+            Role::Assistant => "Assistant",
+            Role::System => "System",
+            Role::Tool => continue, // Skip tool messages in title generation
         };
 
         let content = msg.content.trim();
@@ -90,7 +92,7 @@ pub async fn generate_title_from_messages(
     let response = llm_client
         .send_message_with_tools(llm_messages, Vec::new(), None, None)
         .await
-        .map_err(|e| anyhow::anyhow!("LLM call failed: {}", e))?;
+        .context("LLM call failed for title generation")?;
 
     // Truncate response to MAX_TITLE_LENGTH chars
     let title = response.content.trim();
@@ -99,18 +101,5 @@ pub async fn generate_title_from_messages(
     Ok(truncated_title)
 }
 
-/// Generate a title for a conversation (public API that uses storage)
-pub async fn generate_title_for_conversation(
-    storage: &crate::storage::sqlite_storage_simple::SqliteStorage,
-    conversation_id: &str,
-    profile: &LlmProfile,
-    summary_chars: u32,
-    system_prompt: &str,
-) -> Result<String> {
-    // Load messages synchronously
-    let messages: Vec<SqliteMessage> = storage.load_conversation(conversation_id)?;
-    
-    // Generate title from messages (async part)
-    generate_title_from_messages(messages, profile, summary_chars, system_prompt).await
-}
+// Function removed - not used anywhere
 

@@ -1,13 +1,17 @@
+pub mod page;
+
+pub use page::{Message, Page};
+
 use crate::mcp::registry::ServerStatus;
-use crate::ui::app::{CosmicLlmApp, Message};
+use crate::ui::app::CosmicLlmApp;
 use cosmic::{
     iced::{Length, Padding},
     widget::{self, button, container, scrollable},
     Element,
 };
 
-
-pub fn mcp_config_view(app: &CosmicLlmApp) -> Element<Message> {
+/// View function
+pub fn mcp_config_view(app: &CosmicLlmApp) -> Element<crate::ui::app::Message> {
     // Load the actual MCP config (same as startup)
     let mcp_config =
         crate::config::MCPConfig::load_from_json().unwrap_or_else(|_| app.config.mcp.clone());
@@ -40,7 +44,7 @@ pub fn mcp_config_view(app: &CosmicLlmApp) -> Element<Message> {
     let mut server_column = cosmic::widget::column::with_capacity(all_server_names.len());
     for server_name in &all_server_names {
         let status = server_statuses.get(server_name).cloned().unwrap_or(ServerStatus::Failed("Unknown".to_string()));
-        let is_expanded = app.expanded_mcp_servers.contains(server_name);
+        let is_expanded = app.mcp_config_page.expanded_servers.contains(server_name);
         let tools = tools_by_server.get(server_name).cloned().unwrap_or_default();
 
         // Status badge
@@ -56,7 +60,7 @@ pub fn mcp_config_view(app: &CosmicLlmApp) -> Element<Message> {
         let header_row = cosmic::widget::row::with_capacity(4)
             .push(
                 button::text(expand_icon)
-                    .on_press(Message::ToggleMCPServer(server_name.clone()))
+                    .on_press(crate::ui::app::Message::MCPConfigPage(page::Message::ToggleServer(server_name.clone())))
                     .class(cosmic::style::Button::Text),
             )
             .push(cosmic::widget::text(server_name.clone()).size(16))
@@ -85,7 +89,7 @@ pub fn mcp_config_view(app: &CosmicLlmApp) -> Element<Message> {
                 );
             } else {
                 // Build tools column - collect widgets first to avoid lifetime issues
-                let tool_widgets: Vec<Element<Message>> = tools.into_iter().map(render_tool_item).collect();
+                let tool_widgets: Vec<Element<crate::ui::app::Message>> = tools.into_iter().map(render_tool_item).collect();
                 let mut tools_column = cosmic::widget::column::with_capacity(tool_widgets.len());
                 for tool_widget in tool_widgets {
                     tools_column = tools_column.push(tool_widget);
@@ -141,7 +145,7 @@ pub fn mcp_config_view(app: &CosmicLlmApp) -> Element<Message> {
                 )
                 .push(
                     button::text("Edit Config")
-                        .on_press(Message::OpenMCPConfig)
+                        .on_press(crate::ui::app::Message::OpenMCPConfig)
                         .class(cosmic::style::Button::Text),
                 )
                 .spacing(12)
@@ -174,7 +178,7 @@ pub fn mcp_config_view(app: &CosmicLlmApp) -> Element<Message> {
         .into()
 }
 
-fn render_tool_item(tool: crate::llm::ToolDefinition) -> Element<'static, Message> {
+fn render_tool_item(tool: crate::llm::ToolDefinition) -> Element<'static, crate::ui::app::Message> {
     // Build input schema text
     let input_text = if let Some(properties) = tool.parameters.get("properties") {
         if let Some(props_obj) = properties.as_object() {
