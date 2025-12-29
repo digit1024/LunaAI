@@ -1,5 +1,5 @@
 use crate::llm::Attachment;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 use tracing;
@@ -42,7 +42,8 @@ pub fn create_attachment(file_path: &str) -> Result<Attachment> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("Failed to extract file name from path: invalid file name"))?
+        .ok_or_else(|| anyhow::anyhow!("Failed to extract file name from path: invalid file name"))
+        .with_context(|| format!("Invalid file name for path: {}", file_path))?
         .to_string();
 
     let metadata = fs::metadata(path)?;

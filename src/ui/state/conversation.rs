@@ -51,7 +51,7 @@ impl ConversationState {
         storage
             .get_conversation(&conversation_id)
             .context("Failed to get conversation from storage")?
-            .ok_or_else(|| anyhow::anyhow!("Conversation {} not found", conversation_id))?;
+            .context(format!("Conversation {} not found", conversation_id))?;
 
         // Load messages
         let db_messages = storage

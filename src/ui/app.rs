@@ -27,7 +27,11 @@ use crate::{
     ui::widgets::ToolCallMessage,
 };
 use crate::services::MCPService;
-use crate::ui::handlers::{handle_chat_messages, handle_tool_messages, handle_navigation_messages, handle_agent_messages, handle_settings_messages};
+use crate::ui::handlers::{
+    handle_chat_messages, handle_tool_messages, handle_navigation_messages, 
+    handle_agent_messages, handle_settings_messages, handle_dbus_messages,
+    handle_dialog_messages, handle_mcp_messages,
+};
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -437,7 +441,7 @@ impl CosmicLlmApp {
         key_binds
     }
 
-    fn create_streaming_subscription(&self, streaming_id: Option<Uuid>) -> Subscription<Message> {
+    pub(crate) fn create_streaming_subscription(&self, streaming_id: Option<Uuid>) -> Subscription<Message> {
         crate::ui::subscriptions::streaming::create_streaming_subscription(
             streaming_id,
             self.llm_client.clone(),
@@ -515,16 +519,7 @@ impl CosmicLlmApp {
         }
     }
 
-    pub(crate) fn format_json_string(raw: &str) -> String {
-        match serde_json::from_str::<Value>(raw) {
-            Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| raw.to_string()),
-            Err(_) => raw.to_string(),
-        }
-    }
-
-    pub(crate) fn coerce_value(raw: &str) -> Value {
-        serde_json::from_str::<Value>(raw).unwrap_or(Value::String(raw.to_string()))
-    }
+    // Helper methods moved to src/ui/helpers/utils.rs
 }
 
 impl Application for CosmicLlmApp {
@@ -633,48 +628,7 @@ impl Application for CosmicLlmApp {
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
-        use cosmic::iced::time;
-        use cosmic::iced_futures::Subscription;
-        
-        // Create a subscription for streaming LLM responses
-        let streaming_sub = if self.is_streaming {
-            self.create_streaming_subscription(self.current_streaming_id)
-        } else {
-            Subscription::none()
-        };
-        
-        // Create a timer subscription for typing indicator animation
-        let animation_sub = if self.is_streaming {
-            time::every(time::Duration::from_millis(50))
-                .map(|instant| Message::TypingIndicatorTick(instant))
-        } else {
-            Subscription::none()
-        };
-        
-        // Create a periodic subscription to refresh conversation list every 15 seconds
-        let conversation_refresh_sub = time::every(time::Duration::from_secs(15))
-            .map(|_| Message::RefreshConversationList);
-        
-        // Periodically check D-Bus service availability (every 5 seconds) - only if feature enabled
-        #[cfg(feature = "ttsandstt")]
-        let dbus_check_sub = time::every(time::Duration::from_secs(5))
-            .map(|_| Message::CheckDbusService);
-        #[cfg(not(feature = "ttsandstt"))]
-        let dbus_check_sub = Subscription::none();
-        
-        // D-Bus status signal subscription
-        #[cfg(feature = "ttsandstt")]
-        let dbus_status_sub = if self.dbus_ttsstt_available {
-            crate::ui::subscriptions::dbus::create_dbus_status_subscription(
-                self.dbus_ttsstt_client.clone()
-            )
-        } else {
-            Subscription::none()
-        };
-        #[cfg(not(feature = "ttsandstt"))]
-        let dbus_status_sub = Subscription::none();
-        
-        Subscription::batch(vec![streaming_sub, animation_sub, conversation_refresh_sub, dbus_check_sub, dbus_status_sub])
+        crate::ui::subscriptions::app::create_app_subscriptions(self)
     }
 
     fn update(&mut self, message: Self::Message) -> app::Task<Self::Message> {
@@ -703,25 +657,19 @@ impl Application for CosmicLlmApp {
             return task;
         }
         
-        // Check if any handler handled the message (they all return None for handled messages)
-        // If none returned a task, check if it's a handled message and return Task::none()
-        if matches!(&message,
-            Message::InputChanged(_) | Message::InputActionPerformed(_) |
-            Message::SendMessage | Message::StopMessage | Message::RetryMessage |
-            Message::AttachFile | Message::FileSelected(_) | Message::RemoveFile(_) |
-            Message::FileChooserCancelled | Message::FileChooserError(_) |
-            Message::ScrollToBottom | Message::InlineError(_) | Message::DismissError |
-            Message::TypingIndicatorTick(_) |
-            Message::ToolCallStarted(_, _) | Message::ToolCallCompleted(_, _) |
-            Message::ToolCallError(_, _) | Message::ToolCallWidgetMessage(_, _) |
-            Message::ToggleToolSummary(_, _) |
-            Message::NavigateTo(_) | Message::SelectConversation(_) |
-            Message::DeleteConversation(_) | Message::NewConversation |
-            Message::AgentUpdate(_) |
-            Message::OpenSettings | Message::OpenConfigFile | Message::OpenProfilePrompt(_) |
-            Message::OpenMCPConfig
-        ) {
-            return app::Task::none();
+        // Try D-Bus handlers
+        if let Some(task) = handle_dbus_messages(self, &message) {
+            return task;
+        }
+        
+        // Try dialog handlers
+        if let Some(task) = handle_dialog_messages(self, &message) {
+            return task;
+        }
+        
+        // Try MCP handlers
+        if let Some(task) = handle_mcp_messages(self, &message) {
+            return task;
         }
         
         // Handle remaining messages (messages not handled by handler modules)
@@ -927,301 +875,7 @@ impl Application for CosmicLlmApp {
                 // TODO: Implement proper quit
                 std::process::exit(0);
             }
-            Message::ChangeDefaultProfile(profile_index) => {
-                // Must sort the same way as in the view to maintain index consistency
-                // Filter out hidden profiles
-                let mut profile_names: Vec<String> = self.config.profiles
-                    .iter()
-                    .filter(|(_, p)| !p.hidden)
-                    .map(|(name, _)| name.clone())
-                    .collect();
-                profile_names.sort();
-                if let Some(profile_name) = profile_names.get(profile_index) {
-                    let new_profile = profile_name.clone();
-                    self.config.default = new_profile.clone();
-                    self.settings_changed = true;
-                    // Recreate LLM client for new default provider
-                    if let Some(profile) = self.config.get_default_profile().cloned() {
-                        let masked = if profile.api_key.len() > 6 {
-                            format!(
-                                "{}...{}",
-                                &profile.api_key[..3],
-                                &profile.api_key[profile.api_key.len().saturating_sub(3)..]
-                            )
-                        } else {
-                            "***".to_string()
-                        };
-                        tracing::debug!(
-                            profile_name = %self.config.default,
-                            model = %profile.model,
-                            endpoint = %profile.endpoint,
-                            api_key_masked = %masked,
-                            "Switching default profile"
-                        );
-                        self.llm_client = llm::build_llm_client(&profile);
-                        
-                        // Update active conversation's profile in database if there is one
-                        if let Some(conv_id) = self.conversation_state.current_conversation_id {
-                            if let Err(e) = self.storage.update_conversation_profile(&conv_id, Some(&new_profile)) {
-                                tracing::error!(error = %e, "Failed to update conversation profile");
-                            } else {
-                                tracing::debug!(
-                                    conversation_id = %conv_id,
-                                    profile_name = %new_profile,
-                                    "Updated conversation profile"
-                                );
-                            }
-                        }
-                    }
-                    if let Some(task) = self.profile_tool_defaults_task() {
-                        return task;
-                    }
-                }
-            }
-            Message::SaveSettings => {
-                if let Err(e) = self.config.save() {
-                    tracing::error!(error = %e, "Failed to save settings");
-                } else {
-                    self.settings_changed = false;
-                    tracing::debug!("Settings saved successfully");
-                }
-            }
-            Message::ResetSettings => {
-                self.config = AppConfig::default();
-                self.settings_changed = true;
-            }
-            Message::SettingsPage(msg) => {
-                // Handle app-level messages before delegating to page
-                match &msg {
-                    SimpleSettingsMessage::BackToMain => {
-                        self.current_page = NavigationPage::Chat;
-                        return app::Task::none();
-                    }
-                    SimpleSettingsMessage::OpenConfigFile => {
-                        return cosmic::Task::perform(
-                            async {},
-                            |_| cosmic::Action::App(Message::OpenConfigFile),
-                        );
-                    }
-                    SimpleSettingsMessage::OpenProfilePrompt(profile_name) => {
-                        let profile_name_for_task = profile_name.clone();
-                        return cosmic::Task::perform(
-                            async { profile_name_for_task },
-                            |profile_name_for_task| cosmic::Action::App(Message::OpenProfilePrompt(profile_name_for_task)),
-                        );
-                    }
-                    SimpleSettingsMessage::SaveConfig => {
-                        // Apply all staged changes to actual config
-                        self.config.profiles = self.settings_page.staged_profiles.clone();
-                        self.config.default = self.settings_page.staged_default.clone();
-                        self.config.server = self.settings_page.staged_server.clone();
-                        self.config.title_summary = self.settings_page.staged_title_summary.clone();
-                        
-                        // Save to file
-                        if let Err(e) = self.config.save() {
-                            tracing::error!(error = %e, "Failed to save settings");
-                            self.dialog = Some(DialogPage::message_text(format!(
-                                "Failed to save settings:\n{}",
-                                e
-                            )));
-                        } else {
-                            self.settings_page.has_changes = false;
-                            self.settings_changed = false;
-                            // Update LLM client if default profile changed
-                            let profile_changed = self.config.default.clone();
-                            if let Some(profile) = self.config.get_default_profile().cloned() {
-                                self.llm_client = llm::build_llm_client(&profile);
-                            }
-                            // Update active conversation's profile in database if there is one
-                            if let Some(conv_id) = self.conversation_state.current_conversation_id {
-                                if let Err(e) = self.storage.update_conversation_profile(&conv_id, Some(&profile_changed)) {
-                                    tracing::error!(error = %e, "Failed to update conversation profile");
-                                } else {
-                                    tracing::debug!(
-                                        conversation_id = %conv_id,
-                                        profile_name = %profile_changed,
-                                        "Updated conversation profile"
-                                    );
-                                }
-                            }
-                            if let Some(task) = self.profile_tool_defaults_task() {
-                                return task;
-                            }
-                        }
-                        return app::Task::none();
-                    }
-                    SimpleSettingsMessage::CancelConfig => {
-                        // Reload from config to discard all staged changes
-                        self.settings_page.load_from_config(&self.config);
-                        self.current_page = NavigationPage::Chat;
-                        return app::Task::none();
-                    }
-                    _ => {
-                        // Delegate to page module for page state updates
-                        let _task = self.settings_page.update(msg.clone(), &self.config);
-                    }
-                }
-            }
-            Message::DialogAction(action) => {
-                match action {
-                    DialogAction::Open(page) => {
-                        // Initialize text content when opening MessageText dialog
-                        match &page {
-                            DialogPage::MessageText(text) => {
-                                self.dialog_text_content = Some(text_editor::Content::with_text(text));
-                            }
-                        }
-                        self.dialog = Some(page);
-                    }
-                    DialogAction::Update(page) => {
-                        // Update text content when updating MessageText dialog
-                        match &page {
-                            DialogPage::MessageText(text) => {
-                                self.dialog_text_content = Some(text_editor::Content::with_text(text));
-                            }
-                        }
-                        self.dialog = Some(page);
-                    }
-                    DialogAction::Close => {
-                        self.dialog = None;
-                        self.dialog_text_content = None;
-                    }
-                    DialogAction::Complete => {
-                        // For MessageText dialog, Complete just closes it
-                        self.dialog = None;
-                        self.dialog_text_content = None;
-                    }
-                    DialogAction::CopyText => {
-                        // Copy the current dialog text to clipboard
-                        if let Some(DialogPage::MessageText(text)) = &self.dialog {
-                            let _ = cli_clipboard::set_contents(text.clone());
-                        }
-                        // Keep dialog open for multiple copies
-                    }
-                    DialogAction::TextEditorAction(action) => {
-                        // Handle text editor actions to enable selection
-                        if let Some(content) = &mut self.dialog_text_content {
-                            content.perform(action);
-                        }
-                    }
-                }
-            }
-            Message::ShowMessageDialog(content) => {
-                let text = content.clone();
-                self.dialog_text_content = Some(text_editor::Content::with_text(&text));
-                self.dialog = Some(DialogPage::message_text(text));
-            }
-            Message::MCPToolsUpdated(tools) => {
-                self.available_mcp_tools = tools;
-                // Sync tool states from registry
-                if let Ok(registry) = self.mcp_registry.try_read() {
-                    self.tool_states = registry.get_tool_states();
-                }
-            }
-            Message::RefreshMCPTools => {
-                // Try to get tools synchronously from registry
-                if let Ok(registry) = self.mcp_registry.try_read() {
-                    let tools = registry.get_available_tools();
-                    tracing::debug!(tool_count = tools.len(), "RefreshMCPTools: Found tools");
-                    self.available_mcp_tools = tools;
-                    // Also sync tool states
-                    self.tool_states = registry.get_tool_states();
-                } else {
-                    tracing::error!("RefreshMCPTools: Failed to get registry read lock");
-                }
-            }
-            Message::ToggleAllTools(enabled) => {
-                // Update local state
-                for tool in &self.available_mcp_tools {
-                    self.tool_states.insert(tool.name.clone(), enabled);
-                }
-                // Update registry asynchronously
-                let mcp_registry = self.mcp_registry.clone();
-                return cosmic::Task::perform(
-                    async move {
-                        let mut registry = mcp_registry.write().await;
-                        if enabled {
-                            registry.enable_all_tools();
-                        } else {
-                            registry.disable_all_tools();
-                        }
-                        cosmic::Action::App(Message::RefreshMCPTools)
-                    },
-                    |msg| msg,
-                );
-            }
-            Message::ToggleTool(tool_name, enabled) => {
-                // Update local state
-                self.tool_states.insert(tool_name.clone(), enabled);
-                // Update registry asynchronously
-                let mcp_registry = self.mcp_registry.clone();
-                return cosmic::Task::perform(
-                    async move {
-                        let mut registry = mcp_registry.write().await;
-                        registry.set_tool_enabled(&tool_name, enabled);
-                        cosmic::Action::App(Message::RefreshMCPTools)
-                    },
-                    |msg| msg,
-                );
-            }
-            Message::ToggleMCPServerEnabled(server_name, enabled) => {
-                // Update profile's enabled_mcp list synchronously
-                let profile_name = self.config.default.clone();
-                if let Some(profile) = self.config.profiles.get_mut(&profile_name) {
-                    if enabled {
-                        // Add server to enabled list if not present
-                        if !profile.enabled_mcp.iter().any(|s| s.eq_ignore_ascii_case(&server_name)) {
-                            profile.enabled_mcp.push(server_name.clone());
-                        }
-                    } else {
-                        // Remove server from enabled list
-                        profile.enabled_mcp.retain(|s| !s.eq_ignore_ascii_case(&server_name));
-                    }
-                }
-                
-                // Update tool_states synchronously for immediate UI feedback
-                if let Ok(registry) = self.mcp_registry.try_read() {
-                    // Find all tools for this server and update their states
-                    for tool in &self.available_mcp_tools {
-                        if let Ok(tool_server) = registry.get_server_for_tool(&tool.name) {
-                            if tool_server == &server_name {
-                                self.tool_states.insert(tool.name.clone(), enabled);
-                            }
-                        }
-                    }
-                }
-                
-                // Update registry and save config asynchronously
-                let mcp_registry = self.mcp_registry.clone();
-                let server_name_clone = server_name.clone();
-                let config = self.config.clone();
-                
-                return cosmic::Task::perform(
-                    async move {
-                        // Update registry
-                        {
-                            let mut registry = mcp_registry.write().await;
-                            registry.set_server_enabled(&server_name_clone, enabled);
-                        }
-                        
-                        // Save config
-                        if let Err(e) = config.save() {
-                            tracing::error!(error = %e, "Failed to save config");
-                        }
-                        
-                        cosmic::Action::App(Message::RefreshMCPTools)
-                    },
-                    |msg| msg,
-                );
-            }
-            Message::ShowToolsContext => {
-                self.context_state.show_tools_context = true;
-                self.core.window.show_context = true;
-            }
-            Message::HideToolsContext => {
-                self.context_state.show_tools_context = false;
-                self.core.window.show_context = false;
-            }
+            // Settings messages are handled by settings handler module
             Message::MarkdownLinkClicked(url) => {
                 let _ = webbrowser::open(url.as_str());
             }
@@ -1414,52 +1068,14 @@ impl CosmicLlmApp {
         );
     }
     
+    // Helper methods moved to src/ui/helpers/profile.rs and src/ui/widgets/menu_bar.rs
     pub(crate) fn error_banner(&self) -> Option<Element<Message>> {
         self.chat_page.current_error.as_ref()
             .map(|error| crate::ui::widgets::error_banner::error_banner(error))
     }
 
-    #[allow(dead_code)] // Used internally
-    fn load_active_profile_prompt(&mut self) -> Option<String> {
-        let profile = self.config.get_default_profile()?;
-        let path = profile.profile_prompt_file.as_deref()?;
-
-        let resolved_path = AppConfig::resolve_config_path(path);
-        let resolved = resolved_path.to_string_lossy().to_string();
-
-        match self.prompt_manager.load_profile_prompt(&resolved) {
-            Ok(content) => {
-                if self.chat_page
-                    .current_error
-                    .as_deref()
-                    .map(|msg| msg.starts_with("Profile prompt"))
-                    .unwrap_or(false)
-                {
-                    self.chat_page.current_error = None;
-                }
-                Some(content)
-            }
-            Err(err) => {
-                let message = match &err {
-                    crate::prompts::ProfilePromptError::NotFound(_) => {
-                        format!("Profile prompt not found: {}", resolved)
-                    }
-                    _ => err.to_string(),
-                };
-                self.chat_page.current_error = Some(message);
-                None
-            }
-        }
-    }
-
     pub(crate) fn profile_tool_defaults_task(&self) -> Option<app::Task<Message>> {
-        let profile = self.config.get_default_profile()?;
-        // Always apply profile defaults, even if enabled_mcp is empty
-        // (empty list means enable all tools)
-        let allowed_servers = profile.enabled_mcp.clone();
-        let registry = self.mcp_registry.clone();
-
-        Some(MCPService::profile_tool_defaults_task(registry, allowed_servers))
+        crate::ui::helpers::profile::profile_tool_defaults_task(self)
     }
 
     fn create_menu_bar(&self) -> Element<Message> {

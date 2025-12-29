@@ -30,8 +30,8 @@ impl AttachmentState {
     pub fn add_file(&mut self, file_path: String) -> Result<()> {
         // Validate file exists
         if !std::path::Path::new(&file_path).exists() {
-            return Err(anyhow::anyhow!("File does not exist: {}", file_path))
-                .context("Failed to add attachment");
+            return Err(anyhow::anyhow!("File does not exist: {}", file_path)
+                .context("Failed to add attachment"));
         }
 
         // Check if already attached

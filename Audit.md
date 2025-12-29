@@ -83,23 +83,25 @@
 - ✅ **Replaced server-side prompt injection** - Eliminated `inject_prompts()` function, now uses `ContextService::inject_prompts()`
 - ✅ **All page modules created** - Extracted page-specific state:
   - ✅ `chat::Page` - Chat page state
-  - ✅ `history::Page` - History page state
+  - ✅ `history::Page` - History page state (follows COSMIC module pattern)
   - ✅ `mcp_config::Page` - MCP config page state
-  - ✅ `settings::Page` - Settings page state
-- ✅ **Massive `app.rs` reduction** - From 3723 lines → **1685 lines** (-2038 lines, -54.8%) ✅
+  - ✅ `settings::Page` - Settings page state (now fully follows COSMIC module pattern with `update()` method and `settings_view()` function)
+- ✅ **All page modules follow consistent pattern** - Each has `Page` struct, `Message` enum, `update()` method, `view()` method, and module-level view function
+- ✅ **Settings message handling refactored** - Moved from `app.rs` to `settings::Page::update()`, following same pattern as history page
+- ✅ **Massive `app.rs` reduction** - From 3723 lines → **1468 lines** (-2255 lines, -60.6%) ✅
 - ✅ **Fixed remaining `expect()` call** - Replaced with proper error handling
 - ✅ All modules compile successfully
-- ✅ All page modules fully integrated
+- ✅ All page modules fully integrated with consistent architecture
 
 **Remaining (Future Work):**
-1. ⏳ Further reduce `app.rs` to < 1000 lines (currently 1685, need -685 more) - **Optional optimization**
+1. ⏳ Further reduce `app.rs` to < 1000 lines (currently 1468, need -468 more) - **Optional optimization**
 2. ⏳ Complete type system unification (still some duplication) - **Low priority**
 
 ---
 
 ## 🔴 CRITICAL ISSUES
 
-### 1. God Object: `src/ui/app.rs` (1685 lines, down from 3723, -2038 lines, -54.8%) ✅ **MAJOR IMPROVEMENT**
+### 1. God Object: `src/ui/app.rs` (1468 lines, down from 3723, -2255 lines, -60.6%) ✅ **MAJOR IMPROVEMENT**
 
 **Location:** `src/ui/app.rs`
 
@@ -107,7 +109,7 @@
 - ✅ Extracted state management to `src/ui/state/` modules (ConversationState, ToolCallState, AttachmentState, ContextState)
 - ✅ Extracted business logic to `src/services/` modules (MessageConverter, ContextService, ToolCallManager, MCPService)
 - ✅ Extracted message handlers to `src/ui/handlers/` modules (chat, tools, navigation, agent, settings)
-- ✅ Extracted page-specific state to `src/ui/pages/*/page.rs` modules (chat, history, mcp_config, settings)
+- ✅ Extracted page-specific state to `src/ui/pages/*/page.rs` modules (chat, history, mcp_config, settings) - All now follow consistent COSMIC module pattern
 - ⚠️ Still contains core coordination logic and some direct field access
 
 **Impact:** 
@@ -3094,7 +3096,7 @@ log::error!("Failed to persist assistant response: {}", e);
 ## 📈 PROGRESS TRACKING
 
 ### Current State (After Major Refactoring)
-- **Files > 1000 lines:** 1 (`app.rs` = 1853, down from 3723) ⚠️ **Still needs work** (target: < 1000)
+- **Files > 1000 lines:** 1 (`app.rs` = 1468, down from 3723) ⚠️ **Still needs work** (target: < 1000, need -468 more)
 - **Duplicated logic areas:** 3 (down from 7, -57%) ✅ **MAJOR IMPROVEMENT**
 - **Type duplications:** 4+ Message, 3+ Conversation, 3+ ToolCallInfo ⚠️ **Still pending**
 - **`unwrap()`/`expect()`:** 0 (down from 27, -100%) ✅ **FIXED**
@@ -3106,11 +3108,11 @@ log::error!("Failed to persist assistant response: {}", e);
 - **Emojis in logs:** 0 ✅ **FIXED**
 - **Services extracted:** 4 (MessageConverter, ContextService, ToolCallManager, MCPService) ✅ **DONE**
 - **State modules extracted:** 4 (ConversationState, ToolCallState, AttachmentState, ContextState) ✅ **DONE**
-- **Page modules extracted:** 4 (chat, history, mcp_config, settings) ✅ **DONE**
+- **Page modules extracted:** 4 (chat, history, mcp_config, settings) ✅ **DONE** - All follow consistent COSMIC module pattern with `update()` and module-level view functions
 - **Handler modules extracted:** 5 (chat, tools, navigation, agent, settings) ✅ **DONE**
 
 ### Target State (Next Audit)
-- **Files > 1000 lines:** 0 (currently 1 at 1853, need -853 more)
+- **Files > 1000 lines:** 0 (currently 1 at 1468, need -468 more)
 - **Duplicated logic areas:** 0 (currently 3, need -3 more)
 - **Type duplications:** 0 (currently 4+ Message, 3+ Conversation, 3+ ToolCallInfo)
 - **`unwrap()`/`expect()`:** 0 ✅ **ACHIEVED** (was 11, all fixed)
@@ -3134,7 +3136,7 @@ Where each score is: (Passed Checks / Total Checks) × 100
 ```
 
 **Baseline Score:** ~35/100  
-**Current Score (After Major Refactoring + Unwrap/Expect Fixes):** ~84/100 ✅ **+49 points**
+**Current Score (After Major Refactoring + Settings Module Pattern):** ~85/100 ✅ **+50 points**
 **Target Score:** > 85/100
 
 **Phase 1 Improvements:**
@@ -3147,7 +3149,8 @@ Where each score is: (Passed Checks / Total Checks) × 100
 - ✅ Fixed all unwrap()/expect() calls (+2 points)
 
 **Phase 2 Improvements:**
-- ✅ Reduced app.rs from 3723 → 1853 lines (-50.2%) (+10 points)
+- ✅ Reduced app.rs from 3723 → 1468 lines (-60.6%) (+10 points)
+- ✅ Settings page refactored to follow COSMIC module pattern (+1 point) - Moved 300+ lines of settings message handling from app.rs to settings::Page::update()
 - ✅ Extracted services (MessageConverter, ContextService, ToolCallManager, MCPService) (+5 points)
 - ✅ Extracted state modules (ConversationState, ToolCallState, AttachmentState, ContextState) (+5 points)
 - ✅ Extracted page modules (chat, history, mcp_config, settings) (+3 points)
@@ -3384,7 +3387,7 @@ The codebase will be considered to have **GOOD** code quality when:
 | Emojis in logs | Many | 0 | 0 | ✅ **DONE** |
 | `unwrap()`/`expect()` | 27 | 0 | 0 | ✅ **FIXED** (-100%) |
 | `anyhow::anyhow!()` | 19 | 8 | 0 | ⚠️ **IMPROVED** |
-| Files > 1000 lines | 1 (3723) | 1 (1853) | 0 | ⚠️ **MAJOR IMPROVEMENT** (-50.2%) |
+| Files > 1000 lines | 1 (3723) | 1 (1468) | 0 | ⚠️ **MAJOR IMPROVEMENT** (-60.6%) |
 | Duplicated logic | 7 areas | 3 areas | 0 | ✅ **MAJOR IMPROVEMENT** (-57%) |
 | Type duplications | 4+ types | 4+ types | 0 | ⚠️ **PENDING** |
 | `clone()` in app.rs | 153 | 80 | < 50 | ✅ **IMPROVED** (-47.7%) |
@@ -3408,11 +3411,11 @@ The codebase will be considered to have **GOOD** code quality when:
 
 *Generated with deep analysis of codebase structure, dependencies, types, patterns, error handling, and observability.*
 
-**Last Updated:** December 2024 (After Major Refactoring + Unwrap/Expect Fixes)  
+**Last Updated:** December 2024 (After Settings Module Pattern Refactoring)  
 **Phase 1 Status:** ✅ **FULLY COMPLETE** (all items including pending)  
-**Phase 2 Status:** ✅ **85% COMPLETE** (Services integrated, state modules integrated, all page modules extracted, handlers extracted, app.rs reduced by 50%)  
+**Phase 2 Status:** ✅ **90% COMPLETE** (Services integrated, state modules integrated, all page modules extracted with consistent pattern, handlers extracted, app.rs reduced by 60.6%)  
 **Phase 3 Status:** ⏳ **IN PROGRESS** (unwrap/expect fixes ✅ complete)  
-**Current Quality Score:** 84/100 (up from 35/100, +49 points)
+**Current Quality Score:** 85/100 (up from 35/100, +50 points)
 
 **Modular Architecture Progress:**
 1. ✅ Created `MODULAR_ARCHITECTURE.md` with comprehensive refactoring plan
@@ -3423,10 +3426,17 @@ The codebase will be considered to have **GOOD** code quality when:
    - ✅ `MCPService` - MCP registry operations (fully implemented)
 3. ✅ Extracted state modules (ConversationState, ToolCallState, AttachmentState, ContextState) - **COMPLETE**
 4. ✅ Extracted page modules (chat, history, mcp_config, settings) - **COMPLETE**
+   - ✅ All page modules now follow consistent COSMIC module pattern:
+     - `Page` struct with state
+     - `Message` enum for page-specific messages
+     - `update()` method for state management
+     - `view()` method for rendering
+     - Module-level view function (e.g., `settings_view()`) for message mapping
+   - ✅ Settings page fully refactored (December 2024): Moved 300+ lines of message handling from `app.rs` to `settings::Page::update()`, following same pattern as history page
 5. ✅ Extracted handler modules (chat, tools, navigation, agent, settings) - **COMPLETE**
-6. ✅ Reduced `app.rs` from 3723 → 1685 lines (-54.7%) - **MAJOR PROGRESS**
+6. ✅ Reduced `app.rs` from 3723 → 1468 lines (-60.6%) - **MAJOR PROGRESS**
 7. ✅ Fixed all `unwrap()`/`expect()` calls (0 remaining) - **COMPLETE**
-8. ⏳ Next: Further reduce `app.rs` to < 1000 lines (need -685 more lines)
+8. ⏳ Next: Further reduce `app.rs` to < 1000 lines (need -468 more lines)
 
 **Next Steps:**
 1. ✅ Phase 1 foundation cleanup - **COMPLETE**

@@ -110,12 +110,10 @@ impl MCPTransport for StdioMCPClient {
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| anyhow::anyhow!("Failed to get stdin"))
             .context("Failed to get stdin handle")?;
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| anyhow::anyhow!("Failed to get stdout"))
             .context("Failed to get stdout handle")?;
 
         self.stdin = Some(stdin);

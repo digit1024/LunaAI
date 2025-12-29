@@ -125,7 +125,7 @@ impl ContextService {
         
         if regular_messages.is_empty() {
             tracing::warn!(conversation_id = %conv_id, "No messages available to summarize");
-            return Err(anyhow::anyhow!("No messages available to summarize"));
+            return Err(anyhow::anyhow!("No messages available to summarize").context("Summarization failed"));
         }
         
         let keep_recent_count = 10;
@@ -137,7 +137,7 @@ impl ContextService {
                 keep_recent_count,
                 "All messages are recent, nothing to summarize"
             );
-            return Err(anyhow::anyhow!("All messages are recent, nothing to summarize"));
+            return Err(anyhow::anyhow!("All messages are recent, nothing to summarize").context("Summarization skipped"));
         }
         
         tracing::debug!(
@@ -173,7 +173,7 @@ impl ContextService {
             .collect();
         
         if llm_msgs_to_summarize.is_empty() {
-            return Err(anyhow::anyhow!("No valid messages to summarize"));
+            return Err(anyhow::anyhow!("No valid messages to summarize").context("Summarization failed"));
         }
 
         // Generate summary

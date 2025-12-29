@@ -8,6 +8,7 @@ use serde_json::Value;
 use crate::agentic::protocol::AgentUpdate;
 use crate::storage::sqlite_storage_simple::MessageMetadata;
 use crate::ui::app::{AnchoredToolCall, ChatMessage, CosmicLlmApp, Message, ToolCallInfo, ToolCallStatus, ToolRuntimeContext};
+use crate::ui::helpers::utils;
 
 /// Handle agent-related messages
 pub fn handle_agent_messages(
@@ -194,7 +195,7 @@ fn handle_agent_update(app: &mut CosmicLlmApp, update: AgentUpdate) {
             result_json,
         } => {
             let context = app.tool_call_state.tool_runtime_context.get(&tool_call_id).cloned();
-            let result_display = CosmicLlmApp::format_json_string(&result_json);
+            let result_display = utils::format_json_string(&result_json);
             let anchor = context
                 .as_ref()
                 .map(|ctx| ctx.anchor_index)
@@ -242,7 +243,7 @@ fn handle_agent_update(app: &mut CosmicLlmApp, update: AgentUpdate) {
             if let Some(conv_id) = app.conversation_state.current_conversation_id {
                 let params_owned = context.as_ref().and_then(|ctx| ctx.params.clone());
                 let params_ref = params_owned.as_ref();
-                let result_value = CosmicLlmApp::coerce_value(&result_json);
+                let result_value = utils::coerce_value(&result_json);
                 let metadata = MessageMetadata {
                     tool_calls: None,
                     tool_call_id: Some(tool_call_id.as_str()),

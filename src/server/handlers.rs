@@ -76,8 +76,7 @@ impl SessionState {
         config
             .get_profile(&self.profile_name)
             .or_else(|| config.get_default_profile())
-            .ok_or_else(|| anyhow::anyhow!("No active profile configured"))
-            .context("Failed to get active profile")
+            .context("No active profile configured")
     }
 
     pub fn track_task(&mut self, handle: JoinHandle<()>) {
@@ -192,7 +191,8 @@ impl ServerHandler {
                 .outbound
                 .send(ServerEvent::ConversationLoaded { conversation: view });
         } else {
-            return Err(anyhow::anyhow!("Conversation {} not found", conversation_id));
+            return Err(anyhow::anyhow!("Conversation {} not found", conversation_id)
+                .context("Failed to load conversation"));
         }
         Ok(())
     }
