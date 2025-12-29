@@ -63,6 +63,122 @@ impl ContextService {
         Ok(final_messages)
     }
 
+    /// Perform manual summarization on a conversation
+    ///
+    /// This unifies summarization logic that's currently in:
+    /// - `app.rs` (desktop)
+    /// - `server/handlers.rs` (server)
+    ///
+    /// # Arguments
+    /// - `conv_id`: Conversation ID to summarize
+    /// - `storage`: Storage instance
+    /// - `llm_client`: LLM client for summarization
+    /// - `profile`: LLM profile with context limits
+    ///
+    /// # Returns
+    /// Summary message content, or error
+    pub async fn perform_manual_summarization(
+        conv_id: uuid::Uuid,
+        storage: &crate::storage::Storage,
+        llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
+        profile: &crate::config::LlmProfile,
+    ) -> Result<String> {
+        use anyhow::Context;
+
+        tracing::debug!(conversation_id = %conv_id, "Manual summarization triggered");
+        
+        // Load messages from DB for summarization
+        let db_messages = storage
+            .load_conversation_messages(&conv_id.to_string())
+            .context("Failed to load messages from database")?;
+        
+        // Filter to regular messages (exclude summaries, tools, and already summarized messages)
+        let regular_messages: Vec<_> = db_messages.iter()
+            .filter(|msg| !msg.is_summary && !msg.is_summarized && msg.role != "tool")
+            .collect();
+        
+        if regular_messages.is_empty() {
+            tracing::warn!(conversation_id = %conv_id, "No messages available to summarize");
+            return Err(anyhow::anyhow!("No messages available to summarize"));
+        }
+        
+        let keep_recent_count = 10;
+        let messages_to_summarize_count = regular_messages.len().saturating_sub(keep_recent_count);
+        
+        if messages_to_summarize_count == 0 {
+            tracing::debug!(
+                conversation_id = %conv_id,
+                keep_recent_count,
+                "All messages are recent, nothing to summarize"
+            );
+            return Err(anyhow::anyhow!("All messages are recent, nothing to summarize"));
+        }
+        
+        tracing::debug!(
+            conversation_id = %conv_id,
+            messages_to_summarize = messages_to_summarize_count,
+            keep_recent_count,
+            "Will summarize messages"
+        );
+        
+        // Get IDs to summarize
+        let ids_to_summarize: Vec<i64> = regular_messages[..messages_to_summarize_count]
+            .iter()
+            .map(|msg| msg.id)
+            .collect();
+        
+        // Get full messages to summarize
+        let msgs_to_summarize: Vec<_> = db_messages.iter()
+            .filter(|msg| ids_to_summarize.contains(&msg.id))
+            .cloned()
+            .collect();
+        
+        // Convert to LlmMessage for summarization
+        let llm_msgs_to_summarize: Vec<crate::llm::Message> = msgs_to_summarize.iter()
+            .filter_map(|msg| {
+                let role = match msg.role.as_str() {
+                    "user" => crate::llm::Role::User,
+                    "assistant" => crate::llm::Role::Assistant,
+                    "system" => crate::llm::Role::System,
+                    _ => return None,
+                };
+                Some(crate::llm::Message::new(role, msg.content.clone()))
+            })
+            .collect();
+        
+        if llm_msgs_to_summarize.is_empty() {
+            return Err(anyhow::anyhow!("No valid messages to summarize"));
+        }
+
+        // Generate summary
+        tracing::debug!("Generating summary");
+        let summary_msg = crate::llm::context_manager::SmartContextManager::summarize_messages(
+            llm_msgs_to_summarize,
+            profile,
+            llm_client.as_ref(),
+        )
+        .await
+        .context("Failed to generate summary")?;
+        
+        tracing::info!(
+            summary_length = summary_msg.content.len(),
+            "Summary generated"
+        );
+        
+        // Perform database summarization
+        storage
+            .perform_summarization(
+                &conv_id.to_string(),
+                &msgs_to_summarize,
+                &summary_msg.content,
+            )
+            .context("Failed to save summary to DB")?;
+        
+        tracing::debug!("Summary saved to database");
+        
+        Ok(summary_msg.content)
+    }
+
     /// Inject system prompts into message history
     pub fn inject_prompts(
         mut history: Vec<LlmMessage>,

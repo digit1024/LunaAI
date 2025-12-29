@@ -74,8 +74,8 @@ impl ConversationState {
 
         self.current_conversation_id = Some(conversation_id);
 
-        // Update context usage cache
-        self.update_context_usage_cache(conversation_id, storage);
+        // Note: update_context_usage_cache requires config and prompt_manager
+        // This will be called separately by the caller if needed
 
         Ok(())
     }
@@ -148,10 +148,118 @@ impl ConversationState {
     }
 
     /// Update context usage cache for a conversation
-    pub fn update_context_usage_cache(&mut self, conversation_id: Uuid, _storage: &Storage) {
-        // This is a placeholder - actual implementation would calculate context usage
-        // For now, we'll set it to None to indicate it needs calculation
-        self.context_usage_cache.insert(conversation_id, None);
+    pub fn update_context_usage_cache(
+        &mut self,
+        conversation_id: Uuid,
+        storage: &Storage,
+        config: &crate::config::AppConfig,
+        prompt_manager: &crate::prompts::PromptManager,
+    ) {
+        if let Ok(Some(conv)) = storage.get_conversation(&conversation_id) {
+            let usage_pct = crate::ui::pages::chat::top_panel::calculate_context_usage(
+                &conv,
+                config,
+                prompt_manager,
+            );
+            self.context_usage_cache.insert(conversation_id, usage_pct);
+        }
+    }
+
+    /// Rebuild conversation view from stored conversation
+    /// This loads messages and tool calls into the UI state
+    pub fn rebuild_conversation_view(
+        &mut self,
+        conversation: crate::storage::conversation_storage::Conversation,
+        tool_call_state: &mut crate::ui::state::tool_calls::ToolCallState,
+        context_state: &mut crate::ui::state::context::ContextState,
+        storage: &Storage,
+        config: &crate::config::AppConfig,
+        prompt_manager: &crate::prompts::PromptManager,
+    ) {
+        use crate::ui::app::{AnchoredToolCall, ToolCallInfo, ToolCallStatus};
+
+        self.messages.clear();
+        tool_call_state.archived_tool_calls.clear();
+        tool_call_state.active_tool_calls.clear();
+        tool_call_state.set_current_ai_message_index(None);
+        tool_call_state.pending_tool_calls_for_history.clear();
+        tool_call_state.tool_runtime_context.clear();
+        tool_call_state.expanded_tool_summaries.clear();
+        context_state.expanded_reasoning.clear();
+        context_state.expanded_summaries.clear();
+
+        let mut archived_indices: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+
+        for stored in conversation.messages {
+            // Tool role messages should NOT be added as regular chat messages -
+            // they only update the archived tool calls with results
+            if stored.role == "tool" {
+                if let Some(tool_call_id) = stored.tool_call_id.as_ref() {
+                    if let Some(idx) = archived_indices.get(tool_call_id) {
+                        if let Some(entry) = tool_call_state.archived_tool_calls.get_mut(*idx) {
+                            entry.tool_call.status =
+                                if stored.tool_status.as_deref() == Some("error") {
+                                    ToolCallStatus::Error
+                                } else {
+                                    ToolCallStatus::Completed
+                                };
+
+                            // Prefer tool_result_json over content (content is legacy/redundant)
+                            let result_text = stored
+                                .tool_result_json
+                                .as_ref()
+                                .map(|value| {
+                                    serde_json::to_string_pretty(value)
+                                        .unwrap_or_else(|_| value.to_string())
+                                })
+                                .unwrap_or_else(|| stored.content.clone());
+                            if entry.tool_call.status == ToolCallStatus::Error {
+                                entry.tool_call.error = Some(result_text);
+                            } else {
+                                entry.tool_call.result = Some(result_text);
+                            }
+                        }
+                    }
+                }
+                continue; // Skip adding tool messages to self.messages
+            }
+
+            let is_user = stored.role == "user";
+            self.messages.push(ChatMessage {
+                content: stored.content.clone(),
+                is_user,
+                is_error: false,
+                reasoning_content: stored.reasoning_content.clone(),
+                is_summary: stored.is_summary,
+                is_summarized: stored.is_summarized,
+                summarized_count: stored.summarized_count,
+            });
+            let anchor_index = self.messages.len().saturating_sub(1);
+
+            if let Some(tool_calls) = stored.tool_calls {
+                for call in tool_calls {
+                    let params_pretty = serde_json::to_string_pretty(&call.parameters)
+                        .unwrap_or_else(|_| call.parameters.to_string());
+                    let info = ToolCallInfo {
+                        id: Some(call.id.clone()),
+                        tool_name: call.name.clone(),
+                        parameters: params_pretty,
+                        status: ToolCallStatus::Started,
+                        result: None,
+                        error: None,
+                    };
+                    tool_call_state.archived_tool_calls.push(AnchoredToolCall {
+                        anchor_index,
+                        tool_call: info,
+                    });
+                    archived_indices.insert(call.id.clone(), tool_call_state.archived_tool_calls.len() - 1);
+                }
+            }
+        }
+        
+        // Update context usage cache for this conversation
+        self.update_context_usage_cache(conversation.id, storage, config, prompt_manager);
     }
 
     /// Get context usage for a conversation (from cache or calculate)
