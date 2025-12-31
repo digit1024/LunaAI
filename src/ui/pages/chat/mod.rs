@@ -26,7 +26,7 @@ pub fn chat_view(app: &CosmicLlmApp) -> Element<crate::ui::app::Message> {
             .push(cosmic::widget::Space::with_height(Length::Fixed(12.0)));
     }
 
-    layout
+    let content = layout
         .push(
             // Messages area with better styling
             cosmic::widget::container(message_list::message_list(app))
@@ -40,6 +40,10 @@ pub fn chat_view(app: &CosmicLlmApp) -> Element<crate::ui::app::Message> {
         .push(
             // Input area with better styling
             input_area::input_area(app),
-        )
-        .into()
+        );
+
+    // Conversation mode UI is now handled by replacing the input area with controls
+    // See input_area.rs::conversation_mode_controls()
+
+    content.into()
 }

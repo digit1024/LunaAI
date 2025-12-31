@@ -66,9 +66,16 @@ pub fn handle_chat_messages(
 
 /// Handle SendMessage - the largest and most complex handler
 fn handle_send_message(app: &mut CosmicLlmApp) -> Option<app::Task<Message>> {
-    tracing::debug!(
+    #[cfg(feature = "ttsandstt")]
+    let is_conv_mode = app.is_conversation_mode_active;
+    #[cfg(not(feature = "ttsandstt"))]
+    let is_conv_mode = false;
+    
+    tracing::info!(
         input_length = app.chat_page.input.len(),
+        input_preview = app.chat_page.input.chars().take(50).collect::<String>(),
         attachment_count = app.attachment_state.attached_files.len(),
+        is_conversation_mode = is_conv_mode,
         "SendMessage received"
     );
     
@@ -331,7 +338,7 @@ fn handle_context_management(
     // Desktop needs to block on async operation
     let result = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
-            crate::services::ContextService::check_and_trigger_summarization(
+            crate::services::ContextService::check_and_trigger_summarization_desktop(
                 llm_messages,
                 conv_id,
                 storage,

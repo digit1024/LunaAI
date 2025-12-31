@@ -10,6 +10,8 @@ pub mod settings;
 pub mod dbus;
 pub mod dialog;
 pub mod mcp;
+#[cfg(feature = "ttsandstt")]
+pub mod conversation_mode;
 
 pub use chat::handle_chat_messages;
 pub use tools::handle_tool_messages;
@@ -19,4 +21,6 @@ pub use settings::handle_settings_messages;
 pub use dbus::handle_dbus_messages;
 pub use dialog::handle_dialog_messages;
 pub use mcp::handle_mcp_messages;
+#[cfg(feature = "ttsandstt")]
+pub use conversation_mode::handle_conversation_mode_messages;
 

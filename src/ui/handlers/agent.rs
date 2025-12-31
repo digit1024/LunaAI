@@ -17,14 +17,13 @@ pub fn handle_agent_messages(
 ) -> Option<app::Task<Message>> {
     match message {
         Message::AgentUpdate(u) => {
-            handle_agent_update(app, u);
-            None
+            handle_agent_update(app, u)
         }
         _ => None, // Not an agent message
     }
 }
 
-fn handle_agent_update(app: &mut CosmicLlmApp, update: AgentUpdate) {
+fn handle_agent_update(app: &mut CosmicLlmApp, update: AgentUpdate) -> Option<app::Task<Message>> {
     match update {
         AgentUpdate::AssistantStreamingStarted => {
             app.tool_call_state.pending_tool_calls_for_history.clear();
@@ -110,6 +109,22 @@ fn handle_agent_update(app: &mut CosmicLlmApp, update: AgentUpdate) {
                 }
             }
             app.tool_call_state.pending_tool_calls_for_history.clear();
+            
+            // If in conversation mode, automatically play TTS for the assistant's response
+            #[cfg(feature = "ttsandstt")]
+            if app.is_conversation_mode_active && app.dbus_ttsstt_available {
+                if let Some(msg_idx) = app.tool_call_state.current_ai_message_index {
+                    // Set state to Speaking before starting TTS
+                    app.conversation_mode_state = crate::ui::app::ConversationModeState::Speaking;
+                    // Trigger TTS playback
+                    return Some(cosmic::Task::perform(
+                        async move {
+                            cosmic::Action::App(Message::PlayMessageTts(msg_idx))
+                        },
+                        |msg| msg,
+                    ));
+                }
+            }
         }
         AgentUpdate::ToolPlanned { plan_items } => {
             let anchor = app
@@ -378,6 +393,9 @@ fn handle_agent_update(app: &mut CosmicLlmApp, update: AgentUpdate) {
             
             // Play completion sound
             crate::ui::audio::AudioService::play_sound("done.mp3");
+            
+            // Note: TTS is already triggered in AssistantComplete handler above
+            // Don't trigger it again here to avoid playing TTS twice
         }
         AgentUpdate::ModelError { error } => {
             // Stop streaming and show error message
@@ -403,6 +421,7 @@ fn handle_agent_update(app: &mut CosmicLlmApp, update: AgentUpdate) {
             });
         }
     }
+    None
 }
 
 // Helper functions use the ones from CosmicLlmApp
