@@ -52,4 +52,3 @@ pub fn profile_tool_defaults_task(app: &CosmicLlmApp) -> Option<app::Task<Messag
 
 
 
-

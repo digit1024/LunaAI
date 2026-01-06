@@ -45,6 +45,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-tungstenite = "0.28"
 tungstenite = "0.28"
 
+# Socket utilities for TCP keepalive configuration
+socket2 = "0.6"
+
 # Futures
 futures = "0.3"
 

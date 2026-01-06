@@ -29,9 +29,24 @@ class LunaWsClient {
 
   static const Duration _pingInterval = Duration(seconds: 30);
   static const Duration _pongTimeout = Duration(seconds: 60);
+  static const Duration _pongTimeoutDuringStreaming = Duration(seconds: 180); // 3 minutes - chunks keep connection alive
+
+  bool _isStreaming = false;
 
   Stream<ServerEvent> get events => _eventController.stream;
   bool get isConnected => _channel != null && !_disposed;
+  
+  /// Set streaming state - adjusts timeout and ping behavior
+  void setStreaming(bool streaming) {
+    if (_isStreaming == streaming) return;
+    _isStreaming = streaming;
+    debugPrint('📡 Streaming state changed: $streaming');
+    
+    // Restart ping timer to apply new timeout
+    if (_channel != null && !_disposed) {
+      _startPingTimer();
+    }
+  }
 
   /// Connect to the server with the given config.
   /// Throws [Exception] if connection fails - caller should handle retries.
@@ -137,16 +152,38 @@ class LunaWsClient {
 
   void _startPingTimer() {
     _stopPingTimer();
+    // Use longer timeout during streaming since chunks serve as keepalive
+    final pongTimeout = _isStreaming ? _pongTimeoutDuringStreaming : _pongTimeout;
+    
     _pingTimer = Timer.periodic(_pingInterval, (timer) {
       if (_disposed || _channel == null) {
         timer.cancel();
         return;
       }
 
+      // During streaming, skip health checks - chunks are keepalive
+      if (_isStreaming) {
+        // Only check timeout, don't send health checks
+        if (_lastPongReceived != null) {
+          final timeSinceLastPong = DateTime.now().difference(_lastPongReceived!);
+          if (timeSinceLastPong > pongTimeout) {
+            debugPrint('⚠️ No message received for ${timeSinceLastPong.inSeconds}s during streaming, connection may be dead');
+            if (!_disposed) {
+              _eventController.add(DisconnectedEvent());
+            }
+            timer.cancel();
+            return;
+          }
+        }
+        // During streaming, chunks serve as keepalive - no need to send health checks
+        return;
+      }
+
+      // Not streaming - normal health check behavior
       // Check if we've received a pong recently
       if (_lastPongReceived != null) {
         final timeSinceLastPong = DateTime.now().difference(_lastPongReceived!);
-        if (timeSinceLastPong > _pongTimeout) {
+        if (timeSinceLastPong > pongTimeout) {
           debugPrint('⚠️ No pong received for ${timeSinceLastPong.inSeconds}s, connection may be dead');
           // Connection appears dead, emit disconnect
           if (!_disposed) {

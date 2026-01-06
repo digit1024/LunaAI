@@ -122,7 +122,7 @@ fn default_server_api_key() -> String {
 }
 
 fn default_stream_timeout_secs() -> u64 {
-    120
+    600  // 10 minutes - increased to support long-running streams
 }
 
 fn default_healthcheck_interval_secs() -> u64 {

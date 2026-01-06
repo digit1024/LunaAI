@@ -1573,6 +1573,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "slotmap",
+ "socket2 0.6.0",
  "symphonia",
  "thiserror 2.0.17",
  "tiktoken-rs",
