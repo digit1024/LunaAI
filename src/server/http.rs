@@ -380,7 +380,7 @@ pub async fn remove_file_handler(
 pub fn create_http_router(ctx: Arc<ServerContext>) -> Router {
     Router::new()
         .route("/api/attach-file", post(attach_file_handler))
-        .route("/api/attach-file/:file_id", delete(remove_file_handler))
+        .route("/api/attach-file/{file_id}", delete(remove_file_handler))
         .with_state(ctx)
 }
 
