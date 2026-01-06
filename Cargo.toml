@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 # COSMIC desktop framework
-libcosmic = { git = "https://github.com/pop-os/libcosmic.git", branch = "master", default-features = false, features = ["multi-window", "tokio", "winit", "about", "wgpu", "dbus-config", "rfd" , "markdown"] }
+libcosmic = { git = "https://github.com/pop-os/libcosmic.git", branch = "master", default-features = false, features = ["multi-window", "tokio", "winit", "about", "wgpu", "dbus-config", "rfd" , "markdown", "highlighter"] }
 
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }
@@ -44,6 +44,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # WebSocket support for MCP
 tokio-tungstenite = "0.28"
 tungstenite = "0.28"
+
+# Socket utilities for TCP keepalive configuration
+socket2 = "0.6"
 
 # Futures
 futures = "0.3"

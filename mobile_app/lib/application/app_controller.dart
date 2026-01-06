@@ -91,7 +91,10 @@ class AppController extends Notifier<AppState> {
   /// Attempts to connect up to [_maxConnectionAttempts] times.
   /// Shows "connecting" screen with attempt count.
   /// Falls back to setup screen if all attempts fail.
-  Future<void> connect() async {
+  /// 
+  /// [silent] - If true, preserves current pane and doesn't show connecting screen.
+  ///            Used for background reconnections to avoid disrupting user experience.
+  Future<void> connect({bool silent = false}) async {
     if (_connecting) return; // Prevent concurrent connect calls
     _connecting = true;
 
@@ -100,13 +103,31 @@ class AppController extends Notifier<AppState> {
     _subscription = null;
 
     final config = ref.read(serverConfigProvider);
+    final currentPane = state.pane; // Preserve current pane for silent mode
+    final wasInChat = state.pane == ActivePane.chat;
+    final activeConversationId = state.activeConversation?.id; // Preserve active conversation
 
     for (int attempt = 1; attempt <= _maxConnectionAttempts; attempt++) {
-      state = state.copyWith(
-        pane: ActivePane.connecting,
-        error: null,
-        connectionAttempt: attempt,
-      );
+      // Only change pane to connecting if not in silent mode and not already on a meaningful screen
+      if (!silent && (currentPane == ActivePane.setup || currentPane == ActivePane.connecting)) {
+        state = state.copyWith(
+          pane: ActivePane.connecting,
+          error: null,
+          connectionAttempt: attempt,
+        );
+      } else if (!silent) {
+        // Show connection attempt but keep current pane
+        state = state.copyWith(
+          error: null,
+          connectionAttempt: attempt,
+        );
+      } else {
+        // Silent mode - only update connection attempt internally, don't change UI
+        state = state.copyWith(
+          error: null,
+          connectionAttempt: attempt,
+        );
+      }
 
       try {
         await wsClient.connect(config);
@@ -131,15 +152,26 @@ class AppController extends Notifier<AppState> {
       }
     }
 
-    // All attempts failed - fall back to setup screen
+    // All attempts failed
     _connecting = false;
-    state = state.copyWith(
-      pane: ActivePane.setup,
-      connection: ConnectionStatus.error,
-      error: 'Could not connect after $_maxConnectionAttempts attempts.\n'
-          'Please check server settings and try again.',
-      connectionAttempt: 0,
-    );
+    
+    // Only change pane if not in silent mode or if we were on setup/connecting
+    if (!silent || currentPane == ActivePane.setup || currentPane == ActivePane.connecting) {
+      state = state.copyWith(
+        pane: ActivePane.setup,
+        connection: ConnectionStatus.error,
+        error: 'Could not connect after $_maxConnectionAttempts attempts.\n'
+            'Please check server settings and try again.',
+        connectionAttempt: 0,
+      );
+    } else {
+      // Silent mode failure - preserve pane but show error
+      state = state.copyWith(
+        connection: ConnectionStatus.error,
+        error: 'Connection lost. Please check your connection.',
+        connectionAttempt: 0,
+      );
+    }
   }
 
 
@@ -194,18 +226,39 @@ class AppController extends Notifier<AppState> {
 
   /// Check connection health and reconnect if needed
   /// Called when app resumes from background
+  /// Uses silent reconnection to preserve UI state
   Future<void> checkAndReconnect() async {
-    if (wsClient.isConnected) {
+    // Check both WebSocket client state and app state
+    // Connection might be dead even if channel exists (e.g., OS closed it)
+    final isConnected = wsClient.isConnected && 
+                       state.connection == ConnectionStatus.online;
+    
+    if (isConnected) {
       // Verify connection is actually alive with a health check
       wsClient.send(ClientCommand.healthCheck());
-      // If connection is good, ensure guard is running
-      if (state.connection == ConnectionStatus.online) {
-        unawaited(guard.startConnectionGuard());
+      // Ensure guard is running to keep connection alive
+      unawaited(guard.startConnectionGuard());
+      // Connection appears alive, no need to reconnect
+      return;
+    }
+    
+    // Connection appears dead - attempt silent reconnection
+    // This preserves the current pane and doesn't disrupt the user experience
+    debugPrint('Connection lost, attempting silent reconnect...');
+    final wasInChat = state.pane == ActivePane.chat;
+    final activeConversationId = state.activeConversation?.id;
+    
+    await connect(silent: true);
+    
+    // After silent reconnect, if we were in a chat, reload that conversation
+    // but only if we don't already have it loaded
+    if (wasInChat && activeConversationId != null) {
+      // Check if we still have the conversation loaded
+      if (state.activeConversation?.id != activeConversationId) {
+        // Conversation was lost, reload it
+        debugPrint('Reloading conversation after reconnect: $activeConversationId');
+        wsClient.send(ClientCommand.loadConversation(activeConversationId));
       }
-    } else {
-      // Connection is dead, attempt to reconnect
-      debugPrint('Connection lost, attempting to reconnect...');
-      await connect();
     }
   }
 
@@ -354,18 +407,25 @@ class AppController extends Notifier<AppState> {
         pane: shouldChangePane ? ActivePane.conversations : state.pane,
         error: null,
         currentProfile: event.profile, // Track server's current profile
+        connectionAttempt: 0, // Clear connection attempt on success
       );
       // Start connection guard to keep connection alive
       unawaited(guard.startConnectionGuard());
       // Only send listConversations if we're changing to conversations pane
+      // Don't auto-load conversation if user is already in a chat
       if (shouldChangePane) {
         wsClient.send(ClientCommand.listConversations(limit: 10));
       }
     } else if (event is ErrorEvent) {
+      // Error might indicate stream timeout - reset streaming state
+      if (state.streaming) {
+        wsClient.setStreaming(false);
+      }
       state = state.copyWith(
         connection: ConnectionStatus.error,
         error: event.message,
         pane: ActivePane.setup,
+        streaming: false,
       );
     } else if (event is ConversationsListEvent) {
       final sorted = [...event.conversations]
@@ -386,7 +446,14 @@ class AppController extends Notifier<AppState> {
       }
       
       state = state.copyWith(conversations: updatedConversations);
-      if (state.activeConversation == null && updatedConversations.isNotEmpty) {
+      
+      // Only auto-load conversation if:
+      // 1. We don't have an active conversation
+      // 2. We're not currently in a chat (to avoid disrupting user)
+      // 3. We have conversations available
+      if (state.activeConversation == null && 
+          state.pane != ActivePane.chat && 
+          updatedConversations.isNotEmpty) {
         wsClient.send(ClientCommand.loadConversation(updatedConversations.first.id));
       }
     } else if (event is SearchResultsEvent) {
@@ -406,6 +473,7 @@ class AppController extends Notifier<AppState> {
       wsClient.send(ClientCommand.loadConversation(event.conversationId));
     } else if (event is StreamingStartedEvent) {
       _currentAssistantBubbleId = null; // Reset for new streaming session
+      wsClient.setStreaming(true); // Extend timeout and disable health checks during streaming
       state = state.copyWith(streaming: true);
     } else if (event is AssistantDeltaEvent) {
       _applyAssistantDelta(event.chunk);
@@ -425,6 +493,7 @@ class AppController extends Notifier<AppState> {
       _addToolErrorBubble(event.toolCallId, event.name, event.error);
     } else if (event is ConversationCompleteEvent) {
       _waitingForResponse = false;
+      wsClient.setStreaming(false); // Resume normal health checks
       // Don't stop guard here - keep connection guard running
       // The guard.ensureStarted() for streaming will be replaced by connection guard
       // Connection guard continues to keep connection alive
@@ -476,6 +545,7 @@ class AppController extends Notifier<AppState> {
         chatMessages: activeConv == null ? [] : state.chatMessages,
       );
     } else if (event is StreamingStoppedEvent) {
+      wsClient.setStreaming(false); // Resume normal health checks
       state = state.copyWith(streaming: false);
     } else if (event is DisconnectedEvent) {
       // Stop connection guard when disconnected

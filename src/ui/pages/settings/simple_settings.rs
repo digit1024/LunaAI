@@ -129,8 +129,8 @@ impl SimpleSettingsPage {
             server_port: 8080,
             server_port_str: "8080".to_string(),
             server_api_key: String::new(),
-            stream_timeout_secs: 120,
-            stream_timeout_str: "120".to_string(),
+            stream_timeout_secs: 600,
+            stream_timeout_str: "600".to_string(),
             title_generation_profile: String::new(),
             summary_chars: 1000,
             summary_chars_str: "1000".to_string(),
@@ -635,7 +635,7 @@ impl SimpleSettingsPage {
                                     row()
                                         .push(text("Stream Timeout (s):").size(12).width(Length::Fixed(150.0)))
                                         .push(
-                                            text_input("120", &self.stream_timeout_str)
+                                            text_input("600", &self.stream_timeout_str)
                                                 .on_input(|v| SimpleSettingsMessage::UpdateStreamTimeout(v))
                                                 .width(Length::Fill),
                                         )
@@ -643,7 +643,7 @@ impl SimpleSettingsPage {
                                         .align_y(Alignment::Center),
                                 )
                                 .push(
-                                    text("Timeout in seconds for streaming responses (default: 120)")
+                                    text("Timeout in seconds for streaming responses (default: 600)")
                                         .size(10)
                                         .class(cosmic::style::Text::Color(
                                             theme::active().cosmic().palette.neutral_6.into(),

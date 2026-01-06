@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::{
     agentic::protocol::AgentUpdate,
     config::AppConfig,
-    llm::{self, LlmClient},
+    llm::LlmClient,
     mcp::MCPServerRegistry,
     prompts::PromptManager,
     storage::Storage,
@@ -26,12 +26,13 @@ use crate::{
     ui::state::{AttachmentState, ContextState, ConversationState, ToolCallState},
     ui::widgets::ToolCallMessage,
 };
-use crate::services::MCPService;
 use crate::ui::handlers::{
     handle_chat_messages, handle_tool_messages, handle_navigation_messages, 
     handle_agent_messages, handle_settings_messages, handle_dbus_messages,
     handle_dialog_messages, handle_mcp_messages,
 };
+#[cfg(feature = "ttsandstt")]
+use crate::ui::handlers::handle_conversation_mode_messages;
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -115,6 +116,12 @@ pub enum Message {
     StopStt,                     // Stop STT recording
     SttResult(String),           // STT transcription result
     DbusStatusChanged(String),    // Status changed signal from D-Bus service (idle/speaking/listening/processing)
+    // Conversation mode messages
+    StartConversationMode,
+    StopConversationMode,
+    SetConversationModeState(ConversationModeState),
+    ConversationModeSttResult(String), // STT result with auto-send
+    ConversationModeTtsComplete, // TTS finished, resume listening
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +130,13 @@ pub enum NavigationPage {
     History,
     MCPConfig,
     Settings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversationModeState {
+    Listening,
+    Processing,
+    Speaking,
 }
 
 // NavItem represents either a navigation page or a conversation in the nav bar
@@ -223,6 +237,13 @@ pub struct CosmicLlmApp {
     pub stt_listening_initiated: bool, // True if we initiated the listening (to distinguish from other apps)
     #[cfg(feature = "ttsandstt")]
     pub playing_message_id: Option<usize>, // Index of message currently playing TTS
+    // Conversation mode state
+    #[cfg(feature = "ttsandstt")]
+    pub is_conversation_mode_active: bool,
+    #[cfg(feature = "ttsandstt")]
+    pub conversation_mode_state: ConversationModeState,
+    #[cfg(feature = "ttsandstt")]
+    pub conversation_mode_transcribed_text: Option<String>, // Current STT text
     
     // State modules (extracted from god object)
     pub conversation_state: ConversationState,
@@ -384,6 +405,13 @@ impl CosmicLlmApp {
             stt_listening_initiated: false, // True if we initiated the listening
             #[cfg(feature = "ttsandstt")]
             playing_message_id: None, // Index of message currently playing TTS
+            // Conversation mode state
+            #[cfg(feature = "ttsandstt")]
+            is_conversation_mode_active: false,
+            #[cfg(feature = "ttsandstt")]
+            conversation_mode_state: ConversationModeState::Listening,
+            #[cfg(feature = "ttsandstt")]
+            conversation_mode_transcribed_text: None,
             
             // Initialize state modules
             conversation_state: ConversationState::new(),
@@ -657,6 +685,12 @@ impl Application for CosmicLlmApp {
             return task;
         }
         
+        // Try conversation mode handlers (before D-Bus to handle conversation mode specific messages)
+        #[cfg(feature = "ttsandstt")]
+        if let Some(task) = handle_conversation_mode_messages(self, &message) {
+            return task;
+        }
+        
         // Try D-Bus handlers
         if let Some(task) = handle_dbus_messages(self, &message) {
             return task;
@@ -774,7 +808,7 @@ impl Application for CosmicLlmApp {
 
     fn view(&self) -> Element<Self::Message> {
         // Main layout with side panel and content area
-        cosmic::widget::row::with_capacity(1).push(
+        let main_content = cosmic::widget::row::with_capacity(1).push(
             // Main content area
             match self.current_page {
                 NavigationPage::Chat => chat::chat_view(self),
@@ -782,8 +816,9 @@ impl Application for CosmicLlmApp {
                 NavigationPage::MCPConfig => mcp_config::mcp_config_view(self),
                 NavigationPage::Settings => settings::settings_view(self),
             },
-        )
-        .into()
+        );
+        
+        main_content.into()
     }
 
     fn dialog(&self) -> Option<Element<Self::Message>> {

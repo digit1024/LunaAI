@@ -60,6 +60,7 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                 summary_column = summary_column.push(
                     widget::container(widget::lazy(&msg.content, |_| {
                         let items = markdown::parse(&msg.content).collect::<Vec<_>>();
+                        let settings = widget::markdown::Settings::with_text_size(14.0);
                         let style = widget::markdown::Style {
                             inline_code_padding: cosmic::iced::Padding::from([1, 2]),
                             inline_code_highlight: widget::markdown::Highlight {
@@ -71,7 +72,7 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                             inline_code_color: cosmic::iced::Color::WHITE,
                             link_color: cosmic::iced::Color::from_rgb(0.3, 0.6, 1.0),
                         };
-                        widget::markdown(&items, widget::markdown::Settings::default(), style)
+                        widget::markdown(&items, settings, style)
                             .map(Message::MarkdownLinkClicked)
                     }))
                     .width(Length::Fill)
@@ -169,6 +170,7 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
             } else {
                 widget::container(widget::lazy(&msg.content, |_| {
                     let items = markdown::parse(&msg.content).collect::<Vec<_>>();
+                    let settings = widget::markdown::Settings::with_text_size(14.0);
                     let style = widget::markdown::Style {
                         inline_code_padding: cosmic::iced::Padding::from([1, 2]),
                         inline_code_highlight: widget::markdown::Highlight {
@@ -180,7 +182,7 @@ pub fn message_list(app: &CosmicLlmApp) -> Element<Message> {
                         inline_code_color: cosmic::iced::Color::WHITE,
                         link_color: cosmic::iced::Color::from_rgb(0.3, 0.6, 1.0),
                     };
-                    widget::markdown(&items, widget::markdown::Settings::default(), style)
+                    widget::markdown(&items, settings, style)
                         .map(Message::MarkdownLinkClicked)
                 }))
                 .width(Length::Fill)

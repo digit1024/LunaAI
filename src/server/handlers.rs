@@ -364,13 +364,13 @@ impl ServerHandler {
         
         // Check if summarization is needed and trigger it using ContextService
         {
-            let storage = self.ctx.storage.lock().await;
+            let storage = self.ctx.storage.clone();
             let llm_client = self.session.llm_client.clone();
             
             if let Err(e) = ContextService::check_and_trigger_summarization(
                 &agent_messages,
                 conversation_uuid,
-                &*storage,
+                storage,
                 &llm_client,
                 &profile,
             ).await {

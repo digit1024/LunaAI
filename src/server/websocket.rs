@@ -2,7 +2,9 @@ use super::handlers::{ServerContext, ServerHandler};
 use crate::server::dto::{ClientCommand, ServerEvent};
 use anyhow::{Context, Result};
 use futures::{SinkExt, StreamExt};
+use socket2::SockRef;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio_tungstenite::{
     accept_hdr_async,
@@ -33,6 +35,17 @@ pub async fn serve(ctx: Arc<ServerContext>) -> Result<()> {
 }
 
 async fn handle_connection(stream: tokio::net::TcpStream, ctx: Arc<ServerContext>) -> Result<()> {
+    // Configure TCP keepalive to prevent network intermediaries from closing idle connections.
+    // This sends keepalive probes at the OS level, complementing application-level health checks.
+    // socket2 is needed because tokio::net::TcpStream doesn't expose these socket options.
+    let socket_ref = SockRef::from(&stream);
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(60))
+        .with_interval(Duration::from_secs(60));
+    if let Err(e) = socket_ref.set_tcp_keepalive(&keepalive) {
+        tracing::warn!("Failed to set TCP keepalive: {}", e);
+    }
+    
     let expected_key = ctx.server_cfg.api_key.clone();
     let ws_stream = accept_hdr_async(stream, |req: &Request, mut response: Response| {
         if authorize(req, &expected_key) {

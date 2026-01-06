@@ -50,3 +50,5 @@ pub fn profile_tool_defaults_task(app: &CosmicLlmApp) -> Option<app::Task<Messag
     Some(crate::services::MCPService::profile_tool_defaults_task(registry, allowed_servers))
 }
 
+
+
