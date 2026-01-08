@@ -1,0 +1,79 @@
+[package]
+name = "luna_thin_ui"
+version = "0.1.0"
+edition = "2021"
+description = "Luna AI Thin Client - connects to Luna server via WebSocket"
+
+[[bin]]
+name = "luna-thin"
+path = "src/main.rs"
+
+[dependencies]
+# COSMIC desktop framework
+libcosmic = { git = "https://github.com/pop-os/libcosmic.git", branch = "master", default-features = false, features = ["multi-window", "tokio", "winit", "about", "wgpu", "dbus-config", "rfd", "markdown", "highlighter"] }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.9"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# CLI
+clap = { version = "4.0", features = ["derive"] }
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUIDs
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# Async traits
+async-trait = "0.1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# WebSocket client
+tokio-tungstenite = "0.28"
+tungstenite = "0.28"
+
+# Futures
+futures = "0.3"
+async-stream = "0.3"
+
+# File operations
+dirs = "6.0.0"
+
+# Web browser
+webbrowser = "1.0.5"
+
+# License handling
+license = "3.7.0"
+
+# MIME type detection
+mime_guess = "2.0"
+
+# URL handling
+url = "2.5.4"
+
+# D-Bus support
+zbus = "5.12.0"
+
+# Audio support
+rodio = "0.18"
+rust-embed = "8.1"
+
+[features]
+default = ["ttsandstt"]
+ttsandstt = []
+

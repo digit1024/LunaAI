@@ -115,6 +115,12 @@ tiktoken-rs = "0.9"
 # D-Bus support
 zbus = "5.12.0"
 
+# MIME type detection for file uploads
+mime_guess = "2.0"
+
+# Async utilities for file streaming
+tokio-util = { version = "0.7", features = ["codec", "io"] }
+
 [build-dependencies]
 zbus_xmlgen = "5.1.0"
 
@@ -127,3 +133,6 @@ openai = []
 anthropic = []
 deepseek = []
 ttsandstt = []
+
+[workspace]
+members = [".", "luna_thin_ui"]
