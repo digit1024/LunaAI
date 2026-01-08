@@ -1,19 +1,19 @@
 use crate::client::config::ServerConfig;
 use crate::server::dto::{ClientCommand, ServerEvent};
 use futures::{SinkExt, StreamExt};
+use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{
     client::IntoClientRequest,
     Message as WsMessage,
 };
 
-pub type EventReceiver = mpsc::UnboundedReceiver<ServerEvent>;
-pub type EventSender = mpsc::UnboundedSender<ServerEvent>;
+pub type EventReceiver = broadcast::Receiver<ServerEvent>;
 type CommandSender = mpsc::UnboundedSender<ClientCommand>;
 
 pub struct LunaWsClient {
     command_tx: Option<CommandSender>,
-    event_rx: Option<EventReceiver>,
+    event_tx: Option<broadcast::Sender<ServerEvent>>,
     connection_task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -21,13 +21,15 @@ impl LunaWsClient {
     pub fn new() -> Self {
         Self {
             command_tx: None,
-            event_rx: None,
+            event_tx: None,
             connection_task: None,
         }
     }
 
-    pub fn take_event_receiver(&mut self) -> Option<EventReceiver> {
-        self.event_rx.take()
+    /// Get a new event receiver by subscribing to the broadcast channel
+    /// Returns None if not connected
+    pub fn subscribe(&self) -> Option<EventReceiver> {
+        self.event_tx.as_ref().map(|tx| tx.subscribe())
     }
 
     pub async fn connect(
@@ -72,11 +74,12 @@ impl LunaWsClient {
 
         let (mut write, mut read) = ws_stream.split();
 
-        // Create channels
-        let (event_tx, event_rx) = mpsc::unbounded_channel::<ServerEvent>();
+        // Create broadcast channel for events (allows multiple receivers)
+        let (event_tx, _) = broadcast::channel::<ServerEvent>(1024);
         let (command_tx, mut command_rx) = mpsc::unbounded_channel::<ClientCommand>();
 
-        self.event_rx = Some(event_rx);
+        let event_tx_clone = event_tx.clone();
+        self.event_tx = Some(event_tx);
         self.command_tx = Some(command_tx);
 
         // Spawn connection task
@@ -103,10 +106,8 @@ impl LunaWsClient {
                             Ok(WsMessage::Text(text)) => {
                                 match serde_json::from_str::<ServerEvent>(&text) {
                                     Ok(event) => {
-                                        if event_tx.send(event).is_err() {
-                                            tracing::warn!("Event receiver dropped");
-                                            break;
-                                        }
+                                        // Broadcast to all subscribers (ignore errors if no subscribers)
+                                        let _ = event_tx_clone.send(event);
                                     }
                                     Err(e) => {
                                         tracing::error!("Failed to deserialize event: {}. Raw: {}", e, text);
@@ -115,7 +116,7 @@ impl LunaWsClient {
                             }
                             Ok(WsMessage::Close(_)) => {
                                 tracing::info!("WebSocket closed by server");
-                                let _ = event_tx.send(ServerEvent::Error {
+                                let _ = event_tx_clone.send(ServerEvent::Error {
                                     message: "Connection closed by server".to_string(),
                                 });
                                 break;
@@ -127,7 +128,7 @@ impl LunaWsClient {
                             }
                             Err(e) => {
                                 tracing::error!("WebSocket error: {}", e);
-                                let _ = event_tx.send(ServerEvent::Error {
+                                let _ = event_tx_clone.send(ServerEvent::Error {
                                     message: format!("WebSocket error: {}", e),
                                 });
                                 break;
@@ -146,11 +147,16 @@ impl LunaWsClient {
     }
 
     pub async fn disconnect(&mut self) {
+        // Abort connection task first
         if let Some(task) = self.connection_task.take() {
             task.abort();
+            // Wait for task to complete cleanup
+            let _ = task.await;
         }
+        // Drop command sender to close channel
         self.command_tx = None;
-        self.event_rx = None;
+        // Drop event sender to close broadcast channel (all receivers will get RecvError)
+        self.event_tx = None;
     }
 
     pub fn send(&self, command: ClientCommand) {

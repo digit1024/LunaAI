@@ -14,9 +14,16 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::client::{FileClient, LunaWsClient, ServerConfig};
-use crate::client::ws_client::EventReceiver;
 use crate::server::dto::{ClientCommand, ConversationSummary, MessageView, ServerEvent};
 use crate::ui::pages::{chat_page, history_page, settings_page, ChatPageState};
+use crate::ui::handlers::{
+    handle_connection_messages,
+    handle_chat_messages,
+    handle_navigation_messages,
+    handle_settings_messages,
+    handle_server_event_messages,
+};
+use tokio::sync::broadcast::error::RecvError as BroadcastRecvError;
 
 // ============================================================================
 // Messages
@@ -304,8 +311,8 @@ pub struct LunaThinApp {
     pub file_client: Option<FileClient>,
     pub connection_status: ConnectionStatus,
     
-    // WebSocket event receiver (for subscription polling)
-    pub event_receiver: Arc<RwLock<Option<EventReceiver>>>,
+    // WebSocket event sender (stored for subscribing to broadcast channel)
+    // The broadcast sender is stored in ws_client, we just track connection status
 
     // Server state
     pub current_conversation_id: Option<String>,
@@ -349,9 +356,24 @@ pub struct LunaThinApp {
     pub settings_api_key: String,
 }
 
+// ============================================================================
+// Constants
+// ============================================================================
+
+const MAX_NAV_CONVERSATIONS: usize = 11;
+const CONVERSATION_LIST_LIMIT: u32 = 20;
+const CONVERSATION_TITLE_MAX_LEN: usize = 28;
+const CONVERSATION_TITLE_TRUNCATE_LEN: usize = 25;
+const FRAME_RATE_MS: u64 = 16; // ~60fps max
+const TYPING_INDICATOR_INTERVAL_MS: u64 = 100;
+
 impl LunaThinApp {
     fn new(core: Core) -> Self {
-        let server_config = ServerConfig::load().unwrap_or_default();
+        let server_config = ServerConfig::load()
+            .unwrap_or_else(|e| {
+                tracing::warn!("Failed to load server config: {}, using defaults", e);
+                ServerConfig::default()
+            });
 
         Self {
             core,
@@ -362,7 +384,6 @@ impl LunaThinApp {
             ws_client: Arc::new(RwLock::new(LunaWsClient::new())),
             file_client: None,
             connection_status: ConnectionStatus::Disconnected,
-            event_receiver: Arc::new(RwLock::new(None)),
             current_conversation_id: None,
             conversations: Vec::new(),
             messages: Vec::new(),
@@ -441,7 +462,7 @@ impl LunaThinApp {
         model
     }
 
-    fn update_nav_model(&mut self) {
+    pub(crate) fn update_nav_model(&mut self) {
         let mut model = widget::segmented_button::ModelBuilder::default().build();
 
         // New Chat (only if no active conversation)
@@ -452,10 +473,10 @@ impl LunaThinApp {
                 .data(NavItem::Page(Page::Chat));
         }
 
-        // Recent conversations (max 11 to match original)
-        for conv in self.conversations.iter().take(11) {
-            let title = if conv.title.len() > 28 {
-                format!("{}...", &conv.title[..25])
+        // Recent conversations (max to match original)
+        for conv in self.conversations.iter().take(MAX_NAV_CONVERSATIONS) {
+            let title = if conv.title.len() > CONVERSATION_TITLE_MAX_LEN {
+                format!("{}...", &conv.title[..CONVERSATION_TITLE_TRUNCATE_LEN])
             } else {
                 conv.title.clone()
             };
@@ -495,12 +516,28 @@ impl LunaThinApp {
         self.nav_model = model;
     }
 
-    fn send_command(&self, command: ClientCommand) {
+    pub(crate) fn send_command(&self, command: ClientCommand) {
         let ws_client = self.ws_client.clone();
         tokio::spawn(async move {
             let client = ws_client.read().await;
             client.send(command);
         });
+    }
+
+    /// Helper: List conversations with default parameters
+    pub(crate) fn list_conversations(&self) {
+        self.send_command(ClientCommand::ListConversations {
+            query: None,
+            limit: Some(CONVERSATION_LIST_LIMIT),
+            offset: None,
+        });
+    }
+
+    /// Helper: On connection established - send initial commands
+    pub(crate) fn on_connect(&mut self) {
+        self.send_command(ClientCommand::HealthCheck);
+        self.list_conversations();
+        self.send_command(ClientCommand::ListProfiles);
     }
 
     // ========================================================================
@@ -719,7 +756,7 @@ impl LunaThinApp {
         }
     }
 
-    fn handle_server_event(&mut self, event: ServerEvent) -> app::Task<Message> {
+    pub(crate) fn handle_server_event(&mut self, event: ServerEvent) -> app::Task<Message> {
         match event {
             ServerEvent::HealthOk { profile, .. } => {
                 tracing::info!("📥 HealthOk received! Profile: {}", profile);
@@ -734,11 +771,7 @@ impl LunaThinApp {
                 // Just set the conversation ID - don't clear messages!
                 // The user message we added is already there and should be preserved
                 self.current_conversation_id = Some(conversation_id);
-                self.send_command(ClientCommand::ListConversations {
-                    query: None,
-                    limit: Some(20),
-                    offset: None,
-                });
+                self.list_conversations();
             }
             ServerEvent::ConversationLoaded { conversation } => {
                 tracing::info!("📥 ConversationLoaded: {} ({} messages)", conversation.id, conversation.messages.len());
@@ -810,11 +843,7 @@ impl LunaThinApp {
                 // Play completion sound
                 crate::ui::audio::AudioService::play_sound("done.mp3");
                 // Tool calls are already moved to messages, just refresh list
-                self.send_command(ClientCommand::ListConversations {
-                    query: None,
-                    limit: Some(20),
-                    offset: None,
-                });
+                self.list_conversations();
             }
             ServerEvent::ConversationDeleted { conversation_id } => {
                 if self.current_conversation_id.as_ref() == Some(&conversation_id) {
@@ -872,154 +901,33 @@ impl Application for LunaThinApp {
     }
 
     fn update(&mut self, message: Self::Message) -> app::Task<Self::Message> {
+        // Try connection handlers first (WebSocket, server events)
+        if let Some(task) = handle_connection_messages(self, message.clone()) {
+            return task;
+        }
+        
+        // Try chat handlers
+        if let Some(task) = handle_chat_messages(self, message.clone()) {
+            return task;
+        }
+        
+        // Try navigation handlers
+        if let Some(task) = handle_navigation_messages(self, message.clone()) {
+            return task;
+        }
+        
+        // Try settings handlers
+        if let Some(task) = handle_settings_messages(self, message.clone()) {
+            return task;
+        }
+        
+        // Try server event handlers (ServerEvent variants)
+        if let Some(task) = handle_server_event_messages(self, message.clone()) {
+            return task;
+        }
+        
+        // Handle remaining simple messages
         match message {
-            Message::InputChanged(text) => {
-                self.input_text = text;
-            }
-            Message::SendMessage => {
-                if self.input_text.trim().is_empty() || self.connection_status != ConnectionStatus::Connected {
-                    return app::Task::none();
-                }
-
-                // Save content before clearing
-                let message_content = self.input_text.clone();
-                
-                // Clear input immediately when message is sent
-                self.input_text.clear();
-                self.chat_page.input_content = text_editor::Content::new();
-
-                // Reset assistant bubble tracking for new conversation turn
-                self.current_assistant_bubble_id = None;
-                
-                // Add user message immediately (only if not empty)
-                if !message_content.trim().is_empty() {
-                    self.messages.push(ChatMessage::user(message_content.clone()));
-                }
-
-                // Play sent sound
-                crate::ui::audio::AudioService::play_sound("sent.mp3");
-
-                let attachment_ids: Vec<String> = self
-                    .pending_attachments
-                    .iter()
-                    .filter_map(|a| a.file_id.clone())
-                    .collect();
-
-                self.send_command(ClientCommand::SendMessage {
-                    conversation_id: self.current_conversation_id.clone(),
-                    content: message_content,
-                    attachment_ids: if attachment_ids.is_empty() { None } else { Some(attachment_ids) },
-                });
-            }
-            Message::StopMessage => {
-                self.send_command(ClientCommand::StopStreaming {
-                    conversation_id: self.current_conversation_id.clone(),
-                });
-            }
-            Message::NewConversation => {
-                self.current_conversation_id = None;
-                self.messages.clear();
-                self.current_assistant_bubble_id = None;
-                self.current_page = Page::Chat;
-                self.update_nav_model();
-            }
-            Message::NavigateTo(page) => {
-                self.current_page = page;
-            }
-            Message::SelectConversation(conv_id) => {
-                tracing::info!("📂 SelectConversation: {}", conv_id);
-                self.send_command(ClientCommand::LoadConversation { conversation_id: conv_id.clone() });
-            }
-            Message::DeleteConversation(conv_id) => {
-                self.send_command(ClientCommand::DeleteConversation { conversation_id: conv_id });
-            }
-            Message::ServerEvent(event) => {
-                tracing::debug!("📥 ServerEvent received: {:?}", event);
-                return self.handle_server_event(event);
-            }
-            Message::ServerConnected => {
-                self.connection_status = ConnectionStatus::Connected;
-                self.send_command(ClientCommand::HealthCheck);
-                self.send_command(ClientCommand::ListConversations {
-                    query: None,
-                    limit: Some(20),
-                    offset: None,
-                });
-                self.send_command(ClientCommand::ListProfiles);
-            }
-            Message::ServerDisconnected => {
-                self.connection_status = ConnectionStatus::Disconnected;
-            }
-            Message::ServerError(error) => {
-                self.connection_status = ConnectionStatus::Error;
-                self.inline_error = Some(error);
-            }
-            Message::Connect => {
-                // Update config from settings
-                self.server_config.host = self.settings_host.clone();
-                self.server_config.port = self.settings_port.parse().unwrap_or(8080);
-                self.server_config.api_key = self.settings_api_key.clone();
-                let _ = self.server_config.save();
-
-                self.file_client = Some(FileClient::new(self.server_config.clone()));
-                self.connection_status = ConnectionStatus::Connecting;
-
-                let ws_client = self.ws_client.clone();
-                let event_receiver = self.event_receiver.clone();
-                let config = self.server_config.clone();
-                return app::Task::perform(
-                    async move {
-                        let mut client = ws_client.write().await;
-                        match client.connect(config).await {
-                            Ok(_) => {
-                                // Take the event receiver from the client
-                                if let Some(rx) = client.take_event_receiver() {
-                                    let mut event_rx = event_receiver.write().await;
-                                    *event_rx = Some(rx);
-                                }
-                                Message::ServerConnected
-                            },
-                            Err(e) => Message::ServerError(e.to_string()),
-                        }
-                    },
-                    |msg| cosmic::Action::App(msg),
-                );
-            }
-            Message::Disconnect => {
-                let ws_client = self.ws_client.clone();
-                tokio::spawn(async move {
-                    let mut client = ws_client.write().await;
-                    client.disconnect().await;
-                });
-                self.connection_status = ConnectionStatus::Disconnected;
-            }
-            Message::HostChanged(host) => {
-                self.settings_host = host;
-            }
-            Message::PortChanged(port) => {
-                self.settings_port = port;
-            }
-            Message::ApiKeyChanged(api_key) => {
-                self.settings_api_key = api_key;
-            }
-            Message::ChangeProfile(profile) => {
-                self.send_command(ClientCommand::ChangeProfile { profile });
-            }
-            Message::ShowAbout => {
-                self.show_about = !self.show_about;
-            }
-            Message::CloseAbout => {
-                self.show_about = false;
-            }
-            Message::OpenSettings => {
-                self.current_page = Page::Settings;
-            }
-            Message::OpenUrl(url) => {
-                let _ = webbrowser::open(&url);
-            }
-            Message::Quit => {
-                std::process::exit(0);
-            }
             Message::ToggleReasoning(idx) => {
                 if self.expanded_reasoning.contains(&idx) {
                     self.expanded_reasoning.remove(&idx);
@@ -1041,75 +949,21 @@ impl Application for LunaThinApp {
                     self.expanded_tools.insert(id);
                 }
             }
-            Message::DismissError => {
-                self.inline_error = None;
+            Message::ShowAbout => {
+                self.show_about = !self.show_about;
             }
-            Message::FileSelected(path) => {
-                self.pending_attachments.push(PendingAttachment {
-                    file_path: path.clone(),
-                    file_id: None,
-                    uploading: true,
-                    error: None,
-                });
-
-                if let Some(ref file_client) = self.file_client {
-                    let client = file_client.clone();
-                    let path_clone = path.clone();
-                    return app::Task::perform(
-                        async move {
-                            match client.upload_file(&path_clone).await {
-                                Ok(attachment) => Message::FileUploaded(path_clone, attachment.file_id),
-                                Err(e) => Message::FileUploadError(e.to_string()),
-                            }
-                        },
-                        |msg| cosmic::Action::App(msg),
-                    );
-                }
+            Message::CloseAbout => {
+                self.show_about = false;
             }
-            Message::FileUploaded(path, file_id) => {
-                if let Some(attachment) = self.pending_attachments.iter_mut().find(|a| a.file_path == path) {
-                    attachment.file_id = Some(file_id);
-                    attachment.uploading = false;
-                }
+            Message::OpenUrl(url) => {
+                let _ = webbrowser::open(&url);
             }
-            Message::FileUploadError(error) => {
-                self.inline_error = Some(format!("File upload failed: {}", error));
+            Message::Quit => {
+                std::process::exit(0);
             }
-            Message::RemoveFile(path) => {
-                self.pending_attachments.retain(|a| a.file_path != path);
-            }
-            Message::CopyMessage(content) => {
-                // Copy to clipboard - for now just log it
-                // TODO: Add arboard dependency for actual clipboard support
-                tracing::info!("Copy to clipboard: {} bytes", content.len());
-                let _ = content; // Suppress unused warning
-            }
-            Message::InputActionPerformed(action) => {
-                self.chat_page.input_content.perform(action);
-                // Sync input_text with editor content
-                self.input_text = self.chat_page.input_content.text();
-            }
-            Message::ConnectionEstablished => {
-                self.connection_status = ConnectionStatus::Connected;
-                self.send_command(ClientCommand::HealthCheck);
-                self.send_command(ClientCommand::ListConversations {
-                    query: None,
-                    limit: Some(20),
-                    offset: None,
-                });
-                self.send_command(ClientCommand::ListProfiles);
-            }
-            Message::ConnectionFailed(error) => {
-                self.connection_status = ConnectionStatus::Error;
-                self.inline_error = Some(error);
-            }
-            Message::Tick(_) => {
-                // Update typing indicator animation
-                self.chat_page.typing_indicator_progress = 
-                    (self.chat_page.typing_indicator_progress + 0.1) % 1.0;
-            }
-            _ => {}
+            _ => {} // Messages handled by handler modules
         }
+
         app::Task::none()
     }
 
@@ -1119,33 +973,34 @@ impl Application for LunaThinApp {
         // Typing indicator tick when streaming
         if self.is_streaming {
             subscriptions.push(
-                cosmic::iced::time::every(std::time::Duration::from_millis(100))
+                cosmic::iced::time::every(std::time::Duration::from_millis(TYPING_INDICATOR_INTERVAL_MS))
                     .map(Message::Tick),
             );
         }
 
-        // WebSocket event subscription - polls the event receiver with backpressure handling
+        // WebSocket event subscription - subscribes to broadcast channel (supports reconnection)
         if self.connection_status == ConnectionStatus::Connected {
-            let event_receiver = self.event_receiver.clone();
+            let ws_client = self.ws_client.clone();
             subscriptions.push(
                 Subscription::run_with_id(
                     "ws-events",
                     async_stream::stream! {
                         tracing::info!("🎧 WS subscription started");
-                        // Take the receiver from the shared state
+                        
+                        // Subscribe to broadcast channel (can be called multiple times)
                         let rx = {
-                            let mut guard = event_receiver.write().await;
-                            guard.take()
+                            let client = ws_client.read().await;
+                            client.subscribe()
                         };
                         
                         if let Some(mut rx) = rx {
-                            tracing::info!("🎧 Got event receiver, starting poll loop");
+                            tracing::info!("🎧 Subscribed to event channel, starting poll loop");
                             let mut last_yield = std::time::Instant::now();
-                            let min_yield_interval = std::time::Duration::from_millis(16); // ~60fps max
+                            let min_yield_interval = std::time::Duration::from_millis(FRAME_RATE_MS);
                             
                             loop {
                                 match rx.recv().await {
-                                    Some(event) => {
+                                    Ok(event) => {
                                         // Add small delay to prevent channel overflow during rapid streaming
                                         // This batches rapid events together
                                         let now = std::time::Instant::now();
@@ -1157,16 +1012,21 @@ impl Application for LunaThinApp {
                                         tracing::debug!("🎧 Received event from WS: {:?}", event);
                                         yield Message::ServerEvent(event);
                                     }
-                                    None => {
-                                        // Channel closed
-                                        tracing::warn!("🎧 Event channel closed");
+                                    Err(BroadcastRecvError::Lagged(skipped)) => {
+                                        tracing::warn!("🎧 Lagged behind by {} messages, continuing...", skipped);
+                                        // Continue receiving - broadcast channels automatically skip lagged messages
+                                    }
+                                    Err(BroadcastRecvError::Closed) => {
+                                        // Channel closed (disconnected)
+                                        tracing::info!("🎧 Event channel closed (disconnected)");
                                         yield Message::ServerDisconnected;
                                         break;
                                     }
                                 }
                             }
                         } else {
-                            tracing::warn!("🎧 No event receiver available (already taken?)");
+                            tracing::warn!("🎧 Not connected, cannot subscribe to events");
+                            yield Message::ServerDisconnected;
                         }
                     },
                 ),

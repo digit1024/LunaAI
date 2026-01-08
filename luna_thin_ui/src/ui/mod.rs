@@ -3,6 +3,7 @@ pub mod audio;
 pub mod icons;
 pub mod pages;
 pub mod widgets;
+pub mod handlers;
 
 pub use app::LunaThinApp;
 

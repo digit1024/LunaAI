@@ -35,8 +35,8 @@ impl Default for ChatPageState {
 impl Clone for ChatPageState {
     fn clone(&self) -> Self {
         Self {
-            scrollable_id: widget::Id::unique(),
-            input_id: widget::Id::unique(),
+            scrollable_id: self.scrollable_id.clone(), // Preserve widget ID
+            input_id: self.input_id.clone(), // Preserve widget ID
             input_content: text_editor::Content::with_text(&self.input_content.text()),
             typing_indicator_progress: self.typing_indicator_progress,
         }
