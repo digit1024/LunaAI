@@ -334,6 +334,7 @@ pub struct LunaThinApp {
     pub key_binds: HashMap<menu::KeyBind, MenuAction>,
     pub nav_model: widget::segmented_button::SingleSelectModel,
     pub show_about: bool,
+    pub about: widget::about::About,
 
     // Chat page state
     pub chat_page: ChatPageState,
@@ -397,6 +398,7 @@ impl LunaThinApp {
             key_binds: Self::create_key_binds(),
             nav_model: Self::create_nav_model(),
             show_about: false,
+            about: Self::create_about_widget(),
             chat_page: ChatPageState::default(),
             input_text: String::new(),
             pending_attachments: Vec::new(),
@@ -514,6 +516,23 @@ impl LunaThinApp {
         }
 
         self.nav_model = model;
+    }
+
+    fn create_about_widget() -> widget::about::About {
+        widget::about::About::default()
+            .name("Luna AI Thin Client")
+            .icon(cosmic::widget::icon::Named::new(Self::APP_ID))
+            .version("0.1.0")
+            .license("GPL-3.0")
+            .links([
+                ("Repository", "https://github.com/digit1024/LunaAI"),
+                ("Issues", "https://github.com/digit1024/LunaAI/issues"),
+                ("Documentation", "https://github.com/digit1024/LunaAI#readme"),
+            ])
+            .developers([
+                ("Michał Banaś", "https://github.com/digit1024")
+            ])
+            .comments("A thin client that connects to a Luna AI server via WebSocket. All processing happens on the server - this app only provides the interface.")
     }
 
     pub(crate) fn send_command(&self, command: ClientCommand) {
@@ -870,7 +889,7 @@ impl Application for LunaThinApp {
     type Executor = cosmic::executor::Default;
     type Flags = ();
     type Message = Message;
-    const APP_ID: &'static str = "com.github.digit1024.luna_thin_ui";
+    const APP_ID: &'static str = "com.github.digit1024.luna";
 
     fn core(&self) -> &Core {
         &self.core
@@ -1050,6 +1069,23 @@ impl Application for LunaThinApp {
 
     fn nav_model(&self) -> Option<&widget::segmented_button::SingleSelectModel> {
         Some(&self.nav_model)
+    }
+
+    fn context_drawer(
+        &self,
+    ) -> Option<app::context_drawer::ContextDrawer<Self::Message>> {
+        if self.show_about {
+            Some(
+                app::context_drawer::about(
+                    &self.about,
+                    |url| Message::OpenUrl(url.to_string()),
+                    Message::CloseAbout,
+                )
+                .title("About")
+            )
+        } else {
+            None
+        }
     }
 
     fn on_nav_select(
