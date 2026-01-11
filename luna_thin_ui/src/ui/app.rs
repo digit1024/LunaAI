@@ -1064,7 +1064,7 @@ impl Application for LunaThinApp {
     }
 
     fn header_start(&self) -> Vec<Element<Self::Message>> {
-        vec![self.view_menu_bar()]
+        vec![crate::ui::widgets::menu_bar::create_menu_bar(&self.key_binds)]
     }
 
     fn nav_model(&self) -> Option<&widget::segmented_button::SingleSelectModel> {
@@ -1119,16 +1119,4 @@ impl Application for LunaThinApp {
 // ============================================================================
 // View Implementations
 // ============================================================================
-
-impl LunaThinApp {
-    fn view_menu_bar(&self) -> Element<Message> {
-        // Simple menu using buttons instead of full menu bar for now
-        widget::row()
-            .push(widget::button::text("New").on_press(Message::NewConversation))
-            .push(widget::button::text("Settings").on_press(Message::OpenSettings))
-            .push(widget::button::text("About").on_press(Message::ShowAbout))
-            .spacing(8)
-            .into()
-    }
-}
 

@@ -29,16 +29,31 @@ class ServerConfig {
     return ServerConfig(
       host: host,
       port: 8080,
-      apiKey: 'luna',
+      apiKey: 'LUna',
       profile: 'default',
     );
   }
 
-  Uri websocketUri() => Uri(
-        scheme: 'ws',
-        host: host,
-        port: port,
-      );
+  /// Returns secure WebSocket URI (wss://)
+  Uri websocketUriSecure() {
+    return Uri(
+      scheme: 'wss',
+      host: host,
+      port: port == 443 ? null : port, // Omit port for default HTTPS port
+    );
+  }
+
+  /// Returns insecure WebSocket URI (ws://)
+  Uri websocketUriInsecure() {
+    return Uri(
+      scheme: 'ws',
+      host: host,
+      port: port,
+    );
+  }
+
+  /// Returns secure URI by default (for backward compatibility)
+  Uri websocketUri() => websocketUriSecure();
 
   ServerConfig copyWith({
     String? host,

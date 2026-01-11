@@ -58,3 +58,17 @@ dependencyResolutionManagement {
 
 rootProject.name = "luna_mobile"
 include(":app")
+include(":wear")
+
+// Fix for wear package missing namespace
+gradle.beforeProject { project ->
+    if (project.name == "wear" && project.path.contains("pub.dev")) {
+        project.afterEvaluate {
+            if (it.hasProperty("android")) {
+                it.android {
+                    namespace = "com.mjohnsullivan.flutterwear.wear"
+                }
+            }
+        }
+    }
+}

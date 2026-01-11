@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.LunaMobile" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/colorPrimary</item>
+        <item name="colorPrimaryVariant">@color/colorPrimaryDark</item>
+        <item name="colorSecondary">@color/colorAccent</item>
+    </style>
+</resources>
+
+
+

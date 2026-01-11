@@ -1,0 +1,26 @@
+[Unit]
+Description=Cloudflare Tunnel for LunaAI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+# Replace %i with the actual username, or use a specific user
+# User=your-username
+ExecStart=/usr/local/bin/cloudflared tunnel --config /home/%i/.cloudflared/config.yml run LUNAAI
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cloudflared
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+
+
+

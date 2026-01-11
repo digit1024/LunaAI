@@ -4,6 +4,7 @@
 
 pub mod error_banner;
 pub mod message_bubble;
+pub mod menu_bar;
 pub mod tool_call;
 pub mod typing_indicator;
 

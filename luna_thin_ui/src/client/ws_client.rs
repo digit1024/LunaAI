@@ -5,6 +5,7 @@ use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{
     client::IntoClientRequest,
+    http,
     Message as WsMessage,
 };
 
@@ -39,8 +40,50 @@ impl LunaWsClient {
         // Disconnect if already connected
         self.disconnect().await;
 
-        let uri = config.websocket_uri();
-        tracing::info!("🔌 Connecting to {}", uri);
+        // Try secure connection (wss://) first, then fallback to insecure (ws://)
+        let secure_uri = config.websocket_uri_secure();
+        let insecure_uri = config.websocket_uri_insecure();
+        
+        // Try wss:// first
+        match Self::try_connect(&secure_uri, &config).await {
+            Ok((ws_stream, response)) => {
+                tracing::info!("✅ WebSocket connected via wss:// (status: {})", response.status());
+                self.setup_connection(ws_stream).await;
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::warn!("⚠️ Secure connection (wss://) failed: {}", e);
+            }
+        }
+
+        // Fallback to ws://
+        tracing::info!("🔌 Falling back to insecure connection (ws://)");
+        match Self::try_connect(&insecure_uri, &config).await {
+            Ok((ws_stream, response)) => {
+                tracing::info!("✅ WebSocket connected via ws:// (fallback, status: {})", response.status());
+                self.setup_connection(ws_stream).await;
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!("❌ Both secure and insecure connections failed");
+                Err(e)
+            }
+        }
+    }
+
+    async fn try_connect(
+        uri: &str,
+        config: &ServerConfig,
+    ) -> Result<
+        (
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+            http::Response<Option<Vec<u8>>>,
+        ),
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        tracing::info!("🔌 Attempting connection to {}", uri);
 
         // Build request with auth headers (same as mobile app)
         let mut request = uri.into_client_request()?;
@@ -57,20 +100,25 @@ impl LunaWsClient {
             connect_future,
         ).await;
 
-        let (ws_stream, _response) = match timeout_result {
-            Ok(Ok((stream, resp))) => {
-                tracing::info!("✅ WebSocket connection established (status: {})", resp.status());
-                (stream, resp)
-            }
+        match timeout_result {
+            Ok(Ok((stream, resp))) => Ok((stream, resp)),
             Ok(Err(e)) => {
                 tracing::error!("❌ WebSocket connection failed: {}", e);
-                return Err(e.into());
+                Err(e.into())
             }
             Err(_) => {
                 tracing::error!("❌ Connection timeout after 10 seconds");
-                return Err("Connection timeout".into());
+                Err("Connection timeout".into())
             }
-        };
+        }
+    }
+
+    async fn setup_connection(
+        &mut self,
+        ws_stream: tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) {
 
         let (mut write, mut read) = ws_stream.split();
 
@@ -143,7 +191,6 @@ impl LunaWsClient {
         });
 
         self.connection_task = Some(connection_task);
-        Ok(())
     }
 
     pub async fn disconnect(&mut self) {

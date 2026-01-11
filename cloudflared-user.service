@@ -1,0 +1,24 @@
+[Unit]
+Description=Cloudflare Tunnel for LunaAI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Find cloudflared with: which cloudflared
+# Common locations: /usr/local/bin/cloudflared, /usr/bin/cloudflared, ~/.local/bin/cloudflared
+ExecStart=/usr/local/bin/cloudflared tunnel --config %h/.cloudflared/config.yml run LUNAAI
+# Alternative if cloudflared is in PATH (may not work in systemd):
+# ExecStart=/bin/sh -c 'cloudflared tunnel --config %h/.cloudflared/config.yml run LUNAAI'
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
+

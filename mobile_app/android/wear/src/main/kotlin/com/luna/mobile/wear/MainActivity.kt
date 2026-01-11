@@ -1,4 +1,4 @@
-package com.luna.mobile
+package com.luna.mobile.wear
 
 import android.app.Activity
 import android.content.Intent
@@ -7,7 +7,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
-class MainActivity : FlutterActivity() {
+class MainActivity: FlutterActivity() {
     private val CHANNEL = "com.luna.mobile.wear/speech"
     private val SPEECH_REQUEST_CODE = 100
     private var pendingResult: MethodChannel.Result? = null

@@ -63,62 +63,96 @@ class LunaWsClient {
       throw Exception('No server config provided');
     }
 
-    final uri = config.websocketUri();
     final headers = {
       'x-api-key': config.apiKey,
       'authorization': 'Bearer ${config.apiKey}',
     };
 
+    // Try secure connection (wss://) first, then fallback to insecure (ws://)
+    final secureUri = config.websocketUriSecure();
+    final insecureUri = config.websocketUriInsecure();
+    
+    Exception? lastError;
+    
+    // Try wss:// first
     try {
-      debugPrint('🔌 Connecting to $uri');
-      final channel = IOWebSocketChannel.connect(uri, headers: headers);
+      debugPrint('🔌 Attempting secure connection (wss://) to $secureUri');
+      final channel = IOWebSocketChannel.connect(secureUri, headers: headers);
       _channel = channel;
 
       // Wait for connection with timeout
       await channel.ready.timeout(
         _connectionTimeout,
-        onTimeout: () => throw TimeoutException('Connection timed out', _connectionTimeout),
+        onTimeout: () => throw TimeoutException('Secure connection timed out', _connectionTimeout),
       );
-      debugPrint('✅ WebSocket connected');
-
-      _lastPongReceived = DateTime.now();
-      _startPingTimer();
-
-      _subscription = channel.stream.listen(
-        (raw) {
-          try {
-            // Update last pong time (any message indicates connection is alive)
-            _lastPongReceived = DateTime.now();
-            
-            final decoded = jsonDecode(raw as String) as Map<String, dynamic>;
-            final event = ServerEvent.fromJson(decoded);
-            _eventController.add(event);
-          } catch (err) {
-            _eventController.add(UnknownEvent(err.toString()));
-          }
-        },
-        onDone: () {
-          debugPrint('🔌 WebSocket closed');
-          _stopPingTimer();
-          _channel = null;
-          // Emit disconnect event so UI can handle it
-          if (!_disposed) {
-            _eventController.add(DisconnectedEvent());
-          }
-        },
-        onError: (err) {
-          debugPrint('❌ WebSocket error: $err');
-          _stopPingTimer();
-          if (!_disposed) {
-            _eventController.add(DisconnectedEvent());
-          }
-        },
-      );
+      debugPrint('✅ WebSocket connected via wss://');
+      
+      _setupChannelSubscription(channel);
+      return; // Success, exit early
     } catch (e) {
-      debugPrint('❌ Connection failed: $e');
+      debugPrint('⚠️ Secure connection (wss://) failed: $e');
+      lastError = e is Exception ? e : Exception(e.toString());
+      // Clean up failed secure connection attempt
       _channel = null;
-      rethrow; // Let caller handle retry logic
     }
+
+    // Fallback to insecure connection (ws://)
+    try {
+      debugPrint('🔌 Falling back to insecure connection (ws://) to $insecureUri');
+      final channel = IOWebSocketChannel.connect(insecureUri, headers: headers);
+      _channel = channel;
+
+      // Wait for connection with timeout
+      await channel.ready.timeout(
+        _connectionTimeout,
+        onTimeout: () => throw TimeoutException('Insecure connection timed out', _connectionTimeout),
+      );
+      debugPrint('✅ WebSocket connected via ws:// (fallback)');
+      
+      _setupChannelSubscription(channel);
+      return; // Success
+    } catch (e) {
+      debugPrint('❌ Both secure and insecure connections failed');
+      _channel = null;
+      // Throw the last error (or combine both)
+      throw lastError ?? (e is Exception ? e : Exception(e.toString()));
+    }
+  }
+
+  void _setupChannelSubscription(IOWebSocketChannel channel) {
+    _lastPongReceived = DateTime.now();
+    _startPingTimer();
+
+    _subscription = channel.stream.listen(
+      (raw) {
+        try {
+          // Update last pong time (any message indicates connection is alive)
+          _lastPongReceived = DateTime.now();
+          
+          final decoded = jsonDecode(raw as String) as Map<String, dynamic>;
+          final event = ServerEvent.fromJson(decoded);
+          _eventController.add(event);
+        } catch (err) {
+          _eventController.add(UnknownEvent(err.toString()));
+        }
+      },
+      onDone: () {
+        debugPrint('🔌 WebSocket closed');
+        _stopPingTimer();
+        _channel = null;
+        // Emit disconnect event so UI can handle it
+        if (!_disposed) {
+          _eventController.add(DisconnectedEvent());
+        }
+      },
+      onError: (err) {
+        debugPrint('❌ WebSocket error: $err');
+        _stopPingTimer();
+        if (!_disposed) {
+          _eventController.add(DisconnectedEvent());
+        }
+      },
+    );
   }
 
   void send(ClientCommand command) {

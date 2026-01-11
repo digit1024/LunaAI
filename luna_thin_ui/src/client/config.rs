@@ -14,9 +14,23 @@ impl ServerConfig {
         Self { host, port, api_key }
     }
 
-    pub fn websocket_uri(&self) -> String {
-        // No path - server listens on root (same as mobile app)
+    /// Returns secure WebSocket URI (wss://)
+    pub fn websocket_uri_secure(&self) -> String {
+        if self.port == 443 {
+            format!("wss://{}/", self.host)
+        } else {
+            format!("wss://{}:{}/", self.host, self.port)
+        }
+    }
+
+    /// Returns insecure WebSocket URI (ws://)
+    pub fn websocket_uri_insecure(&self) -> String {
         format!("ws://{}:{}/", self.host, self.port)
+    }
+
+    /// Returns secure URI by default (for backward compatibility)
+    pub fn websocket_uri(&self) -> String {
+        self.websocket_uri_secure()
     }
 
     pub fn http_uri(&self) -> String {
