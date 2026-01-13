@@ -125,6 +125,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentic-loop"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures",
+ "rust-mcp-sdk",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4679,6 +4696,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "num_threads"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "objc"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6111,6 +6137,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-mcp-schema"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc4613aaaca2d63c45786ee28886c870a5bc4fe8a91846e4db632ef4ce2e48cb"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rust-mcp-sdk"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc2e76d83baa6b323baa9cc1a6cbeb8430f1d1dbbe92c54b70244322572bc53d"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "futures",
+ "rust-mcp-schema",
+ "rust-mcp-transport",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "time",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "rust-mcp-transport"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc5c1534d052a9ccb136539e4014645d6b3d77d8ab92ef5730cb7448c893d910"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures",
+ "rust-mcp-schema",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7115,7 +7190,9 @@ checksum = "91e7d9e3bb61134e77bde20dd4825b97c010155709965fedf0f49bb138e52a9d"
 dependencies = [
  "deranged",
  "itoa",
+ "libc",
  "num-conv",
+ "num_threads",
  "powerfmt",
  "serde",
  "time-core",

@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["@modelcontextprotocol/server-filesystem", "/tmp"],
+      "env": {}
+    },
+    "weather": {
+      "command": "npx",
+      "args": ["@modelcontextprotocol/server-weather"],
+      "env": {
+        "OPENWEATHER_API_KEY": "test-key"
+      }
+    }
+  }
+}
+
+
+

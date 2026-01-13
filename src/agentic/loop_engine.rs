@@ -10,7 +10,7 @@ use tokio::time::{timeout, Duration};
 pub struct AgenticLoop {
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
     pub llm_client: Arc<dyn LlmClient>,
-    pub tool_logger: super::tool_logger::ToolLogger,
+    
 }
 
 impl AgenticLoop {
@@ -21,7 +21,7 @@ impl AgenticLoop {
         Self {
             mcp_registry,
             llm_client,
-            tool_logger: super::tool_logger::ToolLogger::new("agentic_tool_calls.log".to_string()),
+            
         }
     }
 
@@ -32,7 +32,7 @@ impl AgenticLoop {
         _message_id: Option<uuid::Uuid>,
     ) -> Result<String> {
         loop {
-            let available_tools = {
+            let available_tools: Vec<crate::llm::ToolDefinition> = {
                 let registry = self.mcp_registry.read().await;
                 let tools = registry.get_enabled_tools();
                 tracing::debug!(tool_count = tools.len(), "Enabled tools");
@@ -132,7 +132,7 @@ impl AgenticLoop {
             }
 
             if planned_tools.is_empty() {
-                self.tool_logger.log_final_response(&assistant_response)?;
+                
                 if let Some(tx) = agent_tx.as_ref() {
                     let _ = tx.send(AgentUpdate::ConversationComplete {
                         final_text: assistant_response.clone(),
@@ -150,7 +150,7 @@ impl AgenticLoop {
             messages.push(assistant_msg);
 
             for tool_call in planned_tools {
-                self.tool_logger.log_tool_call(&tool_call)?;
+                
 
                 if let Some(tx) = agent_tx.as_ref() {
                     let _ = tx.send(AgentUpdate::ToolStarted {
@@ -165,8 +165,6 @@ impl AgenticLoop {
                     .execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref())
                     .await;
 
-                self.tool_logger
-                    .log_tool_result(&tool_call, &result.content, result.is_error)?;
 
                 if let Some(tx) = agent_tx.as_ref() {
                     let _ = tx.send(AgentUpdate::ToolResult {
@@ -284,7 +282,7 @@ impl AgenticLoop {
             }
 
             if response.tool_calls.is_empty() {
-                self.tool_logger.log_final_response(&response.content)?;
+                
                 if let Some(tx) = agent_tx.as_ref() {
                     let _ = tx.send(AgentUpdate::ConversationComplete {
                         final_text: response.content.clone(),
@@ -317,8 +315,7 @@ impl AgenticLoop {
             messages.push(assistant_msg);
 
             for tool_call in response.tool_calls {
-                self.tool_logger.log_tool_call(&tool_call)?;
-
+                
                 if let Some(tx) = agent_tx.as_ref() {
                     let _ = tx.send(AgentUpdate::ToolStarted {
                         tool_call_id: tool_call.id.clone(),
@@ -332,8 +329,6 @@ impl AgenticLoop {
                     .execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref())
                     .await;
 
-                self.tool_logger
-                    .log_tool_result(&tool_call, &result.content, result.is_error)?;
 
                 if let Some(tx) = agent_tx.as_ref() {
                     let _ = tx.send(AgentUpdate::ToolResult {

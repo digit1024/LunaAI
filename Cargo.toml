@@ -135,4 +135,4 @@ deepseek = []
 ttsandstt = []
 
 [workspace]
-members = [".", "luna_thin_ui"]
+members = [".", "luna_thin_ui", "agentic-loop"]
