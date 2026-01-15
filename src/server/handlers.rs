@@ -7,7 +7,6 @@ use crate::{
     llm::{self, Attachment, Message as LlmMessage, Role},
     llm::tokenizer::TokenCounter,
     llm::context_manager::SmartContextManager,
-    mcp::MCPServerRegistry,
     prompts::PromptManager,
     services::{ContextService, MessageConverter},
     server::dto::{
@@ -20,6 +19,7 @@ use crate::{
         sqlite_storage_simple::{Message as StorageMessage, MessageMetadata}, Storage,
     },
 };
+use agentic_loop::mcp_servers_registry::MCPServerRegistry;
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc, time::Duration};

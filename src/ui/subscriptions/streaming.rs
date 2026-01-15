@@ -8,7 +8,7 @@ use crate::services::ContextService;
 use crate::config::AppConfig;
 use crate::prompts::PromptManager;
 use crate::llm::LlmClient;
-use crate::mcp::MCPServerRegistry;
+use agentic_loop::mcp_servers_registry::MCPServerRegistry;
 use cosmic::iced_futures::Subscription;
 use std::sync::Arc;
 use tokio::sync::RwLock;

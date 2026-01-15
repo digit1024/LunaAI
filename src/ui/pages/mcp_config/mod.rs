@@ -2,7 +2,7 @@ pub mod page;
 
 pub use page::{Message, Page};
 
-use crate::mcp::registry::ServerStatus;
+use agentic_loop::mcp_servers_registry::model::ServerStatus;
 use crate::ui::app::CosmicLlmApp;
 use cosmic::{
     iced::{Length, Padding},
@@ -12,30 +12,19 @@ use cosmic::{
 
 /// View function
 pub fn mcp_config_view(app: &CosmicLlmApp) -> Element<crate::ui::app::Message> {
-    // Load the actual MCP config (same as startup)
+    // Load the actual MCP config (same as startup) for fallback
     let mcp_config =
         crate::config::MCPConfig::load_from_json().unwrap_or_else(|_| app.config.mcp.clone());
-
-    // Get registry data
-    let (server_statuses, tools_by_server, all_server_names) = {
-        if let Ok(registry) = app.mcp_registry.try_read() {
-            let mut statuses = std::collections::HashMap::new();
-            let tools_by_server = registry.get_tools_by_server();
-            let all_server_names = registry.get_all_server_names(&mcp_config);
-            
-            for server_name in &all_server_names {
-                statuses.insert(server_name.clone(), registry.get_server_status(server_name));
-            }
-            
-            (statuses, tools_by_server, all_server_names)
-        } else {
-            (
-                std::collections::HashMap::new(),
-                std::collections::HashMap::new(),
-                mcp_config.servers.keys().cloned().collect::<Vec<_>>(),
-            )
-        }
+    
+    // Use cached data, but fallback to config if cache is empty
+    let cache = &app.mcp_cache;
+    let all_server_names = if cache.all_server_names.is_empty() {
+        // Fallback: show servers from config even if cache not populated yet
+        mcp_config.servers.keys().cloned().collect::<Vec<_>>()
+    } else {
+        cache.all_server_names.clone()
     };
+    let tools_by_server = &cache.tools_by_server;
 
     let server_count = all_server_names.len();
     let total_tools: usize = tools_by_server.values().map(|tools| tools.len()).sum();
@@ -43,9 +32,11 @@ pub fn mcp_config_view(app: &CosmicLlmApp) -> Element<crate::ui::app::Message> {
     // Build expandable server list
     let mut server_column = cosmic::widget::column::with_capacity(all_server_names.len());
     for server_name in &all_server_names {
-        let status = server_statuses.get(server_name).cloned().unwrap_or(ServerStatus::Failed("Unknown".to_string()));
+        let status = cache.get_server_status(server_name)
+            .cloned()
+            .unwrap_or_else(|| ServerStatus::Failed("Not connected yet".to_string()));
         let is_expanded = app.mcp_config_page.expanded_servers.contains(server_name);
-        let tools = tools_by_server.get(server_name).cloned().unwrap_or_default();
+        let tools = cache.get_tools_for_server(server_name);
 
         // Status badge
         let (status_text, status_color) = match &status {

@@ -4,7 +4,7 @@
 //! This will be expanded in future iterations.
 
 use crate::llm::ToolCall;
-use crate::mcp::MCPServerRegistry;
+use agentic_loop::mcp_servers_registry::MCPServerRegistry;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::RwLock;

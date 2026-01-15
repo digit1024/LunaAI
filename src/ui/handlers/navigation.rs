@@ -18,11 +18,8 @@ pub fn handle_navigation_messages(
 
             // Refresh MCP tools when navigating to MCP config page or Chat page
             if page == NavigationPage::MCPConfig || page == NavigationPage::Chat {
-                // Immediately try to get cached tools
-                if let Ok(registry) = app.mcp_registry.try_read() {
-                    app.available_mcp_tools = registry.get_available_tools();
-                    app.tool_states = registry.get_tool_states();
-                }
+                // Cache is already available, no need to refresh here
+                // The cache is updated via RefreshMCPTools message
             }
             None
         }

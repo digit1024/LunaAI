@@ -7,7 +7,7 @@ use crate::storage::Storage;
 use crate::ui::app::CosmicLlmApp;
 use crate::config::AppConfig;
 use crate::prompts::PromptManager;
-use crate::mcp::MCPServerRegistry;
+use agentic_loop::mcp_servers_registry::MCPServerRegistry;
 use crate::llm::LlmClient;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -76,24 +76,37 @@ pub fn retry_title_generation(app: &mut CosmicLlmApp) {
     debug!("Finished checking for conversations with 'Generating title...'");
 }
 
+/// Convert main app MCPConfig to agentic-loop MCPConfig
+fn convert_mcp_config(config: &crate::config::MCPConfig) -> agentic_loop::mcp_config::MCPConfig {
+    // Since both configs have identical structure, convert via JSON
+    let json = serde_json::to_value(config).unwrap_or_default();
+    serde_json::from_value(json).unwrap_or_else(|_| agentic_loop::mcp_config::MCPConfig::new())
+}
+
 /// Initialize MCP registry asynchronously
 ///
 /// This spawns a background task to initialize the MCP registry
 /// from configuration.
+/// Returns a channel receiver that will receive a message when initialization completes.
 pub fn initialize_mcp_registry(
     mcp_registry: Arc<RwLock<MCPServerRegistry>>,
     mcp_config: crate::config::MCPConfig,
     initial_profile_mcp_servers: Vec<String>,
-) {
+) -> tokio::sync::oneshot::Receiver<()> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         let mut registry = mcp_registry.write().await;
-        if let Err(e) = registry.initialize_from_config(&mcp_config).await {
+        let agentic_config = convert_mcp_config(&mcp_config);
+        if let Err(e) = registry.initialize_from_config(&agentic_config).await {
             tracing::error!(error = %e, "Failed to initialize MCP registry");
         } else {
             // Always apply profile defaults, even if empty (empty = enable all)
-            registry.apply_profile_tool_defaults(&initial_profile_mcp_servers);
+            registry.enable_tools_for_multiple_servers(initial_profile_mcp_servers).await;
         }
+        drop(registry); // Release the lock before signaling
+        let _ = tx.send(());
     });
+    rx
 }
 
 /// Initialize storage with fallback handling
@@ -155,21 +168,25 @@ pub fn initialize_llm_client(config: &AppConfig) -> Arc<dyn LlmClient> {
 /// Create startup tasks for app initialization
 pub fn create_startup_tasks(
     app: &CosmicLlmApp,
+    mcp_registry: std::sync::Arc<tokio::sync::RwLock<agentic_loop::mcp_servers_registry::MCPServerRegistry>>,
+    mcp_init_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> Vec<cosmic::app::Task<crate::ui::app::Message>> {
     use cosmic::app::Task;
     use crate::ui::app::Message;
     
     let mut tasks = Vec::new();
     
-    // Load MCP tools on startup (same as refresh button)
+    // Load MCP tools after initialization completes
     let load_tools_task = Task::perform(
         async move {
-            // Wait for MCP servers to initialize (give them more time)
-            tokio::time::sleep(tokio::time::Duration::from_millis(5000)).await;
-            tracing::debug!("Startup: Attempting to refresh MCP tools");
+            // Wait for MCP servers to initialize
+            let _ = mcp_init_rx.await;
+            tracing::debug!("MCP registry initialization complete, refreshing cache");
+            // Small delay to ensure everything is ready
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             cosmic::Action::App(Message::RefreshMCPTools)
         },
-        |msg| msg,
+        |action| action,
     );
     tasks.push(load_tools_task);
     
@@ -189,7 +206,7 @@ pub fn create_startup_tasks(
         tasks.push(dbus_check_task);
     }
     
-    // Apply profile tool defaults
+    // Apply profile tool defaults (this will also trigger a cache refresh)
     if let Some(task) = app.profile_tool_defaults_task() {
         tasks.push(task);
     }

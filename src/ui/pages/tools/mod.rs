@@ -6,43 +6,26 @@ use cosmic::{
 };
 
 pub fn tools_context_view(app: &CosmicLlmApp) -> Element<Message> {
-    // Load the actual MCP config (same as startup)
-    let mcp_config =
-        crate::config::MCPConfig::load_from_json().unwrap_or_else(|_| app.config.mcp.clone());
-
-    // Get registry data
-    let (tools_by_server, all_server_names) = {
-        if let Ok(registry) = app.mcp_registry.try_read() {
-            let tools_by_server = registry.get_tools_by_server();
-            let all_server_names = registry.get_all_server_names(&mcp_config);
-            (tools_by_server, all_server_names)
-        } else {
-            (
-                std::collections::HashMap::new(),
-                mcp_config.servers.keys().cloned().collect::<Vec<_>>(),
-            )
-        }
-    };
+    // Use cached data
+    let cache = &app.mcp_cache;
+    let all_server_names = &cache.all_server_names;
+    let tools_by_server = &cache.tools_by_server;
 
     let server_count = all_server_names.len();
-    let total_tools: usize = tools_by_server.values().map(|tools| tools.len()).sum();
-    let enabled_tools_count: usize = app
-        .available_mcp_tools
-        .iter()
-        .filter(|tool| app.tool_states.get(&tool.name).copied().unwrap_or(true))
-        .count();
+    let total_tools = cache.total_tools_count();
+    let enabled_tools_count = cache.enabled_tools_count();
 
     // Build server list
     let mut server_column = cosmic::widget::column::with_capacity(all_server_names.len());
-    for server_name in &all_server_names {
+    for server_name in all_server_names {
         let server_name_clone = server_name.clone();
-        let tools = tools_by_server.get(server_name).cloned().unwrap_or_default();
+        let tools = cache.get_tools_for_server(server_name);
         let tool_count = tools.len();
         
         // Count enabled tools for this server - determine server enabled state from actual tool states
         let enabled_count = tools
             .iter()
-            .filter(|tool| app.tool_states.get(&tool.name).copied().unwrap_or(true))
+            .filter(|tool| cache.is_tool_enabled(&tool.name))
             .count();
         
         // Server is enabled if it has at least one enabled tool
@@ -87,7 +70,7 @@ pub fn tools_context_view(app: &CosmicLlmApp) -> Element<Message> {
                 .map(|tool| {
                     let tool_name = tool.name.clone();
                     let tool_description = tool.description.clone();
-                    let is_enabled = app.tool_states.get(&tool.name).copied().unwrap_or(true);
+                    let is_enabled = cache.is_tool_enabled(&tool.name);
                     container(
                         cosmic::widget::column::with_capacity(2)
                             .push(

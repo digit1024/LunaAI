@@ -6,10 +6,11 @@ mod websocket;
 use crate::server::handlers::ServerContext;
 use crate::server::http::AttachmentStorage;
 use crate::{
-    config::{AppConfig, MCPConfig},
+    config::AppConfig,
     prompts::PromptManager,
     storage::{sqlite_storage_simple::SqliteSettings, Storage},
 };
+use agentic_loop::mcp_servers_registry::MCPServerRegistry;
 use anyhow::{Context, Result};
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
@@ -54,7 +55,7 @@ async fn launch(options: ServerOptions) -> Result<()> {
         });
 
     let storage = Arc::new(Mutex::new(storage));
-    let mcp_registry = Arc::new(RwLock::new(crate::mcp::MCPServerRegistry::new()));
+    let mcp_registry = Arc::new(RwLock::new(MCPServerRegistry::new()));
     let mcp_config = load_mcp_config(&config);
     initialize_mcp_registry(&mcp_registry, &mcp_config, &config).await;
 
@@ -104,16 +105,23 @@ fn load_config(path: Option<&PathBuf>) -> Result<AppConfig, config::ConfigError>
     }
 }
 
-fn load_mcp_config(config: &AppConfig) -> MCPConfig {
-    MCPConfig::load_from_json().unwrap_or_else(|err| {
+fn load_mcp_config(config: &AppConfig) -> crate::config::MCPConfig {
+    crate::config::MCPConfig::load_from_json().unwrap_or_else(|err| {
         tracing::warn!("Failed to load external MCP config: {}", err);
         config.mcp.clone()
     })
 }
 
+/// Convert main app MCPConfig to agentic-loop MCPConfig
+fn convert_mcp_config(config: &crate::config::MCPConfig) -> agentic_loop::mcp_config::MCPConfig {
+    // Since both configs have identical structure, convert via JSON
+    let json = serde_json::to_value(config).unwrap_or_default();
+    serde_json::from_value(json).unwrap_or_else(|_| agentic_loop::mcp_config::MCPConfig::new())
+}
+
 async fn initialize_mcp_registry(
-    registry: &Arc<RwLock<crate::mcp::MCPServerRegistry>>,
-    config: &MCPConfig,
+    registry: &Arc<RwLock<MCPServerRegistry>>,
+    config: &crate::config::MCPConfig,
     app_config: &AppConfig,
 ) {
     let default_tools = app_config
@@ -121,11 +129,14 @@ async fn initialize_mcp_registry(
         .map(|profile| profile.enabled_mcp.clone())
         .unwrap_or_default();
 
+    // Convert to agentic-loop config type
+    let agentic_config = convert_mcp_config(config);
+
     let mut guard = registry.write().await;
-    if let Err(err) = guard.initialize_from_config(config).await {
+    if let Err(err) = guard.initialize_from_config(&agentic_config).await {
         tracing::warn!("MCP registry init failed: {}", err);
     } else if !default_tools.is_empty() {
-        guard.apply_profile_tool_defaults(&default_tools);
+        guard.enable_tools_for_multiple_servers(default_tools).await;
     }
 }
 

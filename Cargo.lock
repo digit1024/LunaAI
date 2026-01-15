@@ -1627,6 +1627,7 @@ dependencies = [
 name = "cosmic_llm"
 version = "0.1.0"
 dependencies = [
+ "agentic-loop",
  "anyhow",
  "async-trait",
  "axum",
@@ -1651,6 +1652,7 @@ dependencies = [
  "ron 0.12.0",
  "rusqlite",
  "rust-embed",
+ "rust-mcp-sdk",
  "serde",
  "serde_json",
  "sha2",

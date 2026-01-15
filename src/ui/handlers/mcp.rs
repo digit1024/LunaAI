@@ -5,40 +5,47 @@
 use cosmic::app;
 
 use crate::ui::app::{CosmicLlmApp, Message};
+use crate::ui::helpers::mcp_cache::update_mcp_cache;
 
 pub fn handle_mcp_messages(app: &mut CosmicLlmApp, message: &Message) -> Option<app::Task<Message>> {
     match message {
         Message::MCPToolsUpdated(tools) => {
-            app.available_mcp_tools = tools.clone();
-            if let Ok(registry) = app.mcp_registry.try_read() {
-                app.tool_states = registry.get_tool_states();
-            }
+            // Update cache with provided tools
+            app.mcp_cache.all_tools = tools.clone();
+            app.mcp_cache.update_tool_states_from_enabled();
             Some(app::Task::none())
         }
         Message::RefreshMCPTools => {
-            if let Ok(registry) = app.mcp_registry.try_read() {
-                let tools = registry.get_available_tools();
-                tracing::debug!(tool_count = tools.len(), "RefreshMCPTools: Found tools");
-                app.available_mcp_tools = tools;
-                app.tool_states = registry.get_tool_states();
-            } else {
-                tracing::error!("RefreshMCPTools: Failed to get registry read lock");
-            }
+            let mcp_registry = app.mcp_registry.clone();
+            Some(app::Task::perform(
+                async move {
+                    let mut cache = crate::ui::state::MCPCache::new();
+                    if let Err(e) = update_mcp_cache(&mcp_registry, &mut cache).await {
+                        tracing::error!(error = %e, "Failed to update MCP cache");
+                    }
+                    cosmic::Action::App(Message::MCPCacheUpdated(cache))
+                },
+                |action| action,
+            ))
+        }
+        Message::MCPCacheUpdated(cache) => {
+            app.mcp_cache = cache.clone();
             Some(app::Task::none())
         }
         Message::ToggleAllTools(enabled) => {
             let enabled_val = *enabled;
-            for tool in &app.available_mcp_tools {
-                app.tool_states.insert(tool.name.clone(), enabled_val);
+            // Update cache optimistically
+            for tool in &app.mcp_cache.all_tools {
+                app.mcp_cache.tool_states.insert(tool.name.clone(), enabled_val);
             }
             let mcp_registry = app.mcp_registry.clone();
             Some(cosmic::Task::perform(
                 async move {
                     let mut registry = mcp_registry.write().await;
                     if enabled_val {
-                        registry.enable_all_tools();
+                        registry.enable_all_tools().await;
                     } else {
-                        registry.disable_all_tools();
+                        registry.disable_all_tools().await;
                     }
                     cosmic::Action::App(Message::RefreshMCPTools)
                 },
@@ -48,12 +55,17 @@ pub fn handle_mcp_messages(app: &mut CosmicLlmApp, message: &Message) -> Option<
         Message::ToggleTool(tool_name, enabled) => {
             let tool_name_clone = tool_name.clone();
             let enabled_val = *enabled;
-            app.tool_states.insert(tool_name_clone.clone(), enabled_val);
+            // Update cache optimistically
+            app.mcp_cache.tool_states.insert(tool_name_clone.clone(), enabled_val);
             let mcp_registry = app.mcp_registry.clone();
             Some(cosmic::Task::perform(
                 async move {
                     let mut registry = mcp_registry.write().await;
-                    registry.set_tool_enabled(&tool_name_clone, enabled_val);
+                    if enabled_val {
+                        registry.enable_tool(&tool_name_clone).await;
+                    } else {
+                        registry.disable_tool(&tool_name_clone).await;
+                    }
                     cosmic::Action::App(Message::RefreshMCPTools)
                 },
                 |msg| msg,
@@ -74,13 +86,10 @@ pub fn handle_mcp_messages(app: &mut CosmicLlmApp, message: &Message) -> Option<
                 }
             }
             
-            if let Ok(registry) = app.mcp_registry.try_read() {
-                for tool in &app.available_mcp_tools {
-                    if let Ok(tool_server) = registry.get_server_for_tool(&tool.name) {
-                        if tool_server == &server_name_clone {
-                            app.tool_states.insert(tool.name.clone(), enabled_val);
-                        }
-                    }
+            // Update cache optimistically - update all tools for this server
+            if let Some(tools) = app.mcp_cache.tools_by_server.get(&server_name_clone) {
+                for tool in tools {
+                    app.mcp_cache.tool_states.insert(tool.name.clone(), enabled_val);
                 }
             }
             
@@ -92,7 +101,11 @@ pub fn handle_mcp_messages(app: &mut CosmicLlmApp, message: &Message) -> Option<
                 async move {
                     {
                         let mut registry = mcp_registry.write().await;
-                        registry.set_server_enabled(&server_name_for_task, enabled_val);
+                        if enabled_val {
+                            registry.enable_tools_by_server_name(&server_name_for_task).await;
+                        } else {
+                            registry.disable_tool_by_server_name(&server_name_for_task).await;
+                        }
                     }
                     
                     if let Err(e) = config.save() {

@@ -2,7 +2,7 @@
 //!
 //! Handles MCP-related operations like applying profile tool defaults.
 
-use crate::mcp::MCPServerRegistry;
+use agentic_loop::mcp_servers_registry::MCPServerRegistry;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -28,7 +28,7 @@ impl MCPService {
         cosmic::Task::perform(
             async move {
                 let mut registry = registry.write().await;
-                registry.apply_profile_tool_defaults(&allowed_servers);
+                registry.enable_tools_for_multiple_servers(allowed_servers).await;
                 cosmic::Action::App(crate::ui::app::Message::RefreshMCPTools)
             },
             |msg| msg,

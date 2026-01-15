@@ -9,11 +9,12 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+use agentic_loop::mcp_servers_registry::MCPServerRegistry;
+
 use crate::{
     agentic::protocol::AgentUpdate,
     config::AppConfig,
     llm::LlmClient,
-    mcp::MCPServerRegistry,
     prompts::PromptManager,
     storage::Storage,
     ui::context::ContextPage,
@@ -23,7 +24,7 @@ use crate::{
     ui::pages::mcp_config,
     ui::pages::settings::{self, SimpleSettingsMessage, SimpleSettingsPage},
     ui::pages::tools,
-    ui::state::{AttachmentState, ContextState, ConversationState, ToolCallState},
+    ui::state::{AttachmentState, ContextState, ConversationState, MCPCache, ToolCallState},
     ui::widgets::ToolCallMessage,
 };
 use crate::ui::handlers::{
@@ -81,6 +82,7 @@ pub enum Message {
     ShowMessageDialog(String),
     // MCP actions
     MCPToolsUpdated(Vec<crate::llm::ToolDefinition>),
+    MCPCacheUpdated(crate::ui::state::MCPCache),
     RefreshMCPTools,
     ToggleMCPServer(String), // server_name
     OpenMCPConfig, // Open MCP config file in cosmic-edit
@@ -220,10 +222,8 @@ pub struct CosmicLlmApp {
     // Dialog state
     pub dialog: Option<DialogPage>,
     pub dialog_text_content: Option<text_editor::Content>,
-    // MCP tools cache
-    pub available_mcp_tools: Vec<crate::llm::ToolDefinition>,
-    // Tool enable/disable state (tool_name -> enabled)
-    pub tool_states: std::collections::HashMap<String, bool>,
+    // MCP cache (updated async, read sync)
+    pub mcp_cache: MCPCache,
     // D-Bus TTS/STT service
     #[cfg(feature = "ttsandstt")]
     pub dbus_ttsstt_available: bool,
@@ -391,8 +391,7 @@ impl CosmicLlmApp {
             agent_mode_active: true,
             dialog: None,
             dialog_text_content: None,
-            available_mcp_tools: Vec::new(),
-            tool_states: std::collections::HashMap::new(),
+            mcp_cache: MCPCache::new(),
             #[cfg(feature = "ttsandstt")]
             dbus_ttsstt_available: false,
             #[cfg(feature = "ttsandstt")]
@@ -623,10 +622,10 @@ impl Application for CosmicLlmApp {
         }
 
         // Initialize MCP registry in background
-        crate::ui::init_helpers::initialize_mcp_registry(
-            mcp_registry_clone,
-            mcp_config,
-            initial_profile_mcp_servers,
+        let mcp_init_rx = crate::ui::init_helpers::initialize_mcp_registry(
+            mcp_registry_clone.clone(),
+            mcp_config.clone(),
+            initial_profile_mcp_servers.clone(),
         );
 
         // Initialize LLM client based on default profile's backend
@@ -650,7 +649,7 @@ impl Application for CosmicLlmApp {
         app.update_nav_model();
 
         // Create startup tasks
-        let tasks = crate::ui::init_helpers::create_startup_tasks(&app);
+        let tasks = crate::ui::init_helpers::create_startup_tasks(&app, mcp_registry_clone, mcp_init_rx);
 
         (app, app::Task::batch(tasks))
     }
@@ -799,6 +798,9 @@ impl Application for CosmicLlmApp {
             Message::RefreshConversationList => {
                 self.load_recent_conversations();
                 self.update_nav_model();
+            }
+            Message::MCPCacheUpdated(cache) => {
+                self.mcp_cache = cache;
             }
             _ => {} // Messages handled by handler modules or page modules
         }

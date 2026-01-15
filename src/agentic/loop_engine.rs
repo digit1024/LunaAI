@@ -1,6 +1,7 @@
 use super::protocol::{AgentUpdate, PlannedTool};
 use crate::llm::{ChatStreamEvent, LlmClient, LlmError, Message, Role, ToolCall, ToolResult};
-use crate::mcp::MCPServerRegistry;
+use crate::mcp::conversions::{tool_call_to_params, tools_to_definitions};
+use agentic_loop::mcp_servers_registry::MCPServerRegistry;
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use std::sync::Arc;
@@ -34,9 +35,11 @@ impl AgenticLoop {
         loop {
             let available_tools: Vec<crate::llm::ToolDefinition> = {
                 let registry = self.mcp_registry.read().await;
-                let tools = registry.get_enabled_tools();
-                tracing::debug!(tool_count = tools.len(), "Enabled tools");
-                tools
+                let tools = registry.get_enabled_tools().await
+                    .context("Failed to get enabled tools")?;
+                let defs = tools_to_definitions(&tools);
+                tracing::debug!(tool_count = defs.len(), "Enabled tools");
+                defs
             };
 
             let mut stream = match self
@@ -194,13 +197,15 @@ impl AgenticLoop {
 
         loop {
             attempt += 1;
+            let tool_name = tool_call.name.clone();
             let call_future = async {
                 let mut registry = self.mcp_registry.write().await;
-                registry.call_tool(tool_call.clone()).await
+                let params = tool_call_to_params(&tool_call);
+                registry.call_tool(tool_name, params.arguments.unwrap_or_default()).await
             };
             match timeout(per_call_timeout, call_future).await {
-                Ok(Ok(result)) => {
-                    return result;
+                Ok(Ok(sdk_result)) => {
+                    return ToolResult::from(&sdk_result);
                 }
                 Ok(Err(e)) => {
                     if let Some(tx) = agent_tx {
@@ -247,7 +252,9 @@ impl AgenticLoop {
         loop {
             let available_tools = {
                 let registry = self.mcp_registry.read().await;
-                registry.get_enabled_tools()
+                let tools = registry.get_enabled_tools().await
+                    .context("Failed to get enabled tools")?;
+                tools_to_definitions(&tools)
             };
 
             let response = match self

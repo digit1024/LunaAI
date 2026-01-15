@@ -121,6 +121,12 @@ mime_guess = "2.0"
 # Async utilities for file streaming
 tokio-util = { version = "0.7", features = ["codec", "io"] }
 
+# Agentic loop library (MCP support)
+agentic-loop = { path = "agentic-loop" }
+
+# MCP SDK (needed for type conversions)
+rust-mcp-sdk = { version = "0.8.1", default-features = false, features = ["client", "stdio"] }
+
 [build-dependencies]
 zbus_xmlgen = "5.1.0"
 

@@ -29,7 +29,7 @@ fn default_client_details() -> InitializeRequestParams
             icons: vec![],
             website_url: None,
         },
-        protocol_version: LATEST_PROTOCOL_VERSION.into(),
+        protocol_version: "2024-11-05".into(),
         meta: None,
     }
 }
@@ -130,11 +130,18 @@ impl MCPConnection {
     }
     //get the tools list from the MCP server
     pub async fn update_tools(&mut self) -> Result<&mut Self> {
-        let tools_list_result = self.client().unwrap().request_tool_list(None).await.map_err(|e| AgenticLoopError::MCPConnectionError(
-            format!("Failed to get tools list: {}", e)
-        ))?;
-        self.tools = tools_list_result.tools;
-        Ok(self)
+        match self.client().unwrap().request_tool_list(None).await {
+            Ok(tools_list_result) => {
+                self.tools = tools_list_result.tools;
+                Ok(self)
+            }
+            Err(e) => {
+                tracing::error!("Failed to get tools list for server '{}': {}", self.server_name, e);
+                Err(AgenticLoopError::MCPConnectionError(
+                    format!("Failed to get tools list: {}", e)
+                ))
+            }
+        }
     }
     //get the tools list from the MCP server
     pub fn tools(&self) -> &Vec<rust_mcp_sdk::schema::Tool> {

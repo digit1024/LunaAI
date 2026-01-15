@@ -7,13 +7,9 @@ use cosmic::{iced::Length, widget, Element};
 use tracing;
 
 pub fn top_panel(app: &CosmicLlmApp) -> Element<Message> {
-    // Count enabled/disabled tools
-    let total_tools = app.available_mcp_tools.len();
-    let enabled_count = app
-        .available_mcp_tools
-        .iter()
-        .filter(|tool| app.tool_states.get(&tool.name).copied().unwrap_or(true))
-        .count();
+    // Count enabled/disabled tools from cache
+    let total_tools = app.mcp_cache.total_tools_count();
+    let enabled_count = app.mcp_cache.enabled_tools_count();
 
     // Conversation info
     let (title, created_text, _msg_count, context_usage) = if let Some(id) = app.conversation_state.current_conversation_id {

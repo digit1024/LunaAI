@@ -2,6 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use rust_mcp_sdk::schema::CallToolResult;
 use tokio::sync::RwLock;
+use tracing::error;
 
 use crate::{error::{AgenticLoopError, Result}, mcp_servers_registry::model::{ServerStatus, ServerWithStatus}};
 pub mod model;
@@ -42,6 +43,7 @@ impl MCPServerRegistry {
                             self.servers.insert(server_name.clone(), Arc::new(RwLock::new(server_connection)));
                         },
                         Err(e) => {
+                            error!("Failed to update tools for MCP server '{}': {}", server_name, e);
                             self.failed_servers.insert(server_name.clone(), e.to_string());
                             continue;
                         }
@@ -81,22 +83,30 @@ impl MCPServerRegistry {
         Ok(tools)
     }
     pub async fn get_all_tools_by_server_name(&self, server_name: &str) -> Result<Vec<rust_mcp_sdk::schema::Tool>> {
-        let server_connection = self.servers.get(server_name).unwrap();
-        let server_tools = server_connection.read().await.tools().iter().cloned().collect::<Vec<rust_mcp_sdk::schema::Tool>>();
-        Ok(server_tools)
+        if let Some(server_connection) = self.servers.get(server_name) {
+            let server_tools = server_connection.read().await.tools().iter().cloned().collect::<Vec<rust_mcp_sdk::schema::Tool>>();
+            Ok(server_tools)
+        } else {
+            Ok(Vec::new()) // Return empty vec if server not found
+        }
     }
     pub async fn get_enabled_tools_by_server_name(&self, server_name: &str) -> Result<Vec<rust_mcp_sdk::schema::Tool>> {
-        let server_connection = self.servers.get(server_name).unwrap();
-        let server_tools = server_connection.read().await.tools().iter().filter(|tool| self.tools_white_list.contains(&tool.name.clone())).cloned().collect::<Vec<rust_mcp_sdk::schema::Tool>>();
-        Ok(server_tools)
+        if let Some(server_connection) = self.servers.get(server_name) {
+            let server_tools = server_connection.read().await.tools().iter().filter(|tool| self.tools_white_list.contains(&tool.name.clone())).cloned().collect::<Vec<rust_mcp_sdk::schema::Tool>>();
+            Ok(server_tools)
+        } else {
+            Ok(Vec::new()) // Return empty vec if server not found
+        }
     }
     
     pub async fn get_all_server_names_and_statuses(&self) -> Result<Vec<ServerWithStatus>> {
         let mut  all_servers_with_statuses = self.servers.keys().cloned().collect::<Vec<String>>().iter().map(|name| ServerWithStatus { server_name: name.clone(), server_status: ServerStatus::Connected }).collect::<Vec<ServerWithStatus>>() ;
-        let failed_server_names = self.failed_servers.keys().cloned().collect::<Vec<String>>().iter().map(|name| ServerWithStatus { server_name: name.clone(), server_status: ServerStatus::Failed(self.failed_servers.get(name).unwrap().clone()) }).collect::<Vec<ServerWithStatus>>();
+        let failed_server_names = self.failed_servers.keys().cloned().collect::<Vec<String>>().iter().map(|name| {
+            let error_msg = self.failed_servers.get(name).cloned().unwrap_or_else(|| "Unknown error".to_string());
+            ServerWithStatus { server_name: name.clone(), server_status: ServerStatus::Failed(error_msg) }
+        }).collect::<Vec<ServerWithStatus>>();
         all_servers_with_statuses.extend(failed_server_names);
         Ok(all_servers_with_statuses)
-        
     }
 
     //disables tool by name - removes it from the tools_white_list
@@ -122,19 +132,34 @@ impl MCPServerRegistry {
     }
     //disable  tool by server name 
     pub async fn disable_tool_by_server_name(&mut self, server_name: &str) {
-        let tool_names: Vec<String> = self.servers.get(server_name).unwrap().read().await.tools().iter().map(|tool| tool.name.clone()).collect();
-        for tool_name in tool_names {
-            self.disable_tool(&tool_name).await;
+        if let Some(server_connection) = self.servers.get(server_name) {
+            let tool_names: Vec<String> = server_connection.read().await.tools().iter().map(|tool| tool.name.clone()).collect();
+            for tool_name in tool_names {
+                self.disable_tool(&tool_name).await;
+            }
+        } else {
+            tracing::warn!(server_name = %server_name, "Server not found in registry, skipping disable_tool_by_server_name");
         }
     }
     //enable tool by server name
     pub async fn enable_tools_by_server_name(&mut self, server_name: &str) {
-        let tool_names: Vec<String> = self.servers.get(server_name).unwrap().read().await.tools().iter().map(|tool| tool.name.clone()).collect();
-        for tool_name in tool_names {
-            self.enable_tool(&tool_name).await;
+        if let Some(server_connection) = self.servers.get(server_name) {
+            let tool_names: Vec<String> = server_connection.read().await.tools().iter().map(|tool| tool.name.clone()).collect();
+            for tool_name in tool_names {
+                self.enable_tool(&tool_name).await;
+            }
+        } else {
+            tracing::warn!(server_name = %server_name, "Server not found in registry, skipping enable_tools_by_server_name");
         }
     }
     pub async fn enable_tools_for_multiple_servers(&mut self, server_names: Vec<String>) {
+        // If server_names is empty, enable all tools from all connected servers
+        if server_names.is_empty() {
+            self.enable_all_tools().await;
+            return;
+        }
+        
+        // Otherwise, enable tools only for the specified servers
         for server_name in server_names {
             self.enable_tools_by_server_name(&server_name).await;
         }
