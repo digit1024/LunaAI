@@ -465,11 +465,6 @@ impl LunaThinApp {
             .data(NavItem::Page(Page::History))
             .divider_above(true);
         model.insert()
-            .text("MCP Servers")
-            .icon(widget::icon::from_name("network-server-symbolic").size(16))
-            .data(NavItem::Page(Page::MCPServers))
-            .divider_above(true);
-        model.insert()
             .text("Settings")
             .icon(widget::icon::from_name("settings-symbolic").size(16))
             .data(NavItem::Page(Page::Settings))
@@ -506,13 +501,6 @@ impl LunaThinApp {
             .text("More history")
             .icon(widget::icon::from_name("list-large-symbolic").size(16))
             .data(NavItem::Page(Page::History))
-            .divider_above(true);
-
-        // MCP Servers
-        model.insert()
-            .text("MCP Servers")
-            .icon(widget::icon::from_name("network-server-symbolic").size(16))
-            .data(NavItem::Page(Page::MCPServers))
             .divider_above(true);
 
         // MCP Servers
