@@ -138,6 +138,51 @@ async fn initialize_mcp_registry(
     } else if !default_tools.is_empty() {
         guard.enable_tools_for_multiple_servers(default_tools).await;
     }
+
+    // Log all connected servers and their tools
+    tracing::info!("=== MCP Servers Initialization Summary ===");
+    let connected_count = guard.servers.len();
+    let failed_count = guard.failed_servers.len();
+    
+    if connected_count > 0 {
+        tracing::info!(count = connected_count, "Connected MCP servers:");
+        for (server_name, server_connection) in guard.servers.iter() {
+            let connection_guard = server_connection.read().await;
+            let tools = connection_guard.tools();
+            let tool_names: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
+            let enabled_count = tool_names.iter()
+                .filter(|name| guard.tools_white_list.contains(name))
+                .count();
+            drop(connection_guard); // Explicitly drop to release the read lock
+            tracing::info!(
+                server = %server_name,
+                tool_count = tool_names.len(),
+                enabled_count = enabled_count,
+                tools = %tool_names.join(", ")
+            );
+        }
+    } else {
+        tracing::warn!("No MCP servers connected");
+    }
+
+    // Log failed/disconnected servers as errors
+    if failed_count > 0 {
+        tracing::error!(count = failed_count, "Failed to connect to MCP servers:");
+        for (server_name, error_msg) in guard.failed_servers.iter() {
+            tracing::error!(
+                server = %server_name,
+                error = %error_msg,
+                "Failed to connect to MCP server"
+            );
+        }
+    }
+    
+    tracing::info!(
+        connected = connected_count,
+        failed = failed_count,
+        total = connected_count + failed_count,
+        "MCP server initialization complete"
+    );
 }
 
 fn spawn_title_generation_thread(
