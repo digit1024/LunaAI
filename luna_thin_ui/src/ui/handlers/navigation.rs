@@ -13,6 +13,13 @@ pub fn handle_navigation_messages(
     match message {
         Message::NavigateTo(page) => {
             app.current_page = page;
+            // Load MCP servers when navigating to that page
+            if page == crate::ui::app::Page::MCPServers && app.connection_status == crate::ui::app::ConnectionStatus::Connected {
+                return Some(app::Task::perform(
+                    async { Message::LoadMCPServers },
+                    |msg| cosmic::Action::App(msg),
+                ));
+            }
             None
         }
         Message::SelectConversation(conv_id) => {

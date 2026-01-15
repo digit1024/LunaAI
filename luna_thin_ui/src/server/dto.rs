@@ -207,3 +207,25 @@ pub struct AttachmentView {
     pub file_size: u64,
 }
 
+/// MCP Server status
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "status", rename_all = "lowercase")]
+pub enum MCPServerStatus {
+    Connected,
+    Failed { error: String },
+}
+
+/// MCP Server information
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MCPServerInfo {
+    pub name: String,
+    #[serde(flatten)]
+    pub status: MCPServerStatus,
+}
+
+/// MCP Servers list response
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MCPServersResponse {
+    pub servers: Vec<MCPServerInfo>,
+}
+

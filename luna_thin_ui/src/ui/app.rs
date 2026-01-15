@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::client::{FileClient, LunaWsClient, ServerConfig};
 use crate::server::dto::{ClientCommand, ConversationSummary, MessageView, ServerEvent};
-use crate::ui::pages::{chat_page, history_page, settings_page, ChatPageState};
+use crate::ui::pages::{chat_page, history_page, mcp_servers_page, settings_page, ChatPageState};
 use crate::ui::handlers::{
     handle_connection_messages,
     handle_chat_messages,
@@ -81,6 +81,11 @@ pub enum Message {
     // Profile
     ChangeProfile(String),
 
+    // MCP Servers
+    LoadMCPServers,
+    MCPServersLoaded(Vec<crate::server::dto::MCPServerInfo>),
+    MCPServersLoadError(String),
+
     // Tick for animations
     Tick(cosmic::iced::time::Instant),
 
@@ -103,6 +108,7 @@ pub enum Message {
 pub enum Page {
     Chat,
     History,
+    MCPServers,
     Settings,
 }
 
@@ -320,6 +326,7 @@ pub struct LunaThinApp {
     pub messages: Vec<ChatMessage>,
     pub profiles: Vec<String>,
     pub current_profile: String,
+    pub mcp_servers: Vec<crate::server::dto::MCPServerInfo>,
 
     // Streaming state
     pub is_streaming: bool,
@@ -390,6 +397,7 @@ impl LunaThinApp {
             messages: Vec::new(),
             profiles: Vec::new(),
             current_profile: String::new(),
+            mcp_servers: Vec::new(),
             is_streaming: false,
             streaming_content: String::new(),
             reasoning_content: String::new(),
@@ -457,6 +465,11 @@ impl LunaThinApp {
             .data(NavItem::Page(Page::History))
             .divider_above(true);
         model.insert()
+            .text("MCP Servers")
+            .icon(widget::icon::from_name("network-server-symbolic").size(16))
+            .data(NavItem::Page(Page::MCPServers))
+            .divider_above(true);
+        model.insert()
             .text("Settings")
             .icon(widget::icon::from_name("settings-symbolic").size(16))
             .data(NavItem::Page(Page::Settings))
@@ -493,6 +506,20 @@ impl LunaThinApp {
             .text("More history")
             .icon(widget::icon::from_name("list-large-symbolic").size(16))
             .data(NavItem::Page(Page::History))
+            .divider_above(true);
+
+        // MCP Servers
+        model.insert()
+            .text("MCP Servers")
+            .icon(widget::icon::from_name("network-server-symbolic").size(16))
+            .data(NavItem::Page(Page::MCPServers))
+            .divider_above(true);
+
+        // MCP Servers
+        model.insert()
+            .text("MCP Servers")
+            .icon(widget::icon::from_name("network-server-symbolic").size(16))
+            .data(NavItem::Page(Page::MCPServers))
             .divider_above(true);
 
         // Settings
@@ -945,6 +972,40 @@ impl Application for LunaThinApp {
             return task;
         }
         
+        // Handle MCP Servers messages
+        match message.clone() {
+            Message::LoadMCPServers => {
+                if let Some(ref file_client) = self.file_client {
+                    let client = file_client.clone();
+                    return app::Task::perform(
+                        async move {
+                            match client.list_mcp_servers().await {
+                                Ok(response) => Message::MCPServersLoaded(response.servers),
+                                Err(e) => Message::MCPServersLoadError(e.to_string()),
+                            }
+                        },
+                        |msg| cosmic::Action::App(msg),
+                    );
+                } else {
+                    return app::Task::perform(
+                        async move {
+                            Message::MCPServersLoadError("Not connected to server".to_string())
+                        },
+                        |msg| cosmic::Action::App(msg),
+                    );
+                }
+            }
+            Message::MCPServersLoaded(servers) => {
+                self.mcp_servers = servers;
+                return app::Task::none();
+            }
+            Message::MCPServersLoadError(error) => {
+                self.inline_error = Some(format!("Failed to load MCP servers: {}", error));
+                return app::Task::none();
+            }
+            _ => {}
+        }
+
         // Handle remaining simple messages
         match message {
             Message::ToggleReasoning(idx) => {
@@ -1059,6 +1120,7 @@ impl Application for LunaThinApp {
         match self.current_page {
             Page::Chat => chat_page(self),
             Page::History => history_page(self),
+            Page::MCPServers => mcp_servers_page(self),
             Page::Settings => settings_page(self),
         }
     }

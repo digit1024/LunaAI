@@ -102,6 +102,27 @@ impl FileClient {
             Err(format!("File removal failed: {} - {}", status, body).into())
         }
     }
+
+    pub async fn list_mcp_servers(&self) -> Result<crate::server::dto::MCPServersResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let url = format!("{}/api/mcp-servers", self.base_url());
+        tracing::debug!("Fetching MCP servers from: {}", url);
+
+        let response = self
+            .client
+            .get(&url)
+            .headers(self.headers())
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            let servers: crate::server::dto::MCPServersResponse = response.json().await?;
+            Ok(servers)
+        } else {
+            let status = response.status();
+            let body = response.text().await?;
+            Err(format!("Failed to fetch MCP servers: {} - {}", status, body).into())
+        }
+    }
 }
 
 

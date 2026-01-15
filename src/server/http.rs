@@ -4,7 +4,7 @@ use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, StatusCode},
     response::Json,
-    routing::{delete, post},
+    routing::{delete, get, post},
     Router,
     body::Body,
 };
@@ -133,6 +133,25 @@ pub struct AttachFileResponse {
 #[derive(Debug, Serialize)]
 pub struct RemoveFileResponse {
     success: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "lowercase")]
+pub enum MCPServerStatus {
+    Connected,
+    Failed { error: String },
+}
+
+#[derive(Debug, Serialize)]
+pub struct MCPServerInfo {
+    pub name: String,
+    #[serde(flatten)]
+    pub status: MCPServerStatus,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListMCPServersResponse {
+    pub servers: Vec<MCPServerInfo>,
 }
 
 fn extract_api_key(headers: &HeaderMap) -> Option<String> {
@@ -377,10 +396,44 @@ pub async fn remove_file_handler(
     Ok(Json(RemoveFileResponse { success: removed }))
 }
 
+pub async fn list_mcp_servers_handler(
+    State(ctx): State<Arc<ServerContext>>,
+    headers: HeaderMap,
+) -> Result<Json<ListMCPServersResponse>, StatusCode> {
+    // Check authorization
+    if !authorize(&headers, &ctx.server_cfg.api_key) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let registry = ctx.mcp_registry.read().await;
+    let servers_with_status = registry
+        .get_all_server_names_and_statuses()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let servers: Vec<MCPServerInfo> = servers_with_status
+        .into_iter()
+        .map(|server| MCPServerInfo {
+            name: server.server_name,
+            status: match server.server_status {
+                agentic_loop::mcp_servers_registry::model::ServerStatus::Connected => {
+                    MCPServerStatus::Connected
+                }
+                agentic_loop::mcp_servers_registry::model::ServerStatus::Failed(error) => {
+                    MCPServerStatus::Failed { error }
+                }
+            },
+        })
+        .collect();
+
+    Ok(Json(ListMCPServersResponse { servers }))
+}
+
 pub fn create_http_router(ctx: Arc<ServerContext>) -> Router {
     Router::new()
         .route("/api/attach-file", post(attach_file_handler))
         .route("/api/attach-file/{file_id}", delete(remove_file_handler))
+        .route("/api/mcp-servers", get(list_mcp_servers_handler))
         .with_state(ctx)
 }
 
