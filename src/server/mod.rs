@@ -135,8 +135,17 @@ async fn initialize_mcp_registry(
     let mut guard = registry.write().await;
     if let Err(err) = guard.initialize_from_config(&agentic_config).await {
         tracing::warn!("MCP registry init failed: {}", err);
-    } else if !default_tools.is_empty() {
-        guard.enable_tools_for_multiple_servers(default_tools).await;
+    } else {
+        // Enable tools based on profile configuration
+        // If default_tools is empty, enable_all_tools() is called internally
+        // If default_tools has invalid server names, warnings are logged but we continue
+        guard.enable_tools_for_multiple_servers(default_tools.clone()).await;
+        
+        // If no tools were enabled (e.g., due to invalid server names), enable all tools as fallback
+        if guard.tools_white_list.is_empty() && !guard.servers.is_empty() {
+            tracing::warn!("No tools enabled from profile configuration, enabling all tools from connected servers as fallback");
+            guard.enable_all_tools().await;
+        }
     }
 
     // Log all connected servers and their tools
