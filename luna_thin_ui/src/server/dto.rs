@@ -24,6 +24,10 @@ pub enum ClientCommand {
     DeleteConversation {
         conversation_id: String,
     },
+    TruncateConversation {
+        conversation_id: String,
+        message_id: String, // Delete all messages up to and including this message
+    },
     StopStreaming {
         conversation_id: Option<String>,
     },

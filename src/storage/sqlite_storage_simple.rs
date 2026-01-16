@@ -543,6 +543,28 @@ impl SqliteStorage {
         Ok(changes)
     }
 
+    /// Truncate conversation: delete all messages up to and including the specified message
+    pub fn truncate_conversation(&self, conversation_id: &str, message_id: &str) -> SqliteResult<usize> {
+        // First, find the message's created_at timestamp
+        let message_timestamp: Option<i64> = self.conn.query_row(
+            "SELECT created_at FROM messages WHERE id = ?1 AND conversation_id = ?2",
+            params![message_id, conversation_id],
+            |row| row.get(0),
+        ).ok();
+
+        if let Some(timestamp) = message_timestamp {
+            // Delete all messages in this conversation with created_at <= the target message's timestamp
+            let changes = self.conn.execute(
+                "DELETE FROM messages WHERE conversation_id = ?1 AND created_at <= ?2",
+                params![conversation_id, timestamp],
+            )?;
+            Ok(changes)
+        } else {
+            // Message not found, return 0
+            Ok(0)
+        }
+    }
+
     /// Perform summarization: mark old messages as summarized and insert summary
     pub fn perform_summarization(
         &self,

@@ -224,6 +224,17 @@ impl Storage {
         self.sqlite.delete_conversation(&id_str)
     }
 
+    /// Truncate conversation: delete all messages up to and including the specified message
+    pub fn truncate_conversation(
+        &self,
+        conversation_id: &Uuid,
+        message_id: &Uuid,
+    ) -> SqliteResult<usize> {
+        let conv_id_str = conversation_id.to_string();
+        let msg_id_str = message_id.to_string();
+        self.sqlite.truncate_conversation(&conv_id_str, &msg_id_str)
+    }
+
     /// Search conversation history
     pub fn search_history(
         &self,

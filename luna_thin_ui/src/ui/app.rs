@@ -95,6 +95,8 @@ pub enum Message {
     CopyMessage(String),
     // Regenerate message (agent only)
     RegenerateMessage(String),
+    // Retry message (user only) - retry from this user message
+    RetryMessage(String), // message_id
     // TTS messages
     StartTts(String), // message_id
     StopTts,

@@ -122,6 +122,9 @@ impl ServerHandler {
             ClientCommand::DeleteConversation { conversation_id } => {
                 self.handle_delete_conversation(conversation_id).await
             }
+            ClientCommand::TruncateConversation { conversation_id, message_id } => {
+                self.handle_truncate_conversation(conversation_id, message_id).await
+            }
             ClientCommand::StopStreaming { conversation_id } => {
                 self.handle_stop_streaming(conversation_id).await
             }
@@ -600,6 +603,38 @@ impl ServerHandler {
         } else {
             return Err(anyhow!("Conversation not found"));
         }
+        Ok(())
+    }
+
+    async fn handle_truncate_conversation(
+        &mut self,
+        conversation_id: String,
+        message_id: String,
+    ) -> Result<()> {
+        let conv_uuid = Uuid::parse_str(&conversation_id)
+            .context("invalid conversation id format")?;
+        let msg_uuid = Uuid::parse_str(&message_id)
+            .context("invalid message id format")?;
+
+        // Delete messages up to and including the specified message
+        let storage = self.ctx.storage.lock().await;
+        storage
+            .truncate_conversation(&conv_uuid, &msg_uuid)
+            .context("failed to truncate conversation")?;
+
+        // Reload the conversation and send ConversationLoaded event
+        if let Some(conv) = storage
+            .get_conversation(&conv_uuid)
+            .context("failed to reload conversation after truncation")?
+        {
+            let view = to_conversation_view(&conv);
+            let _ = self.outbound.send(ServerEvent::ConversationLoaded {
+                conversation: view,
+            });
+        } else {
+            return Err(anyhow!("Conversation not found after truncation"));
+        }
+
         Ok(())
     }
 

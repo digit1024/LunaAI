@@ -90,6 +90,23 @@ pub fn handle_chat_messages(
             tracing::info!("Regenerate message clicked: {}", message_id);
             None
         }
+        Message::RetryMessage(message_id) => {
+            // Find the message and put its content in input, then truncate conversation
+            if let Some(msg) = app.messages.iter().find(|m| m.id == message_id) {
+                // Set input to message content
+                app.input_text = msg.content.clone();
+                
+                // Get conversation ID
+                if let Some(conv_id) = &app.current_conversation_id {
+                    // Send truncate command
+                    app.send_command(crate::server::dto::ClientCommand::TruncateConversation {
+                        conversation_id: conv_id.clone(),
+                        message_id: message_id.clone(),
+                    });
+                }
+            }
+            None
+        }
         Message::Tick(_) => {
             // Update typing indicator animation
             const TYPING_PROGRESS_STEP: f32 = 0.1;

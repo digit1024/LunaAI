@@ -169,6 +169,12 @@ fn render_message_bubble(app: &LunaThinApp, msg: &ChatMessage, idx: usize) -> El
         } else {
             None
         },
+        // Retry button: only for user messages (not summary)
+        if is_user_msg && !is_summary_msg {
+            Some(Message::RetryMessage(msg.id.clone()))
+        } else {
+            None
+        },
     )
 }
 

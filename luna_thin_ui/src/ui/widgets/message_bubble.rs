@@ -31,6 +31,7 @@ impl Default for BubbleContext {
 pub fn user_bubble<M: Clone + 'static>(
     content: &str,
     on_copy: M,
+    on_retry: Option<M>, // Retry button (regenerate from this message)
 ) -> Element<'static, M> {
     let content_owned = content.to_string();
     
@@ -43,16 +44,28 @@ pub fn user_bubble<M: Clone + 'static>(
     )
     .width(Length::Fill);
 
-    // Copy button row
-    let buttons = row()
-        .push(Space::with_width(Length::Fill))
-        .push(
-            button::icon(icons::get_handle("copy-symbolic", 16))
-                .on_press(on_copy)
+    // Button row: Retry (if provided), Copy
+    let mut buttons = row()
+        .push(Space::with_width(Length::Fill));
+    
+    // Retry button (regenerate from this message)
+    if let Some(on_retry) = on_retry {
+        buttons = buttons.push(
+            button::icon(icons::get_handle("arrow-circular-bottom-right-symbolic", 16))
+                .on_press(on_retry)
                 .class(cosmic::style::Button::Text)
                 .padding(4),
-        )
-        .spacing(4);
+        );
+    }
+    
+    // Copy button
+    buttons = buttons.push(
+        button::icon(icons::get_handle("copy-symbolic", 16))
+            .on_press(on_copy)
+            .class(cosmic::style::Button::Text)
+            .padding(4),
+    )
+    .spacing(4);
 
     let message_widget = container(
         column()
@@ -338,11 +351,12 @@ pub fn message_bubble<M: Clone + 'static>(
     is_current_tts_message: bool, // true if THIS message is being spoken
     on_start_tts: Option<M>, // Start TTS for this message
     on_stop_tts: Option<M>, // Stop TTS (only shown when is_current_tts_message == true)
+    on_retry: Option<M>, // Retry button for user messages
 ) -> Element<'static, M> {
     if is_summary {
         summary_bubble(content, summarized_count.unwrap_or(0), is_summary_expanded, on_toggle_summary.unwrap_or_else(|| on_copy.clone()))
     } else if is_user {
-        user_bubble(content, on_copy)
+        user_bubble(content, on_copy, on_retry)
     } else {
         assistant_bubble(content, reasoning, is_reasoning_expanded, ctx, on_copy, on_toggle_reasoning, on_regenerate, is_current_tts_message, on_start_tts, on_stop_tts)
     }
