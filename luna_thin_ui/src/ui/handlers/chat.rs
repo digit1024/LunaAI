@@ -91,19 +91,26 @@ pub fn handle_chat_messages(
             None
         }
         Message::RetryMessage(message_id) => {
+            tracing::info!("Retry message clicked: {}", message_id);
             // Find the message and put its content in input, then truncate conversation
             if let Some(msg) = app.messages.iter().find(|m| m.id == message_id) {
                 // Set input to message content
                 app.input_text = msg.content.clone();
+                tracing::debug!("Set input text to: {} chars", msg.content.len());
                 
                 // Get conversation ID
                 if let Some(conv_id) = &app.current_conversation_id {
+                    tracing::info!("Sending TruncateConversation command for conversation {} at message {}", conv_id, message_id);
                     // Send truncate command
                     app.send_command(crate::server::dto::ClientCommand::TruncateConversation {
                         conversation_id: conv_id.clone(),
                         message_id: message_id.clone(),
                     });
+                } else {
+                    tracing::warn!("No current conversation ID, cannot truncate");
                 }
+            } else {
+                tracing::warn!("Message {} not found for retry", message_id);
             }
             None
         }

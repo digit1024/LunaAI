@@ -149,12 +149,8 @@ fn render_message_bubble(app: &LunaThinApp, msg: &ChatMessage, idx: usize) -> El
         Message::CopyMessage(msg.content.clone()),
         Some(Message::ToggleReasoning(idx)),
         Some(Message::ToggleSummary(idx)),
-        // Regenerate only for assistant messages (not user, not summary)
-        if !is_user_msg && !is_summary_msg {
-            Some(Message::RegenerateMessage(msg.id.clone()))
-        } else {
-            None
-        },
+        // Regenerate button removed from assistant messages
+        None,
         // TTS state: is this message currently being spoken?
         is_current_tts,
         // Start TTS: only for assistant messages that are NOT currently being spoken

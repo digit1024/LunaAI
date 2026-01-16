@@ -101,6 +101,7 @@ impl ServerHandler {
     }
 
     pub async fn handle_command(&mut self, command: ClientCommand) {
+        tracing::debug!("Received command: {:?}", command);
         let result = match command {
             ClientCommand::HealthCheck => self.handle_health().await,
             ClientCommand::StartConversation { title } => {
@@ -611,6 +612,12 @@ impl ServerHandler {
         conversation_id: String,
         message_id: String,
     ) -> Result<()> {
+        tracing::info!(
+            "Truncating conversation {} at message {}",
+            conversation_id,
+            message_id
+        );
+
         let conv_uuid = Uuid::parse_str(&conversation_id)
             .context("invalid conversation id format")?;
         let msg_uuid = Uuid::parse_str(&message_id)
@@ -618,15 +625,26 @@ impl ServerHandler {
 
         // Delete messages up to and including the specified message
         let storage = self.ctx.storage.lock().await;
-        storage
+        let deleted_count = storage
             .truncate_conversation(&conv_uuid, &msg_uuid)
             .context("failed to truncate conversation")?;
+
+        tracing::info!(
+            "Truncated {} messages from conversation {}",
+            deleted_count,
+            conversation_id
+        );
 
         // Reload the conversation and send ConversationLoaded event
         if let Some(conv) = storage
             .get_conversation(&conv_uuid)
             .context("failed to reload conversation after truncation")?
         {
+            tracing::info!(
+                "Reloaded conversation {} with {} messages",
+                conversation_id,
+                conv.messages.len()
+            );
             let view = to_conversation_view(&conv);
             let _ = self.outbound.send(ServerEvent::ConversationLoaded {
                 conversation: view,

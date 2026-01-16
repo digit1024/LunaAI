@@ -199,19 +199,9 @@ pub fn assistant_bubble<M: Clone + 'static>(
         }
     }
 
-    // Button row: Regenerate, TTS (Play/Stop), Copy (order: Regenerate, TTS, Copy)
+    // Button row: TTS (Play/Stop), Copy (order: TTS, Copy)
     let mut buttons = row()
         .push(Space::with_width(Length::Fill));
-    
-    // Regenerate button (agent only)
-    if let Some(on_regenerate) = on_regenerate {
-        buttons = buttons.push(
-            button::icon(icons::get_handle("arrow-circular-bottom-right-symbolic", 16))
-                .on_press(on_regenerate)
-                .class(cosmic::style::Button::Text)
-                .padding(4),
-        );
-    }
     
     // TTS button: Play or Stop based on current state
     if is_current_tts_message {
