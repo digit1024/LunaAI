@@ -123,7 +123,8 @@ impl LunaWsClient {
         let (mut write, mut read) = ws_stream.split();
 
         // Create broadcast channel for events (allows multiple receivers)
-        let (event_tx, _) = broadcast::channel::<ServerEvent>(1024);
+        // Increased buffer size to prevent dropping events during rapid streaming
+        let (event_tx, _) = broadcast::channel::<ServerEvent>(10000);
         let (command_tx, mut command_rx) = mpsc::unbounded_channel::<ClientCommand>();
 
         let event_tx_clone = event_tx.clone();

@@ -543,19 +543,19 @@ impl SqliteStorage {
         Ok(changes)
     }
 
-    /// Truncate conversation by rowid: delete all messages AFTER the specified rowid
+    /// Truncate conversation by rowid: delete all messages including and AFTER the specified rowid
     /// This is called from storage_wrapper after UUID matching
     pub fn truncate_conversation_by_rowid(&self, conversation_id: &str, target_rowid: i64) -> SqliteResult<usize> {
-        tracing::debug!("Truncating conversation {} after rowid {}", conversation_id, target_rowid);
+        tracing::debug!("Truncating conversation {} from rowid {} (inclusive)", conversation_id, target_rowid);
         
-        // Delete all messages in this conversation with id > target_rowid
+        // Delete all messages in this conversation with id >= target_rowid
         // (since id is rowid and messages are inserted in order)
         let changes = self.conn.execute(
-            "DELETE FROM messages WHERE conversation_id = ?1 AND id > ?2",
+            "DELETE FROM messages WHERE conversation_id = ?1 AND id >= ?2",
             params![conversation_id, target_rowid],
         )?;
         
-        tracing::debug!("Deleted {} messages after rowid {}", changes, target_rowid);
+        tracing::debug!("Deleted {} messages from rowid {} (inclusive)", changes, target_rowid);
         Ok(changes)
     }
     

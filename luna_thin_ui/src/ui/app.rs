@@ -851,7 +851,9 @@ impl LunaThinApp {
                 // Restore pending retry input AFTER messages are updated
                 // (do this last so it doesn't get cleared)
                 if let Some(retry_input) = self.pending_retry_input.take() {
-                    self.input_text = retry_input;
+                    self.input_text = retry_input.clone();
+                    // Also update the text_editor content to actually display it
+                    self.chat_page.input_content = cosmic::widget::text_editor::Content::with_text(&retry_input);
                     tracing::info!("Restored retry input text: {} chars", self.input_text.len());
                 }
             }
@@ -1154,27 +1156,43 @@ impl Application for LunaThinApp {
                             tracing::info!("🎧 Subscribed to event channel, starting poll loop");
                             let mut last_yield = std::time::Instant::now();
                             let min_yield_interval = std::time::Duration::from_millis(FRAME_RATE_MS);
+                            let mut event_buffer = Vec::new();
+                            let max_buffer_size = 100;
                             
                             loop {
                                 match rx.recv().await {
                                     Ok(event) => {
-                                        // Add small delay to prevent channel overflow during rapid streaming
-                                        // This batches rapid events together
-                                        let now = std::time::Instant::now();
-                                        if now.duration_since(last_yield) < min_yield_interval {
-                                            tokio::time::sleep(min_yield_interval - now.duration_since(last_yield)).await;
-                                        }
-                                        last_yield = std::time::Instant::now();
+                                        // Buffer events and yield them in batches to reduce channel pressure
+                                        event_buffer.push(event);
                                         
-                                        tracing::debug!("🎧 Received event from WS: {:?}", event);
-                                        yield Message::ServerEvent(event);
+                                        let now = std::time::Instant::now();
+                                        let should_yield = now.duration_since(last_yield) >= min_yield_interval 
+                                            || event_buffer.len() >= max_buffer_size;
+                                        
+                                        if should_yield && !event_buffer.is_empty() {
+                                            // Yield all buffered events
+                                            for buffered_event in event_buffer.drain(..) {
+                                                tracing::debug!("🎧 Yielding buffered event: {:?}", buffered_event);
+                                                yield Message::ServerEvent(buffered_event);
+                                            }
+                                            last_yield = std::time::Instant::now();
+                                        }
                                     }
                                     Err(BroadcastRecvError::Lagged(skipped)) => {
                                         tracing::warn!("🎧 Lagged behind by {} messages, continuing...", skipped);
                                         // Continue receiving - broadcast channels automatically skip lagged messages
+                                        // Clear buffer to prevent further lag
+                                        if !event_buffer.is_empty() {
+                                            tracing::debug!("🎧 Clearing {} buffered events due to lag", event_buffer.len());
+                                            event_buffer.clear();
+                                        }
                                     }
                                     Err(BroadcastRecvError::Closed) => {
                                         // Channel closed (disconnected)
+                                        // Yield any remaining buffered events before breaking
+                                        for buffered_event in event_buffer.drain(..) {
+                                            yield Message::ServerEvent(buffered_event);
+                                        }
                                         tracing::info!("🎧 Event channel closed (disconnected)");
                                         yield Message::ServerDisconnected;
                                         break;
