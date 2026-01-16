@@ -76,6 +76,9 @@ rust-embed = "8.1"
 # Clipboard support
 arboard = "3.2"
 
+# Markdown parsing for TTS
+pulldown-cmark = "0.9"
+
 [features]
 default = ["ttsandstt"]
 ttsandstt = []

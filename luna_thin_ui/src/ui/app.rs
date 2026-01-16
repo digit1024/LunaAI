@@ -22,6 +22,7 @@ use crate::ui::handlers::{
     handle_navigation_messages,
     handle_settings_messages,
     handle_server_event_messages,
+    handle_tts_messages,
 };
 use crate::ui::icons;
 use tokio::sync::broadcast::error::RecvError as BroadcastRecvError;
@@ -94,8 +95,11 @@ pub enum Message {
     CopyMessage(String),
     // Regenerate message (agent only)
     RegenerateMessage(String),
-    // Playback message (agent only - TTS)
-    PlaybackMessage(String),
+    // TTS messages
+    StartTts(String), // message_id
+    StopTts,
+    TtsStatusChanged(String), // "idle" | "speaking" | "listening" | "processing"
+    TtsClientInitialized(Option<Arc<crate::services::tts_client::TtsClient>>),
 
     // Text editor action
     InputActionPerformed(text_editor::Action),
@@ -160,6 +164,12 @@ pub enum ConnectionStatus {
     Connecting,
     Connected,
     Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TtsStatus {
+    Idle,
+    Speaking,
 }
 
 // ============================================================================
@@ -360,6 +370,12 @@ pub struct LunaThinApp {
     pub expanded_summaries: HashSet<usize>,
     pub expanded_tools: HashSet<String>,
 
+    // TTS state
+    pub tts_client: Option<Arc<crate::services::tts_client::TtsClient>>,
+    pub tts_status: TtsStatus,
+    pub current_tts_message_id: Option<String>, // ID of message being spoken
+    pub pending_auto_connect: bool, // True if we need to auto-connect after TTS init
+
     // Error display
     pub inline_error: Option<String>,
 
@@ -418,6 +434,10 @@ impl LunaThinApp {
             expanded_reasoning: HashSet::new(),
             expanded_summaries: HashSet::new(),
             expanded_tools: HashSet::new(),
+            tts_client: None, // Will be initialized in init()
+            tts_status: TtsStatus::Idle,
+            current_tts_message_id: None,
+            pending_auto_connect: false,
             inline_error: None,
         }
     }
@@ -927,16 +947,35 @@ impl Application for LunaThinApp {
             tracing::warn!(error = ?e, "Failed to initialize icon cache (may be already initialized)");
         }
         
-        let app = Self::new(core);
+        let mut app = Self::new(core);
+        
+        // Initialize TTS client (async, will be set when ready)
+        let tts_init_task = app::Task::perform(
+            async move {
+                match crate::services::tts_client::TtsClient::new().await {
+                    Ok(client) => {
+                        tracing::info!("TTS client connected successfully");
+                        Some(Arc::new(client))
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to connect to TTS service: {} (TTS features will be unavailable)", e);
+                        None
+                    }
+                }
+            },
+            |tts_client| cosmic::Action::App(Message::TtsClientInitialized(tts_client)),
+        );
         
         // Auto-connect if server config is valid (has host and api_key)
         if !app.server_config.host.is_empty() && !app.server_config.api_key.is_empty() {
-            tracing::info!("🔌 Auto-connecting to server...");
-            (app, app::Task::done(cosmic::Action::App(Message::Connect)))
+            tracing::info!("🔌 Will auto-connect after TTS initialization...");
+            app.pending_auto_connect = true;
         } else {
             tracing::info!("⚙️ No valid server config, showing settings");
-            (app, app::Task::none())
         }
+        
+        // Always initialize TTS client - it will complete asynchronously
+        (app, tts_init_task)
     }
 
     fn update(&mut self, message: Self::Message) -> app::Task<Self::Message> {
@@ -962,6 +1001,37 @@ impl Application for LunaThinApp {
         
         // Try server event handlers (ServerEvent variants)
         if let Some(task) = handle_server_event_messages(self, message.clone()) {
+            return task;
+        }
+        
+        // Handle TTS client initialization
+        if let Message::TtsClientInitialized(client) = message.clone() {
+            self.tts_client = client;
+            // If we were supposed to auto-connect, do it now
+            if self.pending_auto_connect && self.connection_status == ConnectionStatus::Disconnected {
+                self.pending_auto_connect = false;
+                tracing::info!("TTS initialization complete, now auto-connecting to server...");
+                return app::Task::done(cosmic::Action::App(Message::Connect));
+            }
+            return app::Task::none();
+        }
+        
+        // On first update, if we need to auto-connect and TTS init hasn't completed yet,
+        // trigger connect anyway (TTS will initialize in background)
+        // This handles the case where TTS init is slow or fails
+        static INIT_CONNECT: std::sync::Once = std::sync::Once::new();
+        if self.connection_status == ConnectionStatus::Disconnected
+            && !self.server_config.host.is_empty()
+            && !self.server_config.api_key.is_empty()
+        {
+            INIT_CONNECT.call_once(|| {
+                // This will only run once, but we need to send Connect message
+                // We'll handle this by checking in update() if we need to connect
+            });
+        }
+        
+        // Try TTS handlers
+        if let Some(task) = handle_tts_messages(self, message.clone()) {
             return task;
         }
         
@@ -1042,6 +1112,9 @@ impl Application for LunaThinApp {
 
     fn subscription(&self) -> Subscription<Self::Message> {
         let mut subscriptions = vec![];
+
+        // TTS status subscription - TODO: Implement proper stream subscription
+        // For now, status is updated via TtsStatusChanged messages from TTS operations
 
         // Typing indicator tick when streaming
         if self.is_streaming {

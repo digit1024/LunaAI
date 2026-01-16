@@ -101,7 +101,9 @@ pub fn assistant_bubble<M: Clone + 'static>(
     on_copy: M,
     on_toggle_reasoning: Option<M>,
     on_regenerate: Option<M>,
-    on_playback: Option<M>,
+    is_current_tts_message: bool, // true if THIS message is being spoken
+    on_start_tts: Option<M>, // Start TTS for this message
+    on_stop_tts: Option<M>, // Stop TTS (only shown when is_current_tts_message == true)
 ) -> Element<'static, M> {
     let content_owned = content.to_string();
     let reasoning_owned = reasoning.map(|s| s.to_string());
@@ -184,7 +186,7 @@ pub fn assistant_bubble<M: Clone + 'static>(
         }
     }
 
-    // Button row: Regenerate, Playback, Copy (order: Regenerate, Playback, Copy)
+    // Button row: Regenerate, TTS (Play/Stop), Copy (order: Regenerate, TTS, Copy)
     let mut buttons = row()
         .push(Space::with_width(Length::Fill));
     
@@ -198,14 +200,27 @@ pub fn assistant_bubble<M: Clone + 'static>(
         );
     }
     
-    // Playback button (agent only)
-    if let Some(on_playback) = on_playback {
-        buttons = buttons.push(
-            button::icon(icons::get_handle("playback-symbolic", 16))
-                .on_press(on_playback)
-                .class(cosmic::style::Button::Text)
-                .padding(4),
-        );
+    // TTS button: Play or Stop based on current state
+    if is_current_tts_message {
+        // This message is being spoken - show STOP button
+        if let Some(on_stop) = on_stop_tts {
+            buttons = buttons.push(
+                button::icon(icons::get_handle("stop-symbolic", 16))
+                    .on_press(on_stop)
+                    .class(cosmic::style::Button::Text)
+                    .padding(4),
+            );
+        }
+    } else {
+        // This message is NOT being spoken - show PLAY button
+        if let Some(on_start) = on_start_tts {
+            buttons = buttons.push(
+                button::icon(icons::get_handle("playback-symbolic", 16))
+                    .on_press(on_start)
+                    .class(cosmic::style::Button::Text)
+                    .padding(4),
+            );
+        }
     }
     
     // Copy button (always present)
@@ -320,13 +335,15 @@ pub fn message_bubble<M: Clone + 'static>(
     on_toggle_reasoning: Option<M>,
     on_toggle_summary: Option<M>,
     on_regenerate: Option<M>,
-    on_playback: Option<M>,
+    is_current_tts_message: bool, // true if THIS message is being spoken
+    on_start_tts: Option<M>, // Start TTS for this message
+    on_stop_tts: Option<M>, // Stop TTS (only shown when is_current_tts_message == true)
 ) -> Element<'static, M> {
     if is_summary {
         summary_bubble(content, summarized_count.unwrap_or(0), is_summary_expanded, on_toggle_summary.unwrap_or_else(|| on_copy.clone()))
     } else if is_user {
         user_bubble(content, on_copy)
     } else {
-        assistant_bubble(content, reasoning, is_reasoning_expanded, ctx, on_copy, on_toggle_reasoning, on_regenerate, on_playback)
+        assistant_bubble(content, reasoning, is_reasoning_expanded, ctx, on_copy, on_toggle_reasoning, on_regenerate, is_current_tts_message, on_start_tts, on_stop_tts)
     }
 }

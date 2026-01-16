@@ -132,6 +132,11 @@ fn render_message_bubble(app: &LunaThinApp, msg: &ChatMessage, idx: usize) -> El
     let is_reasoning_expanded = app.expanded_reasoning.contains(&idx);
     let is_summary_expanded = app.expanded_summaries.contains(&idx);
 
+    // Check if THIS specific message is currently being spoken
+    let is_current_tts = app.current_tts_message_id.as_ref()
+        .map(|id| id == &msg.id)
+        .unwrap_or(false);
+    
     message_bubble(
         &msg.content,
         is_user_msg,
@@ -144,14 +149,23 @@ fn render_message_bubble(app: &LunaThinApp, msg: &ChatMessage, idx: usize) -> El
         Message::CopyMessage(msg.content.clone()),
         Some(Message::ToggleReasoning(idx)),
         Some(Message::ToggleSummary(idx)),
-        // Regenerate and playback only for assistant messages (not user, not summary)
+        // Regenerate only for assistant messages (not user, not summary)
         if !is_user_msg && !is_summary_msg {
             Some(Message::RegenerateMessage(msg.id.clone()))
         } else {
             None
         },
-        if !is_user_msg && !is_summary_msg {
-            Some(Message::PlaybackMessage(msg.id.clone()))
+        // TTS state: is this message currently being spoken?
+        is_current_tts,
+        // Start TTS: only for assistant messages that are NOT currently being spoken
+        if !is_user_msg && !is_summary_msg && !is_current_tts {
+            Some(Message::StartTts(msg.id.clone()))
+        } else {
+            None
+        },
+        // Stop TTS: only for assistant messages that ARE currently being spoken
+        if !is_user_msg && !is_summary_msg && is_current_tts {
+            Some(Message::StopTts)
         } else {
             None
         },

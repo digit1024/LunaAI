@@ -90,11 +90,6 @@ pub fn handle_chat_messages(
             tracing::info!("Regenerate message clicked: {}", message_id);
             None
         }
-        Message::PlaybackMessage(message_id) => {
-            // Log playback click - will be used in future for TTS
-            tracing::info!("Playback message clicked: {}", message_id);
-            None
-        }
         Message::Tick(_) => {
             // Update typing indicator animation
             const TYPING_PROGRESS_STEP: f32 = 0.1;

@@ -3358,7 +3358,7 @@ dependencies = [
  "num-traits",
  "once_cell",
  "ouroboros",
- "pulldown-cmark",
+ "pulldown-cmark 0.12.2",
  "rustc-hash 2.1.1",
  "thiserror 1.0.69",
  "unicode-segmentation",
@@ -4037,6 +4037,7 @@ dependencies = [
  "libcosmic",
  "license",
  "mime_guess",
+ "pulldown-cmark 0.9.6",
  "reqwest",
  "rodio",
  "rust-embed",
@@ -5472,6 +5473,18 @@ name = "profiling"
 version = "1.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eb8486b569e12e2c32ad3e204dbaba5e4b5b216e9367044f25f1dba42341773"
+
+[[package]]
+name = "pulldown-cmark"
+version = "0.9.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57206b407293d2bcd3af849ce869d52068623f19e1b5ff8e8778e3309439682b"
+dependencies = [
+ "bitflags 2.9.4",
+ "getopts",
+ "memchr",
+ "unicase",
+]
 
 [[package]]
 name = "pulldown-cmark"
