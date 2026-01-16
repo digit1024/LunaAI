@@ -845,14 +845,15 @@ impl LunaThinApp {
                 // Map messages like mobile app - tool calls become separate bubbles
                 self.messages = self.map_messages_from_server(&conversation.messages);
                 
-                // Restore pending retry input if any
+                self.current_page = Page::Chat;
+                self.update_nav_model();
+                
+                // Restore pending retry input AFTER messages are updated
+                // (do this last so it doesn't get cleared)
                 if let Some(retry_input) = self.pending_retry_input.take() {
                     self.input_text = retry_input;
                     tracing::info!("Restored retry input text: {} chars", self.input_text.len());
                 }
-                
-                self.current_page = Page::Chat;
-                self.update_nav_model();
             }
             ServerEvent::ConversationsList { conversations } => {
                 self.conversations = conversations;

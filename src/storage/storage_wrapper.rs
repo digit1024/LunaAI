@@ -279,10 +279,10 @@ impl Storage {
             let target_rowid = target.id;
             tracing::info!("Found target message with rowid: {}, timestamp: {}", target_rowid, target.created_at);
             
-            // Delete all messages using the sqlite method
+            // Delete all messages AFTER this one using the sqlite method
             let changes = self.sqlite.truncate_conversation_by_rowid(&conv_id_str, target_rowid)?;
             
-            tracing::info!("Deleted {} messages up to rowid {}", changes, target_rowid);
+            tracing::info!("Deleted {} messages after rowid {}", changes, target_rowid);
             Ok(changes)
         } else {
             tracing::warn!("Message with UUID {} not found in conversation {} (checked {} messages)", 
