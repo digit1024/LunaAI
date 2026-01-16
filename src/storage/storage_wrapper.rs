@@ -67,7 +67,16 @@ impl Storage {
             let stored_messages: Vec<StoredMessage> = messages
                 .into_iter()
                 .map(|msg| StoredMessage {
-                    id: Uuid::parse_str(&msg.id.to_string()).unwrap_or_else(|_| Uuid::new_v4()),
+                    // Generate deterministic UUID from rowid to ensure stable IDs across loads
+                    id: {
+                        let id_str = msg.id.to_string();
+                        Uuid::parse_str(&id_str).unwrap_or_else(|_| {
+                            // Format: 00000000-0000-0000-0000-{rowid:012x} (12 hex digits)
+                            let hex_id = format!("{:012x}", msg.id.min(0xffffffffffff));
+                            let uuid_str = format!("00000000-0000-0000-0000-{}", hex_id);
+                            uuid_str.parse().unwrap_or_else(|_| Uuid::new_v4())
+                        })
+                    },
                     role: msg.role,
                     content: msg.content,
                     timestamp: DateTime::from_timestamp(msg.created_at, 0).unwrap_or_else(Utc::now),
@@ -132,7 +141,16 @@ impl Storage {
             let stored_messages: Vec<StoredMessage> = messages
                 .into_iter()
                 .map(|msg| StoredMessage {
-                    id: Uuid::parse_str(&msg.id.to_string()).unwrap_or_else(|_| Uuid::new_v4()),
+                    // Generate deterministic UUID from rowid to ensure stable IDs across loads
+                    id: {
+                        let id_str = msg.id.to_string();
+                        Uuid::parse_str(&id_str).unwrap_or_else(|_| {
+                            // Format: 00000000-0000-0000-0000-{rowid:012x} (12 hex digits)
+                            let hex_id = format!("{:012x}", msg.id.min(0xffffffffffff));
+                            let uuid_str = format!("00000000-0000-0000-0000-{}", hex_id);
+                            uuid_str.parse().unwrap_or_else(|_| Uuid::new_v4())
+                        })
+                    },
                     role: msg.role,
                     content: msg.content,
                     timestamp: DateTime::from_timestamp(msg.created_at, 0).unwrap_or_else(Utc::now),
@@ -232,7 +250,56 @@ impl Storage {
     ) -> SqliteResult<usize> {
         let conv_id_str = conversation_id.to_string();
         let msg_id_str = message_id.to_string();
-        self.sqlite.truncate_conversation(&conv_id_str, &msg_id_str)
+        
+        tracing::debug!("Truncating conversation {} at message {}", conv_id_str, msg_id_str);
+        
+        // Load all messages to find which one matches the UUID
+        // (UUIDs are generated from i64 rowid in get_conversation)
+        let messages = self.sqlite.load_conversation(&conv_id_str)?;
+        
+        tracing::debug!("Loaded {} messages from conversation", messages.len());
+        
+        // Find the target message by matching UUID
+        // Since UUIDs are generated from i64 rowid, we need to convert each message's rowid to UUID
+        // and compare with the target message_id
+        let target_msg = messages.iter().find(|msg| {
+            // Convert rowid to UUID using the same logic as in get_conversation
+            let id_str = msg.id.to_string();
+            let msg_uuid = Uuid::parse_str(&id_str).unwrap_or_else(|_| {
+                // Generate deterministic UUID from rowid (format: 00000000-0000-0000-0000-{rowid:012x})
+                let hex_id = format!("{:012x}", msg.id.min(0xffffffffffff));
+                let uuid_str = format!("00000000-0000-0000-0000-{}", hex_id);
+                uuid_str.parse().unwrap_or_else(|_| Uuid::new_v4())
+            });
+            msg_uuid == *message_id
+        });
+        
+        if let Some(target) = target_msg {
+            // Use the rowid directly for deletion
+            let target_rowid = target.id;
+            tracing::info!("Found target message with rowid: {}, timestamp: {}", target_rowid, target.created_at);
+            
+            // Delete all messages using the sqlite method
+            let changes = self.sqlite.truncate_conversation_by_rowid(&conv_id_str, target_rowid)?;
+            
+            tracing::info!("Deleted {} messages up to rowid {}", changes, target_rowid);
+            Ok(changes)
+        } else {
+            tracing::warn!("Message with UUID {} not found in conversation {} (checked {} messages)", 
+                msg_id_str, conv_id_str, messages.len());
+            
+            // Debug: log all message IDs to help troubleshoot
+            for (idx, msg) in messages.iter().enumerate() {
+                let id_str = msg.id.to_string();
+                let uuid_str = match Uuid::parse_str(&id_str) {
+                    Ok(uuid) => uuid.to_string(),
+                    Err(_) => format!("<invalid-uuid:{}>", id_str),
+                };
+                tracing::debug!("  Message {}: rowid={}, uuid={}", idx, msg.id, uuid_str);
+            }
+            
+            Ok(0)
+        }
     }
 
     /// Search conversation history

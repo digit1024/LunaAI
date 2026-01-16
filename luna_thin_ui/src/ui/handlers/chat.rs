@@ -94,9 +94,9 @@ pub fn handle_chat_messages(
             tracing::info!("Retry message clicked: {}", message_id);
             // Find the message and put its content in input, then truncate conversation
             if let Some(msg) = app.messages.iter().find(|m| m.id == message_id) {
-                // Set input to message content
-                app.input_text = msg.content.clone();
-                tracing::debug!("Set input text to: {} chars", msg.content.len());
+                // Store input text to restore after conversation reload
+                app.pending_retry_input = Some(msg.content.clone());
+                tracing::debug!("Stored retry input text: {} chars", msg.content.len());
                 
                 // Get conversation ID
                 if let Some(conv_id) = &app.current_conversation_id {

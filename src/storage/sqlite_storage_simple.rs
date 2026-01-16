@@ -543,26 +543,27 @@ impl SqliteStorage {
         Ok(changes)
     }
 
-    /// Truncate conversation: delete all messages up to and including the specified message
-    pub fn truncate_conversation(&self, conversation_id: &str, message_id: &str) -> SqliteResult<usize> {
-        // First, find the message's created_at timestamp
-        let message_timestamp: Option<i64> = self.conn.query_row(
-            "SELECT created_at FROM messages WHERE id = ?1 AND conversation_id = ?2",
-            params![message_id, conversation_id],
-            |row| row.get(0),
-        ).ok();
-
-        if let Some(timestamp) = message_timestamp {
-            // Delete all messages in this conversation with created_at <= the target message's timestamp
-            let changes = self.conn.execute(
-                "DELETE FROM messages WHERE conversation_id = ?1 AND created_at <= ?2",
-                params![conversation_id, timestamp],
-            )?;
-            Ok(changes)
-        } else {
-            // Message not found, return 0
-            Ok(0)
-        }
+    /// Truncate conversation by rowid: delete all messages up to and including the specified rowid
+    /// This is called from storage_wrapper after UUID matching
+    pub fn truncate_conversation_by_rowid(&self, conversation_id: &str, target_rowid: i64) -> SqliteResult<usize> {
+        tracing::debug!("Truncating conversation {} at rowid {}", conversation_id, target_rowid);
+        
+        // Delete all messages in this conversation with id <= target_rowid
+        // (since id is rowid and messages are inserted in order)
+        let changes = self.conn.execute(
+            "DELETE FROM messages WHERE conversation_id = ?1 AND id <= ?2",
+            params![conversation_id, target_rowid],
+        )?;
+        
+        tracing::debug!("Deleted {} messages up to rowid {}", changes, target_rowid);
+        Ok(changes)
+    }
+    
+    /// Legacy truncate - deprecated, use truncate_conversation_by_rowid via storage_wrapper
+    #[allow(dead_code)]
+    pub fn truncate_conversation(&self, _conversation_id: &str, _message_id: &str) -> SqliteResult<usize> {
+        // This should not be called - truncate should go through storage_wrapper which handles UUID matching
+        Ok(0)
     }
 
     /// Perform summarization: mark old messages as summarized and insert summary

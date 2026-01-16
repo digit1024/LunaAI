@@ -377,6 +377,7 @@ pub struct LunaThinApp {
     pub tts_status: TtsStatus,
     pub current_tts_message_id: Option<String>, // ID of message being spoken
     pub pending_auto_connect: bool, // True if we need to auto-connect after TTS init
+    pub pending_retry_input: Option<String>, // Input text to restore after conversation reload
 
     // Error display
     pub inline_error: Option<String>,
@@ -440,6 +441,7 @@ impl LunaThinApp {
             tts_status: TtsStatus::Idle,
             current_tts_message_id: None,
             pending_auto_connect: false,
+            pending_retry_input: None,
             inline_error: None,
         }
     }
@@ -842,6 +844,12 @@ impl LunaThinApp {
                 
                 // Map messages like mobile app - tool calls become separate bubbles
                 self.messages = self.map_messages_from_server(&conversation.messages);
+                
+                // Restore pending retry input if any
+                if let Some(retry_input) = self.pending_retry_input.take() {
+                    self.input_text = retry_input;
+                    tracing::info!("Restored retry input text: {} chars", self.input_text.len());
+                }
                 
                 self.current_page = Page::Chat;
                 self.update_nav_model();
