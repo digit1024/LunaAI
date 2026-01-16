@@ -8,6 +8,7 @@ use cosmic::{
     widget::{button, column, container, row, scrollable, text, Space},
     Element,
 };
+use crate::ui::icons;
 
 #[derive(Debug, Clone)]
 pub enum ToolCallMessage {
@@ -46,31 +47,20 @@ impl ToolCallWidget {
 
     /// Render the tool call widget content (matches original app styling)
     pub fn content<M: Clone + 'static>(&self, on_toggle: M) -> Element<'static, M> {
-        // Status icon, text, and color (matching original app)
-        let (status_icon, status_text, status_color) = match self.status {
-            ToolCallStatus::Planned => (
-                "...",
-                "Planned",
-                cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5),
-            ),
-            ToolCallStatus::Running => (
-                "...",
-                "Executing",
-                cosmic::iced::Color::from_rgb(0.5, 0.5, 0.5),
-            ),
-            ToolCallStatus::Completed => (
-                "✓",
-                "Completed",
-                cosmic::iced::Color::from_rgb(0.2, 0.7, 0.2),
-            ),
-            ToolCallStatus::Error => (
-                "✕",
-                "Error",
-                cosmic::iced::Color::from_rgb(0.8, 0.2, 0.2),
-            ),
+        // Status icon handle (no text labels)
+        let status_icon_handle = match self.status {
+            ToolCallStatus::Planned => icons::get_handle("charge-symbolic", 16),
+            ToolCallStatus::Running => icons::get_handle("charge-symbolic", 16),
+            ToolCallStatus::Completed => icons::get_handle("check-round-outline2-symbolic", 16),
+            ToolCallStatus::Error => icons::get_handle("circle-crossed-symbolic", 16),
         };
 
-        let expand_icon = if self.is_expanded { "▼" } else { "▶" };
+        // Toggle icon handle
+        let toggle_icon_handle = if self.is_expanded {
+            icons::get_handle("toggle-on-symbolic", 16)
+        } else {
+            icons::get_handle("toggle-off-symbolic", 16)
+        };
 
         // Clone for ownership
         let tool_name = self.tool_name.clone();
@@ -79,12 +69,11 @@ impl ToolCallWidget {
         let error = self.error.clone();
         let is_expanded = self.is_expanded;
 
-        // Header row: status icon, tool name, status text, expand button
+        // Header row: status icon, tool name, expand button (no text labels)
         let header = row()
             .push(
-                text(status_icon)
-                    .size(16)
-                    .class(cosmic::theme::Text::Color(status_color)),
+                cosmic::widget::icon::icon(status_icon_handle)
+                    .size(16),
             )
             .push(
                 text(tool_name)
@@ -93,12 +82,7 @@ impl ToolCallWidget {
             )
             .push(Space::with_width(Length::Fill))
             .push(
-                text(status_text)
-                    .size(12)
-                    .class(cosmic::theme::Text::Color(status_color)),
-            )
-            .push(
-                button::text(expand_icon)
+                button::icon(toggle_icon_handle)
                     .on_press(on_toggle)
                     .class(cosmic::theme::Button::Text),
             )

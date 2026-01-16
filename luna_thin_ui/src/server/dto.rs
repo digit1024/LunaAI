@@ -219,6 +219,7 @@ pub enum MCPServerStatus {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MCPServerInfo {
     pub name: String,
+    pub tool_count: u32,
     #[serde(flatten)]
     pub status: MCPServerStatus,
 }

@@ -145,6 +145,7 @@ pub enum MCPServerStatus {
 #[derive(Debug, Serialize)]
 pub struct MCPServerInfo {
     pub name: String,
+    pub tool_count: u32,
     #[serde(flatten)]
     pub status: MCPServerStatus,
 }
@@ -411,18 +412,38 @@ pub async fn list_mcp_servers_handler(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    // Get tool counts for connected servers
+    let mut tool_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for (server_name, server_connection) in registry.servers.iter() {
+        let connection_guard = server_connection.read().await;
+        let count = connection_guard.tools().len() as u32;
+        drop(connection_guard);
+        tool_counts.insert(server_name.clone(), count);
+    }
+    drop(registry); // Release the read lock
+
     let servers: Vec<MCPServerInfo> = servers_with_status
         .into_iter()
-        .map(|server| MCPServerInfo {
-            name: server.server_name,
-            status: match server.server_status {
+        .map(|server| {
+            let tool_count = match &server.server_status {
                 agentic_loop::mcp_servers_registry::model::ServerStatus::Connected => {
-                    MCPServerStatus::Connected
+                    tool_counts.get(&server.server_name).copied().unwrap_or(0)
                 }
-                agentic_loop::mcp_servers_registry::model::ServerStatus::Failed(error) => {
-                    MCPServerStatus::Failed { error }
-                }
-            },
+                agentic_loop::mcp_servers_registry::model::ServerStatus::Failed(_) => 0,
+            };
+            
+            MCPServerInfo {
+                name: server.server_name,
+                tool_count,
+                status: match server.server_status {
+                    agentic_loop::mcp_servers_registry::model::ServerStatus::Connected => {
+                        MCPServerStatus::Connected
+                    }
+                    agentic_loop::mcp_servers_registry::model::ServerStatus::Failed(error) => {
+                        MCPServerStatus::Failed { error }
+                    }
+                },
+            }
         })
         .collect();
 

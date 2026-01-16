@@ -2,7 +2,7 @@
 
 use cosmic::{
     iced::Length,
-    widget::{self, button, column, container, row, text, Space},
+    widget::{self, column, container, row, text},
     Element,
 };
 
@@ -30,16 +30,6 @@ pub fn mcp_servers_page(app: &LunaThinApp) -> Element<Message> {
             .class(cosmic::style::Container::Card),
         );
     } else {
-        // Refresh button
-        content = content.push(
-            row()
-                .push(
-                    button::text("🔄 Refresh")
-                        .on_press(Message::LoadMCPServers)
-                        .class(cosmic::style::Button::Standard),
-                ),
-        );
-
         // Servers list
         if app.mcp_servers.is_empty() {
             content = content.push(
@@ -56,44 +46,42 @@ pub fn mcp_servers_page(app: &LunaThinApp) -> Element<Message> {
             );
         } else {
             for server in &app.mcp_servers {
-                let (status_icon, status_text, status_desc) = match &server.status {
+                let (status_text, status_desc, status_color) = match &server.status {
                     MCPServerStatus::Connected => (
-                        "🟢",
                         "Connected",
-                        "Server is connected and available",
+                        format!("{} tools available", server.tool_count),
+                        cosmic::iced::Color::from_rgb(0.0, 0.8, 0.0), // Green
                     ),
                     MCPServerStatus::Failed { error } => (
-                        "🔴",
                         "Failed",
-                        error.as_str(),
+                        error.clone(),
+                        cosmic::iced::Color::from_rgb(0.8, 0.0, 0.0), // Red
                     ),
                 };
 
                 content = content.push(
                     container(
-                        row()
-                            .push(text(status_icon).size(24))
+                        column()
                             .push(
-                                column()
+                                row()
                                     .push(text(&server.name).size(16).width(Length::Fill))
                                     .push(
-                                        row()
-                                            .push(text(status_text).size(14))
-                                            .push(Space::with_width(8))
-                                            .push(
-                                                text(status_desc)
-                                                    .size(12)
-                                                    .class(cosmic::style::Text::Color(
-                                                        cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6),
-                                                    )),
-                                            )
-                                            .spacing(4),
+                                        text(status_text)
+                                            .size(14)
+                                            .class(cosmic::style::Text::Color(status_color)),
                                     )
-                                    .spacing(4)
+                                    .spacing(8)
+                                    .align_y(cosmic::iced::Alignment::Center)
                                     .width(Length::Fill),
                             )
-                            .spacing(12)
-                            .align_y(cosmic::iced::Alignment::Center)
+                            .push(
+                                text(status_desc)
+                                    .size(12)
+                                    .class(cosmic::style::Text::Color(
+                                        cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6),
+                                    )),
+                            )
+                            .spacing(4)
                             .width(Length::Fill),
                     )
                     .padding(16)

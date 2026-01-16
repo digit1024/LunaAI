@@ -70,10 +70,29 @@ pub fn handle_chat_messages(
             None
         }
         Message::CopyMessage(content) => {
-            // Copy to clipboard - for now just log it
-            // TODO: Add arboard dependency for actual clipboard support
-            tracing::info!("Copy to clipboard: {} bytes", content.len());
-            let _ = content; // Suppress unused warning
+            // Copy to clipboard
+            match arboard::Clipboard::new() {
+                Ok(mut clipboard) => {
+                    if let Err(e) = clipboard.set_text(&content) {
+                        tracing::error!("Failed to copy to clipboard: {}", e);
+                    } else {
+                        tracing::info!("Copied {} bytes to clipboard", content.len());
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to initialize clipboard: {}", e);
+                }
+            }
+            None
+        }
+        Message::RegenerateMessage(message_id) => {
+            // Log regenerate click - will be used in future to regenerate answer
+            tracing::info!("Regenerate message clicked: {}", message_id);
+            None
+        }
+        Message::PlaybackMessage(message_id) => {
+            // Log playback click - will be used in future for TTS
+            tracing::info!("Playback message clicked: {}", message_id);
             None
         }
         Message::Tick(_) => {

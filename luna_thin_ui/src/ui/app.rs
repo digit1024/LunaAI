@@ -23,6 +23,7 @@ use crate::ui::handlers::{
     handle_settings_messages,
     handle_server_event_messages,
 };
+use crate::ui::icons;
 use tokio::sync::broadcast::error::RecvError as BroadcastRecvError;
 
 // ============================================================================
@@ -91,6 +92,10 @@ pub enum Message {
 
     // Copy message
     CopyMessage(String),
+    // Regenerate message (agent only)
+    RegenerateMessage(String),
+    // Playback message (agent only - TTS)
+    PlaybackMessage(String),
 
     // Text editor action
     InputActionPerformed(text_editor::Action),
@@ -457,16 +462,16 @@ impl LunaThinApp {
         let mut model = widget::segmented_button::ModelBuilder::default().build();
         model.insert()
             .text("New Chat")
-            .icon(widget::icon::from_name("chat-symbolic").size(16))
+            .icon(widget::icon::icon(icons::get_handle("chat-bubble-empty-symbolic", 16)))
             .data(NavItem::Page(Page::Chat));
         model.insert()
             .text("More history")
-            .icon(widget::icon::from_name("list-large-symbolic").size(16))
+            .icon(widget::icon::icon(icons::get_handle("list-large-symbolic", 16)))
             .data(NavItem::Page(Page::History))
             .divider_above(true);
         model.insert()
             .text("Settings")
-            .icon(widget::icon::from_name("settings-symbolic").size(16))
+            .icon(widget::icon::icon(icons::get_handle("settings-symbolic", 16)))
             .data(NavItem::Page(Page::Settings))
             .divider_above(true);
         model
@@ -479,7 +484,7 @@ impl LunaThinApp {
         if self.current_conversation_id.is_none() {
             model.insert()
                 .text("New Chat")
-                .icon(widget::icon::from_name("chat-symbolic").size(16))
+                .icon(widget::icon::icon(icons::get_handle("chat-bubble-empty-symbolic", 16)))
                 .data(NavItem::Page(Page::Chat));
         }
 
@@ -492,28 +497,28 @@ impl LunaThinApp {
             };
             model.insert()
                 .text(title)
-                .icon(widget::icon::from_name("chat-bubble-text-symbolic").size(16))
+                .icon(widget::icon::icon(icons::get_handle("chat-bubble-text-symbolic", 16)))
                 .data(NavItem::Conversation(conv.id.clone()));
         }
 
         // More history
         model.insert()
             .text("More history")
-            .icon(widget::icon::from_name("list-large-symbolic").size(16))
+            .icon(widget::icon::icon(icons::get_handle("list-large-symbolic", 16)))
             .data(NavItem::Page(Page::History))
             .divider_above(true);
 
         // MCP Servers
         model.insert()
             .text("MCP Servers")
-            .icon(widget::icon::from_name("network-server-symbolic").size(16))
+            .icon(widget::icon::icon(icons::get_handle("network-server-symbolic", 16)))
             .data(NavItem::Page(Page::MCPServers))
             .divider_above(true);
 
         // Settings
         model.insert()
             .text("Settings")
-            .icon(widget::icon::from_name("settings-symbolic").size(16))
+            .icon(widget::icon::icon(icons::get_handle("settings-symbolic", 16)))
             .data(NavItem::Page(Page::Settings))
             .divider_above(true);
 

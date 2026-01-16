@@ -36,10 +36,10 @@ pub fn main() {
     let cli = Cli::parse();
 
     info!("Launching Luna server");
-    if let Err(err) = server::run(server::ServerOptions {
-        config_path: cli.config,
-    }) {
-        tracing::error!(error = %err, "Server failed");
-        std::process::exit(1);
+        if let Err(err) = server::run(server::ServerOptions {
+            config_path: cli.config,
+        }) {
+            tracing::error!(error = %err, "Server failed");
+            std::process::exit(1);
     }
 }

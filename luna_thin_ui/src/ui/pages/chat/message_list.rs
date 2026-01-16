@@ -144,6 +144,17 @@ fn render_message_bubble(app: &LunaThinApp, msg: &ChatMessage, idx: usize) -> El
         Message::CopyMessage(msg.content.clone()),
         Some(Message::ToggleReasoning(idx)),
         Some(Message::ToggleSummary(idx)),
+        // Regenerate and playback only for assistant messages (not user, not summary)
+        if !is_user_msg && !is_summary_msg {
+            Some(Message::RegenerateMessage(msg.id.clone()))
+        } else {
+            None
+        },
+        if !is_user_msg && !is_summary_msg {
+            Some(Message::PlaybackMessage(msg.id.clone()))
+        } else {
+            None
+        },
     )
 }
 

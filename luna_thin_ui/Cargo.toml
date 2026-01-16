@@ -73,6 +73,9 @@ zbus = "5.12.0"
 rodio = "0.18"
 rust-embed = "8.1"
 
+# Clipboard support
+arboard = "3.2"
+
 [features]
 default = ["ttsandstt"]
 ttsandstt = []

@@ -5,6 +5,7 @@ use cosmic::{
     widget::{self, button, column, container, markdown, row, text, Space},
     Element,
 };
+use crate::ui::icons;
 
 /// Context for rendering message bubbles with smart corners
 #[derive(Debug, Clone, Copy)]
@@ -46,7 +47,7 @@ pub fn user_bubble<M: Clone + 'static>(
     let buttons = row()
         .push(Space::with_width(Length::Fill))
         .push(
-            button::text("📋")
+            button::icon(icons::get_handle("copy-symbolic", 16))
                 .on_press(on_copy)
                 .class(cosmic::style::Button::Text)
                 .padding(4),
@@ -99,6 +100,8 @@ pub fn assistant_bubble<M: Clone + 'static>(
     ctx: BubbleContext,
     on_copy: M,
     on_toggle_reasoning: Option<M>,
+    on_regenerate: Option<M>,
+    on_playback: Option<M>,
 ) -> Element<'static, M> {
     let content_owned = content.to_string();
     let reasoning_owned = reasoning.map(|s| s.to_string());
@@ -181,17 +184,39 @@ pub fn assistant_bubble<M: Clone + 'static>(
         }
     }
 
-    // Copy button row
-    let buttons = row()
-        .push(Space::with_width(Length::Fill))
-        .push(
-            button::text("📋")
-                .on_press(on_copy)
+    // Button row: Regenerate, Playback, Copy (order: Regenerate, Playback, Copy)
+    let mut buttons = row()
+        .push(Space::with_width(Length::Fill));
+    
+    // Regenerate button (agent only)
+    if let Some(on_regenerate) = on_regenerate {
+        buttons = buttons.push(
+            button::icon(icons::get_handle("arrow-circular-bottom-right-symbolic", 16))
+                .on_press(on_regenerate)
                 .class(cosmic::style::Button::Text)
                 .padding(4),
-        )
-        .spacing(4);
-
+        );
+    }
+    
+    // Playback button (agent only)
+    if let Some(on_playback) = on_playback {
+        buttons = buttons.push(
+            button::icon(icons::get_handle("playback-symbolic", 16))
+                .on_press(on_playback)
+                .class(cosmic::style::Button::Text)
+                .padding(4),
+        );
+    }
+    
+    // Copy button (always present)
+    buttons = buttons.push(
+        button::icon(icons::get_handle("copy-symbolic", 16))
+            .on_press(on_copy)
+            .class(cosmic::style::Button::Text)
+            .padding(4),
+    );
+    
+    buttons = buttons.spacing(4);
     col = col.push(buttons);
 
     let message_widget = container(col)
@@ -294,12 +319,14 @@ pub fn message_bubble<M: Clone + 'static>(
     on_copy: M,
     on_toggle_reasoning: Option<M>,
     on_toggle_summary: Option<M>,
+    on_regenerate: Option<M>,
+    on_playback: Option<M>,
 ) -> Element<'static, M> {
     if is_summary {
         summary_bubble(content, summarized_count.unwrap_or(0), is_summary_expanded, on_toggle_summary.unwrap_or_else(|| on_copy.clone()))
     } else if is_user {
         user_bubble(content, on_copy)
     } else {
-        assistant_bubble(content, reasoning, is_reasoning_expanded, ctx, on_copy, on_toggle_reasoning)
+        assistant_bubble(content, reasoning, is_reasoning_expanded, ctx, on_copy, on_toggle_reasoning, on_regenerate, on_playback)
     }
 }
