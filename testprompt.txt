@@ -1,0 +1,15 @@
+check my latest 30 emails.
+Your task is to prepare Inbox summary. IN this summary include ONLY unread emails.
+Categorise them befor showing them.
+First category: promotional, marketing , newsletters - Remember them and delete them before presenting summary.
+Next category: importannt email - check if there is anything important
+Third category: Notifications- group them if there is multiple.
+You should read email if it's important and present that in summary.
+Summary structure shoudl include first:
+1) How many emails was there/ how many you deleteded before summary
+2) The most important email and their summary ( if any)
+3) The less important emails
+4) Proposal to user on what to do with the res of emails. Ask user if he agrees. If he replies yes, you can execute your proposal
+
+Visualisation:
+Summary shoudl be short , visually clear divided by section - shoudl not include Too many emojis. No tables.
