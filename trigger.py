@@ -382,9 +382,11 @@ Examples:
     args = parser.parse_args()
     
     # Get address and API key from environment
-    address = os.getenv("LUNA_ADDRESS")
-    api_key = os.getenv("LUNA_API_KEY")
-    
+#    address = os.getenv("LUNA_ADDRESS")
+#    api_key = os.getenv("LUNA_API_KEY")
+    address="localhost:8080"
+    api_key="sdzfkjghfr7updsfdskjfhdsclhkjbJJHBKJHBkhjbcdssadsasad"
+
     if not address:
         print("❌ LUNA_ADDRESS environment variable not set", file=sys.stderr)
         sys.exit(1)
