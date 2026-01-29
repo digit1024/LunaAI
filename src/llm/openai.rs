@@ -120,6 +120,8 @@ impl StreamedToolCallState {
 struct OpenAIDelta {
     content: Option<String>,
     tool_calls: Option<Vec<OpenAIToolCallDelta>>,
+    /// DeepSeek/OpenAI use `reasoning_content`; OpenRouter/some providers use `reasoning`
+    #[serde(alias = "reasoning")]
     reasoning_content: Option<String>,
 }
 
@@ -146,6 +148,12 @@ impl OpenAIClient {
                     attachment_count = msg.attachments.as_ref().map(|a| a.len()).unwrap_or(0),
                     "Converting message to OpenAI format"
                 );
+
+                // Some models require reasoning_content present on assistant messages with tool_calls; compute before moving msg.tool_calls
+                let reasoning_content = match (&msg.role, msg.tool_calls.as_ref(), &msg.reasoning_content) {
+                    (Role::Assistant, Some(_), None) => Some(String::new()),
+                    _ => msg.reasoning_content.clone(),
+                };
 
                 let tool_calls = msg.tool_calls.map(|tool_calls| {
                     tool_calls
@@ -216,7 +224,7 @@ impl OpenAIClient {
                     content,
                     tool_calls,
                     tool_call_id: msg.tool_call_id,
-                    reasoning_content: msg.reasoning_content.clone(),
+                    reasoning_content,
                 }
             })
             .collect()

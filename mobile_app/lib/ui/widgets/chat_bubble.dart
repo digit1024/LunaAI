@@ -259,6 +259,17 @@ class _AssistantBubble extends ConsumerWidget {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // Reasoning content (collapsible, on top) - collapsed by default
+                  if (message.reasoningContent != null &&
+                      message.reasoningContent!.isNotEmpty) ...[
+                    _CollapsiblePayload(
+                      icon: Icons.psychology,
+                      label: '💭 Thinking',
+                      payload: message.reasoningContent!,
+                      initiallyExpanded: false,
+                    ),
+                    if (message.content.isNotEmpty) const SizedBox(height: 8),
+                  ],
                   if (message.content.isNotEmpty)
                     if (message.isStreaming)
                       SelectableText(
@@ -273,17 +284,6 @@ class _AssistantBubble extends ConsumerWidget {
                           p: Theme.of(context).textTheme.bodyMedium,
                         ),
                       ),
-                  // Reasoning content (collapsible) - show during streaming too
-                  if (message.reasoningContent != null &&
-                      message.reasoningContent!.isNotEmpty) ...[
-                    if (message.content.isNotEmpty) const SizedBox(height: 8),
-                    _CollapsiblePayload(
-                      icon: Icons.psychology,
-                      label: '💭 Thinking',
-                      payload: message.reasoningContent!,
-                      initiallyExpanded: message.isStreaming,
-                    ),
-                  ],
                   // Only show timestamp and actions if message has content
                   if (message.content.isNotEmpty ||
                       (message.reasoningContent != null &&

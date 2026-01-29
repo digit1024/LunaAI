@@ -306,7 +306,10 @@ class AppController extends Notifier<AppState> {
     try {
       final config = ref.read(serverConfigProvider);
       final fileClient = FileClient(config);
-      final result = await fileClient.uploadFile(file);
+      final result = await fileClient.uploadFile(
+        file,
+        conversationId: state.activeConversation?.id,
+      );
       final template =
           'User uploaded file ${result.originalName}. It has been stored under ${result.storedPath}. '
           'You should obtain content of this file if possible.';

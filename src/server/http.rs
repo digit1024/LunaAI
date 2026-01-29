@@ -94,25 +94,43 @@ pub async fn attach_file_handler(
     let mut multipart = Multipart::new(body_stream, boundary);
 
     let mut file_data: Option<(String, Vec<u8>)> = None;
+    let mut conversation_id: Option<String> = None;
     while let Some(field) = multipart.next_field().await.map_err(|_| StatusCode::BAD_REQUEST)? {
-        let field_name = field.name().unwrap_or("file");
-        if field_name == "file" {
-            let file_name = field
-                .file_name()
-                .ok_or(StatusCode::BAD_REQUEST)?
-                .to_string();
-            let data = field
-                .bytes()
-                .await
-                .map_err(|_| StatusCode::BAD_REQUEST)?
-                .to_vec();
-            file_data = Some((file_name, data));
-            break;
+        let name = field.name().unwrap_or("");
+        match name {
+            "file" => {
+                let file_name = field
+                    .file_name()
+                    .ok_or(StatusCode::BAD_REQUEST)?
+                    .to_string();
+                let data = field
+                    .bytes()
+                    .await
+                    .map_err(|_| StatusCode::BAD_REQUEST)?
+                    .to_vec();
+                file_data = Some((file_name, data));
+            }
+            "conversation_id" => {
+                let s = field
+                    .text()
+                    .await
+                    .map_err(|_| StatusCode::BAD_REQUEST)?
+                    .trim()
+                    .to_string();
+                if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                    conversation_id = Some(s);
+                }
+            }
+            _ => {}
         }
     }
 
     let (original_name, data) = file_data.ok_or(StatusCode::BAD_REQUEST)?;
 
+    let subdir = conversation_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("_no_conversation");
     let uid = Uuid::new_v4();
     let ext = StdPath::new(&original_name)
         .extension()
@@ -121,9 +139,10 @@ pub async fn attach_file_handler(
         .unwrap_or("bin");
     let storage_name = format!("{}.{}", uid, ext);
 
-    let uploads_dir = ctx.config.uploads_dir();
-    std::fs::create_dir_all(&uploads_dir).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let path = uploads_dir.join(&storage_name);
+    let uploads_base = ctx.config.uploads_dir();
+    let target_dir = uploads_base.join(subdir);
+    std::fs::create_dir_all(&target_dir).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let path = target_dir.join(&storage_name);
     std::fs::write(&path, &data).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let stored_path = path.display().to_string();
@@ -152,20 +171,31 @@ pub async fn remove_file_handler(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    let uploads_dir = ctx.config.uploads_dir();
+    let uploads_base = ctx.config.uploads_dir();
     let prefix = format!("{}.", uid);
     let mut removed = false;
-    if let Ok(rd) = std::fs::read_dir(&uploads_dir) {
-        for e in rd.flatten() {
-            let name = e.file_name();
-            if let Some(s) = name.to_str() {
-                if s.starts_with(&prefix) {
-                    if std::fs::remove_file(e.path()).is_ok() {
-                        removed = true;
-                        tracing::info!("Removed upload {}", s);
+    if let Ok(rd) = std::fs::read_dir(&uploads_base) {
+        for sub in rd.flatten() {
+            let path = sub.path();
+            if !path.is_dir() {
+                continue;
+            }
+            if let Ok(inner) = std::fs::read_dir(&path) {
+                for e in inner.flatten() {
+                    let name = e.file_name();
+                    if let Some(s) = name.to_str() {
+                        if s.starts_with(&prefix) {
+                            if std::fs::remove_file(e.path()).is_ok() {
+                                removed = true;
+                                tracing::info!("Removed upload {}", s);
+                            }
+                            break;
+                        }
                     }
-                    break;
                 }
+            }
+            if removed {
+                break;
             }
         }
     }

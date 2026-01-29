@@ -44,6 +44,7 @@ impl FileClient {
     pub async fn upload_file<P: AsRef<Path>>(
         &self,
         file_path: P,
+        conversation_id: Option<&str>,
     ) -> Result<UploadResult, Box<dyn std::error::Error + Send + Sync>> {
         let path = file_path.as_ref();
         let file_name = path
@@ -61,7 +62,12 @@ impl FileClient {
             .file_name(file_name.clone())
             .mime_str(&mime_type)?;
 
-        let form = multipart::Form::new().part("file", file_part);
+        let mut form = multipart::Form::new().part("file", file_part);
+        if let Some(cid) = conversation_id {
+            if !cid.is_empty() {
+                form = form.text("conversation_id", cid.to_string());
+            }
+        }
         let url = format!("{}/api/attach-file", self.base_url());
 
         tracing::debug!("Uploading file to: {}", url);

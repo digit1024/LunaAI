@@ -48,14 +48,22 @@ class FileClient {
         port: config.port,
       );
 
-  /// Upload a file; returns uid and original_name for the upload-notification message.
-  Future<UploadResult> uploadFile(File file) async {
+  /// Upload a file; returns uid, original_name, stored_path for the upload-notification message.
+  /// [conversationId] optional; uploads go under uploads/{conversationId}/{uid}.{ext}.
+  Future<UploadResult> uploadFile(
+    File file, {
+    String? conversationId,
+  }) async {
     try {
       final uri = baseUrl.resolve('/api/attach-file');
 
       final request = http.MultipartRequest('POST', uri);
       request.headers['x-api-key'] = config.apiKey;
       request.headers['authorization'] = 'Bearer ${config.apiKey}';
+
+      if (conversationId != null && conversationId.isNotEmpty) {
+        request.fields['conversation_id'] = conversationId;
+      }
 
       final fileStream = http.ByteStream(file.openRead());
       final fileLength = await file.length();

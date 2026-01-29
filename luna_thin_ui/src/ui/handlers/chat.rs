@@ -34,9 +34,13 @@ pub fn handle_chat_messages(
             if let Some(ref file_client) = app.file_client {
                 let client = file_client.clone();
                 let path_clone = path.clone();
+                let conv_id = app.current_conversation_id.clone();
                 Some(app::Task::perform(
                     async move {
-                        match client.upload_file(&path_clone).await {
+                        match client
+                            .upload_file(&path_clone, conv_id.as_deref())
+                            .await
+                        {
                             Ok(r) => Message::UploadSuccess {
                                 uid: r.uid,
                                 original_name: r.original_name,
