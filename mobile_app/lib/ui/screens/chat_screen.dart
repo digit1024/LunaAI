@@ -599,10 +599,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           attachedFiles: state.attachedFiles,
           onSend: () {
             final text = _controller.text;
-            if (text.trim().isNotEmpty || state.attachedFiles.isNotEmpty) {
-              // Hide keyboard immediately
+            if (text.trim().isNotEmpty) {
               _focusNode.unfocus();
-              // Play sound immediately (preloaded + LOW_LATENCY mode = instant)
               _sentPlayer.stop();
               unawaited(_sentPlayer.play(AssetSource('audio/sent.mp3')));
               controller.sendPrompt(text);
@@ -1118,7 +1116,7 @@ class _ComposerState extends ConsumerState<_Composer> {
                   ),
                   tooltip: 'Stop',
                 )
-              else if (hasText || widget.attachedFiles.isNotEmpty)
+              else if (hasText)
                 IconButton.filled(
                   onPressed: widget.onSend,
                   icon: const Icon(Icons.send),

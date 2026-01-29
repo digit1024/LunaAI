@@ -4,7 +4,7 @@ use crate::{
         protocol::{AgentUpdate, PlannedTool},
     },
     config::{AppConfig, ServerConfig},
-    llm::{self, Attachment, Message as LlmMessage, Role},
+    llm::{self, Message as LlmMessage, Role},
     llm::tokenizer::TokenCounter,
     llm::context_manager::SmartContextManager,
     prompts::PromptManager,
@@ -13,7 +13,6 @@ use crate::{
         ClientCommand, ConversationSummary, ConversationView, MessageView, PlannedToolView,
         SearchResult, ServerEvent,
     },
-    server::http::AttachmentStorage,
     storage::{
         conversation_storage::Conversation as StoredConversation,
         sqlite_storage_simple::{Message as StorageMessage, MessageMetadata}, Storage,
@@ -35,7 +34,6 @@ pub struct ServerContext {
     pub prompt_manager: PromptManager,
     pub storage: Arc<Mutex<Storage>>,
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
-    pub attachment_storage: Arc<AttachmentStorage>,
 }
 
 pub struct SessionState {
@@ -118,8 +116,7 @@ impl ServerHandler {
             ClientCommand::SendMessage {
                 conversation_id,
                 content,
-                attachment_ids,
-            } => self.handle_send_message(conversation_id, content, attachment_ids).await,
+            } => self.handle_send_message(conversation_id, content).await,
             ClientCommand::DeleteConversation { conversation_id } => {
                 self.handle_delete_conversation(conversation_id).await
             }
@@ -287,22 +284,10 @@ impl ServerHandler {
         &mut self,
         conversation_id: Option<String>,
         content: String,
-        attachment_ids: Option<Vec<String>>,
     ) -> Result<()> {
-        if content.trim().is_empty() && attachment_ids.as_ref().map(|v| v.is_empty()).unwrap_or(true) {
+        if content.trim().is_empty() {
             return Err(anyhow!("Cannot send an empty message"));
         }
-
-        // Retrieve attachments if any
-        let attachments: Vec<Attachment> = if let Some(ids) = attachment_ids.as_ref() {
-            if !ids.is_empty() {
-                self.ctx.attachment_storage.get_multiple(ids).await
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
 
         let storage = self.ctx.storage.lock().await;
         let conversation_uuid = if let Some(existing) = conversation_id {
@@ -341,11 +326,6 @@ impl ServerHandler {
             .context("failed to persist user message")?;
         drop(storage);
 
-        // Clean up attachments after message is sent
-        if let Some(ids) = attachment_ids {
-            self.ctx.attachment_storage.remove_multiple(&ids).await;
-        }
-
         let _ = self.outbound.send(ServerEvent::MessageAccepted {
             conversation_id: conversation_uuid.to_string(),
         });
@@ -353,18 +333,9 @@ impl ServerHandler {
         let profile = self.session.active_profile(&self.ctx.config)?.clone();
         let mut llm_messages = self.build_llm_messages(conversation_uuid).await?;
         let prompt_manager = self.ctx.prompt_manager.clone();
-        
-        // Add current message with attachments to LLM messages (before injecting prompts)
-        let current_user_message = if attachments.is_empty() {
-            LlmMessage::new(Role::User, content.clone())
-        } else {
-            LlmMessage::new_with_attachments(Role::User, content.clone(), attachments)
-        };
-        let current_user_message_clone = current_user_message.clone();
-        llm_messages.push(current_user_message);
-        
-        // Inject system prompts first
-        let mut agent_messages = ContextService::inject_prompts(llm_messages, &prompt_manager, &profile)?;
+        llm_messages.push(LlmMessage::new(Role::User, content.clone()));
+
+        let agent_messages = ContextService::inject_prompts(llm_messages, &prompt_manager, &profile)?;
         
         // Check if summarization is needed and trigger it using ContextService
         {

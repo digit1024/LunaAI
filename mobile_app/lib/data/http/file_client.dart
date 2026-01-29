@@ -22,35 +22,48 @@ class FileAttachment {
   });
 }
 
+/// Response from POST /api/attach-file.
+class UploadResult {
+  final String uid;
+  final String originalName;
+  /// Full path on server (config_dir/uploads/{uid}.{ext})
+  final String storedPath;
+
+  UploadResult({
+    required this.uid,
+    required this.originalName,
+    required this.storedPath,
+  });
+}
+
 class FileClient {
   final ServerConfig config;
 
   FileClient(this.config);
 
-  /// Get HTTP base URL (port + 1 from WebSocket port)
+  /// HTTP API – same port as WebSocket
   Uri get baseUrl => Uri(
         scheme: 'http',
         host: config.host,
-        port: config.port + 1,
+        port: config.port,
       );
 
-  /// Upload a file and get its attachment ID
-  Future<FileAttachment> uploadFile(File file) async {
+  /// Upload a file; returns uid and original_name for the upload-notification message.
+  Future<UploadResult> uploadFile(File file) async {
     try {
       final uri = baseUrl.resolve('/api/attach-file');
-      
+
       final request = http.MultipartRequest('POST', uri);
       request.headers['x-api-key'] = config.apiKey;
       request.headers['authorization'] = 'Bearer ${config.apiKey}';
-      
-      // Add file to request
+
       final fileStream = http.ByteStream(file.openRead());
       final fileLength = await file.length();
       final multipartFile = http.MultipartFile(
         'file',
         fileStream,
         fileLength,
-        filename: file.path.split('/').last,
+        filename: file.path.split(Platform.pathSeparator).last,
       );
       request.files.add(multipartFile);
 
@@ -58,20 +71,18 @@ class FileClient {
       final responseBody = await response.stream.bytesToString();
 
       if (response.statusCode == 200) {
-        // Parse JSON response
         final json = jsonDecode(responseBody) as Map<String, dynamic>;
-        
-        final fileId = json['file_id'] as String?;
-        if (fileId == null) {
-          throw Exception('Invalid response: missing file_id');
+        final uid = json['uid'] as String?;
+        final originalName = json['original_name'] as String? ??
+            file.path.split(Platform.pathSeparator).last;
+        final storedPath = json['stored_path'] as String?;
+        if (uid == null || storedPath == null) {
+          throw Exception('Invalid response: missing uid or stored_path');
         }
-
-        return FileAttachment(
-          fileId: fileId,
-          fileName: json['file_name'] as String? ?? file.path.split('/').last,
-          mimeType: json['mime_type'] as String? ?? 'application/octet-stream',
-          fileSize: (json['file_size'] as num?)?.toInt() ?? fileLength,
-          file: file,
+        return UploadResult(
+          uid: uid,
+          originalName: originalName,
+          storedPath: storedPath,
         );
       } else {
         throw Exception(
@@ -84,10 +95,10 @@ class FileClient {
     }
   }
 
-  /// Remove an attached file
-  Future<void> removeFile(String fileId) async {
+  /// Remove an uploaded file by uid
+  Future<void> removeFile(String uid) async {
     try {
-      final uri = baseUrl.resolve('/api/attach-file/$fileId');
+      final uri = baseUrl.resolve('/api/attach-file/$uid');
       
       final response = await http.delete(
         uri,

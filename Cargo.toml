@@ -68,7 +68,7 @@ sha2 = "0.10.9"
 rand = "0.9.2"
 
 # HTTP server for file attachments (async)
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"
 tower-http = { version = "0.5", features = ["cors", "fs"] }
 multer = "3.0"

@@ -76,8 +76,11 @@ pub enum Message {
     // File attachments
     AttachFile,
     FileSelected(String),
-    RemoveFile(String),
-    FileUploaded(String, String),
+    UploadSuccess {
+        uid: String,
+        original_name: String,
+        stored_path: String,
+    },
     FileUploadError(String),
 
     // Profile
@@ -310,18 +313,6 @@ impl ChatMessage {
 }
 
 // ============================================================================
-// Pending Attachment
-// ============================================================================
-
-#[derive(Debug, Clone)]
-pub struct PendingAttachment {
-    pub file_path: String,
-    pub file_id: Option<String>,
-    pub uploading: bool,
-    pub error: Option<String>,
-}
-
-// ============================================================================
 // Main Application
 // ============================================================================
 
@@ -365,7 +356,6 @@ pub struct LunaThinApp {
 
     // Input state
     pub input_text: String,
-    pub pending_attachments: Vec<PendingAttachment>,
 
     // Expanded states
     pub expanded_reasoning: HashSet<usize>,
@@ -433,7 +423,6 @@ impl LunaThinApp {
             about: Self::create_about_widget(),
             chat_page: ChatPageState::default(),
             input_text: String::new(),
-            pending_attachments: Vec::new(),
             expanded_reasoning: HashSet::new(),
             expanded_summaries: HashSet::new(),
             expanded_tools: HashSet::new(),
@@ -877,9 +866,7 @@ impl LunaThinApp {
                 }
             }
             ServerEvent::MessageAccepted { .. } => {
-                // Input is already cleared when SendMessage was triggered
-                // Just clear pending attachments
-                self.pending_attachments.clear();
+                // Input already cleared when SendMessage was triggered
             }
             ServerEvent::StreamingStarted { .. } => {
                 self.current_assistant_bubble_id = None; // Reset for new streaming session
@@ -1057,6 +1044,11 @@ impl Application for LunaThinApp {
         // Handle MCP Servers messages
         match message.clone() {
             Message::LoadMCPServers => {
+                // Ensure file_client exists if we're connected
+                if self.file_client.is_none() && self.connection_status == ConnectionStatus::Connected {
+                    self.file_client = Some(FileClient::new(self.server_config.clone()));
+                }
+                
                 if let Some(ref file_client) = self.file_client {
                     let client = file_client.clone();
                     return app::Task::perform(
@@ -1284,6 +1276,13 @@ impl Application for LunaThinApp {
                 NavItem::Page(page) => {
                     tracing::info!("🖱️ Navigating to page: {:?}", page);
                     self.current_page = page;
+                    // Load MCP servers when navigating to that page
+                    if page == Page::MCPServers && self.connection_status == ConnectionStatus::Connected {
+                        return app::Task::perform(
+                            async { Message::LoadMCPServers },
+                            |msg| cosmic::Action::App(msg),
+                        );
+                    }
                 }
                 NavItem::Conversation(conv_id) => {
                     tracing::info!("🖱️ Loading conversation: {}", conv_id);

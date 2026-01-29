@@ -237,6 +237,11 @@ impl AppConfig {
         Self::config_dir().join("config.toml")
     }
 
+    /// Directory for uploaded files: `config_dir/uploads`
+    pub fn uploads_dir(&self) -> PathBuf {
+        Self::config_dir().join("uploads")
+    }
+
     pub fn load() -> Result<Self, ConfigError> {
         Self::load_from_path(None::<&Path>)
     }

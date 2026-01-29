@@ -4,7 +4,6 @@ mod http;
 mod websocket;
 
 use crate::server::handlers::ServerContext;
-use crate::server::http::AttachmentStorage;
 use crate::{
     config::AppConfig,
     prompts::PromptManager,
@@ -59,16 +58,12 @@ async fn launch(options: ServerOptions) -> Result<()> {
     let mcp_config = load_mcp_config(&config);
     initialize_mcp_registry(&mcp_registry, &mcp_config, &config).await;
 
-    // Create attachment storage
-    let attachment_storage = Arc::new(AttachmentStorage::new());
-
     let ctx = Arc::new(ServerContext {
         config: config.clone(),
         server_cfg: Arc::new(config.server.clone()),
         prompt_manager,
         storage: storage.clone(),
         mcp_registry,
-        attachment_storage: attachment_storage.clone(),
     });
 
     // Spawn background title generation thread only if profile is configured
@@ -76,25 +71,18 @@ async fn launch(options: ServerOptions) -> Result<()> {
         spawn_title_generation_thread(config.clone(), storage);
     }
 
-    // Start HTTP server on port + 1 (e.g., if WS is on 8080, HTTP is on 8081)
-    let http_port = config.server.port + 1;
-    let http_addr = format!("{}:{}", config.server.host, http_port);
-    let http_router = http::create_http_router(ctx.clone());
-    let http_listener = tokio::net::TcpListener::bind(&http_addr)
+    // Single server on host:port: HTTP (/api/*) and WebSocket (/ws)
+    let bind_addr = format!("{}:{}", config.server.host, config.server.port);
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
-        .context("failed to bind HTTP server")?;
-    
-    tracing::info!(address = %http_addr, "HTTP server for file attachments listening");
-    
-    // Spawn HTTP server in background
-    tokio::spawn(async move {
-        if let Err(err) = axum::serve(http_listener, http_router).await {
-            tracing::error!("HTTP server error: {}", err);
-        }
-    });
+        .context("failed to bind server")?;
+    tracing::info!(address = %bind_addr, "Luna server listening (HTTP + WebSocket on /ws)");
 
-    // Start WebSocket server (blocks)
-    websocket::serve(ctx).await
+    let app = http::create_http_router(ctx);
+    axum::serve(listener, app)
+        .await
+        .context("server error")?;
+    Ok(())
 }
 
 fn load_config(path: Option<&PathBuf>) -> Result<AppConfig, config::ConfigError> {

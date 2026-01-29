@@ -3,12 +3,13 @@ use reqwest::multipart;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Response from POST /api/attach-file
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileAttachment {
-    pub file_id: String,
-    pub file_name: String,
-    pub mime_type: String,
-    pub file_size: u64,
+pub struct UploadResult {
+    pub uid: String,
+    pub original_name: String,
+    /// Full path on server (config_dir/uploads/{uid}.{ext})
+    pub stored_path: String,
 }
 
 #[derive(Clone)]
@@ -43,7 +44,7 @@ impl FileClient {
     pub async fn upload_file<P: AsRef<Path>>(
         &self,
         file_path: P,
-    ) -> Result<FileAttachment, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<UploadResult, Box<dyn std::error::Error + Send + Sync>> {
         let path = file_path.as_ref();
         let file_name = path
             .file_name()
@@ -74,8 +75,8 @@ impl FileClient {
             .await?;
 
         if response.status().is_success() {
-            let attachment: FileAttachment = response.json().await?;
-            Ok(attachment)
+            let result: UploadResult = response.json().await?;
+            Ok(result)
         } else {
             let status = response.status();
             let body = response.text().await?;
@@ -83,8 +84,8 @@ impl FileClient {
         }
     }
 
-    pub async fn remove_file(&self, file_id: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let url = format!("{}/api/attach-file/{}", self.base_url(), file_id);
+    pub async fn remove_file(&self, uid: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let url = format!("{}/api/attach-file/{}", self.base_url(), uid);
         tracing::debug!("Removing file: {}", url);
 
         let response = self

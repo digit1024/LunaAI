@@ -273,21 +273,15 @@ class AppController extends Notifier<AppState> {
   }
 
   Future<void> sendPrompt(String text) async {
-    if (text.trim().isEmpty && state.attachedFiles.isEmpty) return;
+    if (text.trim().isEmpty) return;
     final conversationId = state.activeConversation?.id;
-    final attachmentIds = state.attachedFiles.map((f) => f.fileId).toList();
     _appendUserMessage(text.trim());
     await guard.ensureStarted('Streaming reply');
     _waitingForResponse = true;
     wsClient.send(ClientCommand.sendMessage(
       conversationId: conversationId,
       content: text.trim(),
-      attachmentIds: attachmentIds.isNotEmpty ? attachmentIds : null,
     ));
-    // Clear attached files after sending
-    if (attachmentIds.isNotEmpty) {
-      state = state.copyWith(attachedFiles: []);
-    }
   }
 
   void startDialogMode() {
@@ -307,15 +301,22 @@ class AppController extends Notifier<AppState> {
     );
   }
 
-  /// Attach a file from a File object
+  /// Attach a file: upload, then send upload-notification message and continue.
   Future<void> attachFile(File file) async {
     try {
       final config = ref.read(serverConfigProvider);
       final fileClient = FileClient(config);
-      final attachment = await fileClient.uploadFile(file);
-      state = state.copyWith(
-        attachedFiles: [...state.attachedFiles, attachment],
-      );
+      final result = await fileClient.uploadFile(file);
+      final template =
+          'User uploaded file ${result.originalName}. It has been stored under ${result.storedPath}. '
+          'You should obtain content of this file if possible.';
+      _appendUserMessage(template);
+      await guard.ensureStarted('Streaming reply');
+      _waitingForResponse = true;
+      wsClient.send(ClientCommand.sendMessage(
+        conversationId: state.activeConversation?.id,
+        content: template,
+      ));
     } catch (e) {
       debugPrint('Error attaching file: $e');
       state = state.copyWith(

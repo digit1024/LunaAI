@@ -34,21 +34,23 @@ class ServerConfig {
     );
   }
 
-  /// Returns secure WebSocket URI (wss://)
+  /// Returns secure WebSocket URI (wss://) – WebSocket route is /ws
   Uri websocketUriSecure() {
     return Uri(
       scheme: 'wss',
       host: host,
-      port: port == 443 ? null : port, // Omit port for default HTTPS port
+      port: port == 443 ? null : port,
+      path: '/ws',
     );
   }
 
-  /// Returns insecure WebSocket URI (ws://)
+  /// Returns insecure WebSocket URI (ws://) – WebSocket route is /ws
   Uri websocketUriInsecure() {
     return Uri(
       scheme: 'ws',
       host: host,
       port: port,
+      path: '/ws',
     );
   }
 

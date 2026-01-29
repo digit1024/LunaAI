@@ -38,8 +38,6 @@ pub enum ClientCommand {
     SendMessage {
         conversation_id: Option<String>,
         content: String,
-        #[serde(default)]
-        attachment_ids: Option<Vec<String>>,
     },
 }
 

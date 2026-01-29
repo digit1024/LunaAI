@@ -14,18 +14,18 @@ impl ServerConfig {
         Self { host, port, api_key }
     }
 
-    /// Returns secure WebSocket URI (wss://)
+    /// Returns secure WebSocket URI (wss://) – WebSocket route is /ws
     pub fn websocket_uri_secure(&self) -> String {
         if self.port == 443 {
-            format!("wss://{}/", self.host)
+            format!("wss://{}/ws", self.host)
         } else {
-            format!("wss://{}:{}/", self.host, self.port)
+            format!("wss://{}:{}/ws", self.host, self.port)
         }
     }
 
-    /// Returns insecure WebSocket URI (ws://)
+    /// Returns insecure WebSocket URI (ws://) – WebSocket route is /ws
     pub fn websocket_uri_insecure(&self) -> String {
-        format!("ws://{}:{}/", self.host, self.port)
+        format!("ws://{}:{}/ws", self.host, self.port)
     }
 
     /// Returns secure URI by default (for backward compatibility)
@@ -33,9 +33,9 @@ impl ServerConfig {
         self.websocket_uri_secure()
     }
 
+    /// HTTP API (attach-file, mcp-servers) – same port as WebSocket
     pub fn http_uri(&self) -> String {
-        // HTTP server runs on port + 1
-        format!("http://{}:{}", self.host, self.port + 1)
+        format!("http://{}:{}", self.host, self.port)
     }
 
     pub fn config_path() -> PathBuf {

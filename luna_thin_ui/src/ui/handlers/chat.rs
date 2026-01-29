@@ -4,7 +4,7 @@
 
 use cosmic::app;
 use cosmic::widget::text_editor;
-use crate::ui::app::{LunaThinApp, Message, ConnectionStatus, PendingAttachment, ChatMessage};
+use crate::ui::app::{LunaThinApp, Message, ConnectionStatus, ChatMessage};
 
 /// Handle chat-related messages
 pub fn handle_chat_messages(
@@ -31,20 +31,17 @@ pub fn handle_chat_messages(
         }
         Message::AttachFile => handle_attach_file(app),
         Message::FileSelected(path) => {
-            app.pending_attachments.push(PendingAttachment {
-                file_path: path.clone(),
-                file_id: None,
-                uploading: true,
-                error: None,
-            });
-
             if let Some(ref file_client) = app.file_client {
                 let client = file_client.clone();
                 let path_clone = path.clone();
                 Some(app::Task::perform(
                     async move {
                         match client.upload_file(&path_clone).await {
-                            Ok(attachment) => Message::FileUploaded(path_clone, attachment.file_id),
+                            Ok(r) => Message::UploadSuccess {
+                                uid: r.uid,
+                                original_name: r.original_name,
+                                stored_path: r.stored_path,
+                            },
                             Err(e) => Message::FileUploadError(e.to_string()),
                         }
                     },
@@ -54,19 +51,25 @@ pub fn handle_chat_messages(
                 None
             }
         }
-        Message::FileUploaded(path, file_id) => {
-            if let Some(attachment) = app.pending_attachments.iter_mut().find(|a| a.file_path == path) {
-                attachment.file_id = Some(file_id);
-                attachment.uploading = false;
-            }
+        Message::UploadSuccess {
+            stored_path,
+            original_name,
+            ..
+        } => {
+            let template = format!(
+                "User uploaded file {}. It has been stored under {}. You should obtain content of this file if possible.",
+                original_name, stored_path
+            );
+            app.messages.push(ChatMessage::user(template.clone()));
+            crate::ui::audio::AudioService::play_sound("sent.mp3");
+            app.send_command(crate::server::dto::ClientCommand::SendMessage {
+                conversation_id: app.current_conversation_id.clone(),
+                content: template,
+            });
             None
         }
         Message::FileUploadError(error) => {
             app.inline_error = Some(format!("File upload failed: {}", error));
-            None
-        }
-        Message::RemoveFile(path) => {
-            app.pending_attachments.retain(|a| a.file_path != path);
             None
         }
         Message::CopyMessage(content) => {
@@ -150,19 +153,11 @@ fn handle_send_message(app: &mut LunaThinApp) -> Option<app::Task<Message>> {
         app.messages.push(ChatMessage::user(message_content.clone()));
     }
 
-    // Play sent sound
     crate::ui::audio::AudioService::play_sound("sent.mp3");
-
-    let attachment_ids: Vec<String> = app
-        .pending_attachments
-        .iter()
-        .filter_map(|a| a.file_id.clone())
-        .collect();
 
     app.send_command(crate::server::dto::ClientCommand::SendMessage {
         conversation_id: app.current_conversation_id.clone(),
         content: message_content,
-        attachment_ids: if attachment_ids.is_empty() { None } else { Some(attachment_ids) },
     });
 
     None
