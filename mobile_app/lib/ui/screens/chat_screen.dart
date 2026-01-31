@@ -122,6 +122,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         }
       },
     );
+    
+    // Set up callback for retry input restoration
+    ref.read(appControllerProvider.notifier).onRetryInputReady = (text) {
+      _controller.text = text;
+      // Move cursor to end of text
+      _controller.selection = TextSelection.fromPosition(
+        TextPosition(offset: text.length),
+      );
+      // Focus the input field
+      _focusNode.requestFocus();
+    };
   }
 
   @override
@@ -139,6 +150,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _controller.dispose();
     _scrollController.dispose();
     _focusNode.dispose();
+    // Clear retry input callback
+    ref.read(appControllerProvider.notifier).onRetryInputReady = null;
     super.dispose();
   }
 
@@ -568,6 +581,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         message: message,
                         prevMessage: prevMessage,
                         nextMessage: nextMessage,
+                        onRetry: message.bubbleType == BubbleType.user
+                            ? () => controller.retryMessage(message.id)
+                            : null,
                       );
                     }
                     return const Padding(

@@ -33,10 +33,14 @@ impl MessageConverter {
         db_messages: &[StorageMessage],
         skip_summarized: bool,
     ) -> Vec<LlmMessage> {
-        // First pass: collect all valid tool_call_ids from assistant messages
+        // First pass: collect valid tool_call_ids only from assistant messages we'll KEEP
+        // (If we skip summarized assistants, don't count their tool_calls — otherwise we'd
+        // emit tool results without the preceding assistant message, causing API errors)
         let mut valid_tool_call_ids = std::collections::HashSet::new();
         for msg in db_messages {
-            if msg.role == "assistant" {
+            if msg.role == "assistant"
+                && !(skip_summarized && msg.is_summarized && !msg.is_summary)
+            {
                 if let Some(ref tool_calls) = msg.tool_calls {
                     for tc in tool_calls {
                         valid_tool_call_ids.insert(tc.id.clone());

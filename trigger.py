@@ -12,6 +12,7 @@ import json
 import os
 import sys
 from typing import Optional
+from urllib.parse import urlparse, urlunparse
 import websockets
 from websockets.client import WebSocketClientProtocol
 
@@ -26,17 +27,26 @@ class LunaClient:
         self.profile_changed = False
 
     def _get_ws_url(self) -> str:
-        """Convert address to WebSocket URL."""
+        """Convert address to WebSocket URL. Server expects path /ws."""
         address = self.address.strip()
         if address.startswith("ws://") or address.startswith("wss://"):
-            return address
+            url = address
         elif address.startswith("http://"):
-            return address.replace("http://", "ws://", 1)
+            url = address.replace("http://", "ws://", 1)
         elif address.startswith("https://"):
-            return address.replace("https://", "wss://", 1)
+            url = address.replace("https://", "wss://", 1)
         else:
-            # Default to ws:// if no protocol specified
-            return f"ws://{address}"
+            # No scheme: use wss for port 443, else ws
+            if ":443" in address or address.endswith(":443"):
+                url = f"wss://{address}"
+            else:
+                url = f"ws://{address}"
+        # Ensure path is /ws (server route)
+        parsed = urlparse(url)
+        if not parsed.path or parsed.path == "/":
+            parsed = parsed._replace(path="/ws")
+            url = urlunparse(parsed)
+        return url
 
     def _get_headers(self) -> dict:
         """Get WebSocket connection headers."""

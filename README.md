@@ -104,6 +104,9 @@ The mobile app is available in the `mobile_app/` directory. Built with Flutter, 
 
 See the [Mobile App README](mobile_app/README.md) for installation instructions.
 
+### Telegram bridge
+Talk to Luna from Telegram: set `TELEGRAM_BOT_TOKEN`, `LUNA_ADDRESS`, and `LUNA_API_KEY`, then run `python telegram_bridge.py`. Optional: `ALLOWED_TELEGRAM_IDS=123,456` restricts the bot to those Telegram user IDs (comma-separated); if unset, anyone can use the bot. Commands in chat: `/new`, `/new {profile}`, `/profile {profile}`.
+
 ## 🏗️ Architecture
 
 Luna AI is built with modern technologies:

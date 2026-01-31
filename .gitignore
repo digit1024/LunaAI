@@ -5,3 +5,5 @@ agentic_tool_calls.log
 mcp_server.log
 /.local
 /internal
+__pycache__/trigger.cpython-312.pyc
+telegram-bridge.env

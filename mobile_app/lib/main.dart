@@ -13,7 +13,6 @@ import 'services/notification_service.dart';
 import 'ui/screens/chat_screen.dart';
 import 'ui/screens/connecting_screen.dart';
 import 'ui/screens/conversations_screen.dart';
-import 'ui/screens/settings_screen.dart';
 import 'ui/screens/setup_screen.dart';
 
 void main() async {
@@ -98,7 +97,7 @@ class _HomeRouter extends ConsumerWidget {
       ActivePane.connecting => const ConnectingScreen(),
       ActivePane.conversations => const ConversationsScreen(),
       ActivePane.chat => const ChatScreen(),
-      ActivePane.settings => const SettingsScreen(),
+      ActivePane.settings => const SetupScreen(),
     };
 
     return Scaffold(

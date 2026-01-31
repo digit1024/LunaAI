@@ -90,11 +90,13 @@ class ChatBubble extends StatelessWidget {
     required this.message,
     this.prevMessage,
     this.nextMessage,
+    this.onRetry,
   });
 
   final ChatMessage message;
   final ChatMessage? prevMessage;
   final ChatMessage? nextMessage;
+  final VoidCallback? onRetry;
 
   bool _isAssistantType(BubbleType? type) {
     if (type == null) return false;
@@ -113,7 +115,10 @@ class ChatBubble extends StatelessWidget {
       case BubbleType.user:
         return _SlideInWrapper(
           direction: SlideDirection.right,
-          child: _UserBubble(message: message),
+          child: _UserBubble(
+            message: message,
+            onRetry: onRetry,
+          ),
         );
       case BubbleType.assistant:
         return _SlideInWrapper(
@@ -156,9 +161,13 @@ class ChatBubble extends StatelessWidget {
 
 /// User message bubble (right-aligned)
 class _UserBubble extends StatelessWidget {
-  const _UserBubble({required this.message});
+  const _UserBubble({
+    required this.message,
+    this.onRetry,
+  });
 
   final ChatMessage message;
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -192,11 +201,27 @@ class _UserBubble extends StatelessWidget {
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
                   const SizedBox(height: 6),
-                  Text(
-                    _formatTimestamp(message.timestamp),
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: colorScheme.onSurfaceVariant,
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      Text(
+                        _formatTimestamp(message.timestamp),
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                      ),
+                      if (onRetry != null) ...[
+                        const SizedBox(width: 8),
+                        IconButton(
+                          icon: const Icon(Icons.refresh, size: 16),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          tooltip: 'Retry from here',
+                          onPressed: onRetry,
                         ),
+                      ],
+                    ],
                   ),
                 ],
               ),

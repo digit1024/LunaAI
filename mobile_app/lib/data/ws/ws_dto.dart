@@ -431,6 +431,17 @@ class ClientCommand {
       ClientCommand('stop_streaming', {
         if (conversationId != null) 'conversation_id': conversationId,
       });
+  
+  /// Truncate conversation - delete all messages up to and including the specified message
+  /// Used for retry/revert functionality
+  static ClientCommand truncateConversation({
+    required String conversationId,
+    required String messageId,
+  }) =>
+      ClientCommand('truncate_conversation', {
+        'conversation_id': conversationId,
+        'message_id': messageId,
+      });
 }
 
 

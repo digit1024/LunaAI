@@ -354,30 +354,7 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
                     ),
                   ),
                   const Divider(),
-                  const SizedBox(height: 8),
-                  // STT Pause Duration
-                  Text(
-                    'STT Pause Duration',
-                    style: Theme.of(context).textTheme.titleSmall,
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Wait time before sending speech (${(sttPrefs.pauseDuration.inMilliseconds / 1000).toStringAsFixed(1)}s)',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  const SizedBox(height: 8),
-                  Slider(
-                    value: sttPrefs.pauseDuration.inMilliseconds / 1000,
-                    min: 0.5,
-                    max: 5.0,
-                    divisions: 9,
-                    label: '${(sttPrefs.pauseDuration.inMilliseconds / 1000).toStringAsFixed(1)}s',
-                    onChanged: (value) {
-                      sttPrefsNotifier.setPauseDuration(
-                        Duration(milliseconds: (value * 1000).round()),
-                      );
-                    },
-                  ),
+
                 ],
               ),
             ),

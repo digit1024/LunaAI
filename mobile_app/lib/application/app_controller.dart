@@ -73,6 +73,13 @@ class AppController extends Notifier<AppState> {
   /// Tracks current assistant bubble ID for streaming
   /// Reset when tools interrupt or new turn starts
   String? _currentAssistantBubbleId;
+  
+  /// Pending retry input text - stored when user clicks retry on a message
+  /// Will be populated into the input field after conversation reloads
+  String? _pendingRetryInput;
+  
+  /// Callback to populate input field after retry truncation
+  void Function(String)? onRetryInputReady;
 
   static const int _maxConnectionAttempts = 3;
   static const Duration _connectionRetryDelay = Duration(seconds: 2);
@@ -363,6 +370,39 @@ class AppController extends Notifier<AppState> {
     state = state.copyWith(dialogModeState: newState);
   }
 
+  /// Retry a user message - truncates conversation at that message and puts content back in input
+  void retryMessage(String messageId) {
+    debugPrint('Retry message clicked: $messageId');
+    
+    // Find the message
+    final message = state.chatMessages.cast<ChatMessage?>().firstWhere(
+      (m) => m?.id == messageId,
+      orElse: () => null,
+    );
+    
+    if (message == null) {
+      debugPrint('Message $messageId not found for retry');
+      return;
+    }
+    
+    // Store input text to restore after conversation reload
+    _pendingRetryInput = message.content;
+    debugPrint('Stored retry input text: ${message.content.length} chars');
+    
+    // Get conversation ID
+    final conversationId = state.activeConversation?.id;
+    if (conversationId == null) {
+      debugPrint('No current conversation ID, cannot truncate');
+      return;
+    }
+    
+    debugPrint('Sending TruncateConversation command for conversation $conversationId at message $messageId');
+    wsClient.send(ClientCommand.truncateConversation(
+      conversationId: conversationId,
+      messageId: messageId,
+    ));
+  }
+
   /// Ensures the saved profile from config is set on the server.
   /// Compares the saved profile with the server's current profile and sends
   /// changeProfile command if they differ.
@@ -473,6 +513,15 @@ class AppController extends Notifier<AppState> {
         error: null,
         currentProfile: profileToUse, // Track server's current profile
       );
+      
+      // Handle pending retry input - populate input field after truncation
+      if (_pendingRetryInput != null) {
+        final inputText = _pendingRetryInput!;
+        _pendingRetryInput = null;
+        debugPrint('Restoring retry input text: ${inputText.length} chars');
+        // Notify UI to populate input field
+        onRetryInputReady?.call(inputText);
+      }
     } else if (event is ConversationCreatedEvent) {
       wsClient.send(ClientCommand.loadConversation(event.conversationId));
     } else if (event is StreamingStartedEvent) {
