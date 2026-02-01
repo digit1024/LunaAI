@@ -1,6 +1,7 @@
-use super::protocol::{AgentUpdate, PlannedTool};
-use crate::llm::{ChatStreamEvent, LlmClient, LlmError, Message, Role, ToolCall, ToolResult};
+use super::protocol::{AgentUpdate, PlannedTool, RunContext};
+use crate::llm::{ChatStreamEvent, LlmClient, LlmError, Message, Role, ToolCall, ToolDefinition, ToolResult};
 use crate::mcp::conversions::{tool_call_to_params, tools_to_definitions};
+use crate::services::ScheduleService;
 use agentic_loop::mcp_servers_registry::MCPServerRegistry;
 use anyhow::{Context, Result};
 use futures::StreamExt;
@@ -8,21 +9,55 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 
+fn schedule_task_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "schedule_task".to_string(),
+        description: "Schedule a task to run at a later time, once or repeatedly. Use for reminders, 'do X in 1 hour', 'every day at 9am', or 'every morning start a fresh conversation with prompt X'.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "run_at": {
+                    "type": "string",
+                    "description": "When to run (first time): relative e.g. 'in 30 minutes', or ISO 8601 e.g. '2025-02-01T09:00:00Z'. For recurring, this is the first run."
+                },
+                "message": {
+                    "type": "string",
+                    "description": "In-conversation: short task/reminder (e.g. 'Call John'). New conversation: full initial user prompt (e.g. 'What is on my calendar today?')."
+                },
+                "schedule": {
+                    "type": "string",
+                    "description": "Optional. 'once' or omit = run once at run_at. For recurring, use 5-field cron (min hr dom mon dow, UTC): e.g. '0 * * * *' (every hour), '0 9 * * *' (daily 9am), '0 9 * * 1' (Monday 9am)."
+                },
+                "new_conversation": {
+                    "type": "boolean",
+                    "description": "If true, at run time create a fresh conversation and use message as the first user prompt. If false or omitted, inject into the current conversation as a reminder."
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Optional. For new_conversation only: title of the new conversation (e.g. 'Daily calendar digest')."
+                }
+            },
+            "required": ["run_at", "message"]
+        }),
+    }
+}
+
 pub struct AgenticLoop {
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
     pub llm_client: Arc<dyn LlmClient>,
-    
+    pub schedule_service: Option<Arc<ScheduleService>>,
 }
 
 impl AgenticLoop {
     pub fn new(
         mcp_registry: Arc<RwLock<MCPServerRegistry>>,
         llm_client: Arc<dyn LlmClient>,
+        schedule_service: Option<Arc<ScheduleService>>,
     ) -> Self {
         Self {
             mcp_registry,
             llm_client,
-            
+            schedule_service,
         }
     }
 
@@ -30,14 +65,15 @@ impl AgenticLoop {
         &mut self,
         mut messages: Vec<Message>,
         agent_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
-        _message_id: Option<uuid::Uuid>,
+        run_context: Option<RunContext>,
     ) -> Result<String> {
         loop {
             let available_tools: Vec<crate::llm::ToolDefinition> = {
                 let registry = self.mcp_registry.read().await;
                 let tools = registry.get_enabled_tools().await
                     .context("Failed to get enabled tools")?;
-                let defs = tools_to_definitions(&tools);
+                let mut defs = tools_to_definitions(&tools);
+                defs.push(schedule_task_tool_definition());
                 tracing::debug!(tool_count = defs.len(), "Enabled tools");
                 defs
             };
@@ -53,7 +89,7 @@ impl AgenticLoop {
                         "Tool streaming unsupported for backend, falling back to non-streaming mode: {}",
                         e
                     );
-                    return self.process_non_streaming(messages, agent_tx).await;
+                    return self.process_non_streaming(messages, agent_tx, run_context).await;
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "LLM streaming call failed");
@@ -70,6 +106,7 @@ impl AgenticLoop {
                 let _ = tx.send(AgentUpdate::AssistantStreamingStarted);
             }
 
+            let run_context_clone = run_context.clone();
             let mut assistant_response = String::new();
             let mut reasoning_content = String::new();
             let mut planned_tools: Vec<ToolCall> = Vec::new();
@@ -153,8 +190,6 @@ impl AgenticLoop {
             messages.push(assistant_msg);
 
             for tool_call in planned_tools {
-                
-
                 if let Some(tx) = agent_tx.as_ref() {
                     let _ = tx.send(AgentUpdate::ToolStarted {
                         tool_call_id: tool_call.id.clone(),
@@ -164,10 +199,11 @@ impl AgenticLoop {
                     });
                 }
 
-                let result = self
-                    .execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref())
-                    .await;
-
+                let result = if tool_call.name == "schedule_task" {
+                    self.execute_schedule_task(&tool_call, run_context_clone.as_ref()).await
+                } else {
+                    self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref()).await
+                };
 
                 if let Some(tx) = agent_tx.as_ref() {
                     let _ = tx.send(AgentUpdate::ToolResult {
@@ -183,6 +219,76 @@ impl AgenticLoop {
                     result.is_error,
                 ));
             }
+        }
+    }
+
+    async fn execute_schedule_task(
+        &self,
+        tool_call: &ToolCall,
+        run_context: Option<&RunContext>,
+    ) -> ToolResult {
+        let Some(svc) = &self.schedule_service else {
+            return ToolResult {
+                content: "schedule_task is not available (no schedule service)".to_string(),
+                is_error: true,
+            };
+        };
+        let Some(ctx) = run_context else {
+            return ToolResult {
+                content: "schedule_task requires run context (conversation_id and profile_name)".to_string(),
+                is_error: true,
+            };
+        };
+        let params = &tool_call.parameters;
+        let run_at = params.get("run_at").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let message = params.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let schedule = params.get("schedule").and_then(|v| v.as_str()).map(String::from);
+        let new_conversation = params.get("new_conversation").and_then(|v| v.as_bool()).unwrap_or(false);
+        let title = params.get("title").and_then(|v| v.as_str()).map(String::from);
+
+        if message.is_empty() {
+            return ToolResult {
+                content: "schedule_task requires non-empty 'message'".to_string(),
+                is_error: true,
+            };
+        }
+
+        match svc
+            .schedule_task(
+                ctx.conversation_id,
+                message,
+                &run_at,
+                schedule,
+                Some(ctx.profile_name.clone()),
+                title,
+                new_conversation,
+            )
+            .await
+        {
+            Ok(job) => {
+                let schedule_desc = job
+                    .schedule
+                    .as_ref()
+                    .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("once"))
+                    .map(|s| format!(", recurring: {}", s))
+                    .unwrap_or_default();
+                let run_at_utc = chrono::DateTime::from_timestamp(job.run_at_utc_secs, 0)
+                    .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+                    .unwrap_or_else(|| job.run_at_utc_secs.to_string());
+                ToolResult {
+                    content: format!(
+                        "Scheduled for {} (id: {}){}",
+                        run_at_utc,
+                        job.id,
+                        schedule_desc
+                    ),
+                    is_error: false,
+                }
+            }
+            Err(e) => ToolResult {
+                content: format!("Failed to schedule: {}", e),
+                is_error: true,
+            },
         }
     }
 
@@ -248,13 +354,16 @@ impl AgenticLoop {
         &mut self,
         mut messages: Vec<Message>,
         agent_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+        run_context: Option<RunContext>,
     ) -> Result<String> {
         loop {
             let available_tools = {
                 let registry = self.mcp_registry.read().await;
                 let tools = registry.get_enabled_tools().await
                     .context("Failed to get enabled tools")?;
-                tools_to_definitions(&tools)
+                let mut defs = tools_to_definitions(&tools);
+                defs.push(schedule_task_tool_definition());
+                defs
             };
 
             let response = match self
@@ -322,7 +431,6 @@ impl AgenticLoop {
             messages.push(assistant_msg);
 
             for tool_call in response.tool_calls {
-                
                 if let Some(tx) = agent_tx.as_ref() {
                     let _ = tx.send(AgentUpdate::ToolStarted {
                         tool_call_id: tool_call.id.clone(),
@@ -332,10 +440,11 @@ impl AgenticLoop {
                     });
                 }
 
-                let result = self
-                    .execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref())
-                    .await;
-
+                let result = if tool_call.name == "schedule_task" {
+                    self.execute_schedule_task(&tool_call, run_context.as_ref()).await
+                } else {
+                    self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref()).await
+                };
 
                 if let Some(tx) = agent_tx.as_ref() {
                     let _ = tx.send(AgentUpdate::ToolResult {

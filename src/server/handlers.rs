@@ -2,13 +2,14 @@ use crate::{
     agentic::{
         loop_engine::AgenticLoop,
         protocol::{AgentUpdate, PlannedTool},
+        RunContext,
     },
     config::{AppConfig, ServerConfig},
     llm::{self, Message as LlmMessage, Role},
     llm::tokenizer::TokenCounter,
     llm::context_manager::SmartContextManager,
     prompts::PromptManager,
-    services::{ContextService, MessageConverter},
+    services::{ContextService, MessageConverter, ScheduleService},
     server::conversation_subscriptions::ConnectionId,
     server::dto::{
         ClientCommand, ConversationSummary, ConversationView, MessageView, PlannedToolView,
@@ -16,7 +17,7 @@ use crate::{
     },
     storage::{
         conversation_storage::Conversation as StoredConversation,
-        sqlite_storage_simple::{Message as StorageMessage, MessageMetadata}, Storage,
+        sqlite_storage_simple::{Message as StorageMessage, MessageMetadata}, ScheduledJob, Storage,
     },
 };
 use agentic_loop::mcp_servers_registry::MCPServerRegistry;
@@ -36,6 +37,7 @@ pub struct ServerContext {
     pub storage: Arc<Mutex<Storage>>,
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
     pub subscriptions: Arc<crate::server::conversation_subscriptions::ConversationSubscriptions>,
+    pub schedule_service: Arc<ScheduleService>,
 }
 
 pub struct SessionState {
@@ -525,73 +527,13 @@ impl ServerHandler {
             );
         }
 
-        let subscriptions = self.ctx.subscriptions.clone();
-        let llm_client = self.session.llm_client.clone();
-        let mcp_registry = self.ctx.mcp_registry.clone();
-        let timeout = Duration::from_secs(self.ctx.server_cfg.stream_timeout_secs);
-        let storage = self.ctx.storage.clone();
-        let convo_for_persistence = conversation_uuid;
-
-        let handle = tokio::spawn(async move {
-            let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel::<AgentUpdate>();
-            let mut loop_engine = AgenticLoop::new(mcp_registry, llm_client);
-            let subs = subscriptions.clone();
-            let stream_task = tokio::spawn(async move {
-                let mut persistence = PersistenceContext::new(storage, convo_for_persistence);
-                while let Some(update) = agent_rx.recv().await {
-                    if let Err(err) = process_agent_update(
-                        &subs,
-                        convo_for_persistence,
-                        &mut persistence,
-                        update,
-                    )
-                    .await
-                    {
-                        let _ = subs
-                            .broadcast(
-                                convo_for_persistence,
-                                ServerEvent::Error {
-                                    message: err.to_string(),
-                                },
-                            )
-                            .await;
-                    }
-                }
-            });
-
-            let result = tokio::time::timeout(
-                timeout,
-                loop_engine.process_message(agent_messages, Some(agent_tx), None),
-            )
-            .await;
-
-            match result {
-                Ok(Ok(_)) => {}
-                Ok(Err(err)) => {
-                    subscriptions
-                        .broadcast(
-                            convo_for_persistence,
-                            ServerEvent::Error {
-                                message: err.to_string(),
-                            },
-                        )
-                        .await;
-                }
-                Err(elapsed) => {
-                    subscriptions
-                        .broadcast(
-                            convo_for_persistence,
-                            ServerEvent::Error {
-                                message: format!("Streaming timeout after {:?}", elapsed),
-                            },
-                        )
-                        .await;
-                }
-            }
-
-            let _ = stream_task.await;
-        });
-
+        let handle = spawn_agent_task(
+            self.ctx.clone(),
+            conversation_uuid,
+            agent_messages,
+            self.session.profile_name.clone(),
+            self.session.llm_client.clone(),
+        );
         self.session.track_task(handle);
         Ok(())
     }
@@ -698,6 +640,205 @@ impl ServerHandler {
         // Use MessageConverter service (single source of truth)
         Ok(MessageConverter::db_to_llm(&db_messages, true))
     }
+}
+
+/// Spawn the agent task for a conversation. Used by handle_send_message and run_scheduled_task.
+pub fn spawn_agent_task(
+    ctx: Arc<ServerContext>,
+    conversation_id: Uuid,
+    agent_messages: Vec<LlmMessage>,
+    profile_name: String,
+    llm_client: Arc<dyn crate::llm::LlmClient>,
+) -> JoinHandle<()> {
+    let subscriptions = ctx.subscriptions.clone();
+    let mcp_registry = ctx.mcp_registry.clone();
+    let schedule_service = ctx.schedule_service.clone();
+    let timeout = Duration::from_secs(ctx.server_cfg.stream_timeout_secs);
+    let storage = ctx.storage.clone();
+    let run_context = RunContext {
+        conversation_id: Some(conversation_id),
+        profile_name: profile_name.clone(),
+    };
+
+    tokio::spawn(async move {
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel::<AgentUpdate>();
+        let mut loop_engine = AgenticLoop::new(mcp_registry, llm_client, Some(schedule_service));
+        let subs = subscriptions.clone();
+        let stream_task = tokio::spawn(async move {
+            let mut persistence = PersistenceContext::new(storage, conversation_id);
+            while let Some(update) = agent_rx.recv().await {
+                if let Err(err) = process_agent_update(
+                    &subs,
+                    conversation_id,
+                    &mut persistence,
+                    update,
+                )
+                .await
+                {
+                    let _ = subs
+                        .broadcast(
+                            conversation_id,
+                            ServerEvent::Error {
+                                message: err.to_string(),
+                            },
+                        )
+                        .await;
+                }
+            }
+        });
+
+        let result = tokio::time::timeout(
+            timeout,
+            loop_engine.process_message(agent_messages, Some(agent_tx), Some(run_context)),
+        )
+        .await;
+
+        match result {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => {
+                subscriptions
+                    .broadcast(
+                        conversation_id,
+                        ServerEvent::Error {
+                            message: err.to_string(),
+                        },
+                    )
+                    .await;
+            }
+            Err(elapsed) => {
+                subscriptions
+                    .broadcast(
+                        conversation_id,
+                        ServerEvent::Error {
+                            message: format!("Streaming timeout after {:?}", elapsed),
+                        },
+                    )
+                    .await;
+            }
+        }
+
+        let _ = stream_task.await;
+    })
+}
+
+/// Run a scheduled job: build messages, spawn agent, update job status (and next run if recurring).
+pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> Result<()> {
+    use crate::services::next_run_from_cron;
+
+    let profile_name = job
+        .profile_name
+        .as_deref()
+        .unwrap_or_else(|| ctx.config.default.as_str());
+    let profile = ctx
+        .config
+        .get_profile(profile_name)
+        .or_else(|| ctx.config.get_default_profile())
+        .cloned()
+        .ok_or_else(|| anyhow!("No profile found for scheduled job"))?;
+    let llm_client = llm::build_llm_client(&profile);
+
+    let (conversation_id, agent_messages) = if let Some(conv_id_str) = &job.conversation_id {
+        let conv_uuid = Uuid::parse_str(conv_id_str).context("invalid conversation_id in job")?;
+        let exists = {
+            let storage = ctx.storage.lock().await;
+            storage.get_conversation(&conv_uuid).context("failed to get conversation")?.is_some()
+        };
+        if !exists {
+            let storage = ctx.storage.lock().await;
+            storage
+                .set_scheduled_job_completed(
+                    &job.id,
+                    chrono::Utc::now().timestamp(),
+                    true,
+                    Some("Conversation no longer exists"),
+                )
+                .context("failed to mark job failed")?;
+            return Ok(());
+        }
+        let db_messages = {
+            let storage = ctx.storage.lock().await;
+            storage
+                .load_conversation_messages(conv_id_str)
+                .context("failed to load conversation messages")?
+        };
+        let mut llm_messages = MessageConverter::db_to_llm(&db_messages, true);
+        llm_messages.push(LlmMessage::new(
+            Role::User,
+            format!(
+                "Scheduled task (due now): {}. Please carry out this task.",
+                job.message
+            ),
+        ));
+        let agent_messages =
+            ContextService::inject_prompts(llm_messages, &ctx.prompt_manager, &profile)?;
+        (conv_uuid, agent_messages)
+    } else {
+        let title = job
+            .title
+            .clone()
+            .unwrap_or_else(|| truncate_preview(&job.message));
+        let conv_id = {
+            let storage = ctx.storage.lock().await;
+            storage
+                .create_conversation_with_profile(title.clone(), Some(profile_name))
+                .context("failed to create conversation")?
+        };
+        {
+            let mut storage = ctx.storage.lock().await;
+            storage
+                .add_message_to_conversation(&conv_id, "user".to_string(), job.message.clone())
+                .context("failed to add message")?;
+        }
+        let db_messages = {
+            let storage = ctx.storage.lock().await;
+            storage
+                .load_conversation_messages(&conv_id.to_string())
+                .context("failed to load messages")?
+        };
+        let llm_messages = MessageConverter::db_to_llm(&db_messages, true);
+        let agent_messages =
+            ContextService::inject_prompts(llm_messages, &ctx.prompt_manager, &profile)?;
+        (conv_id, agent_messages)
+    };
+
+    let handle = spawn_agent_task(
+        ctx.clone(),
+        conversation_id,
+        agent_messages,
+        profile_name.to_string(),
+        llm_client,
+    );
+    let _ = handle.await;
+
+    let now = chrono::Utc::now().timestamp();
+    let storage = ctx.storage.lock().await;
+    if let Some(ref schedule) = job.schedule {
+        let s = schedule.trim();
+        if !s.is_empty() && !s.eq_ignore_ascii_case("once") {
+            match next_run_from_cron(s, now) {
+                Ok(next_run) => {
+                    storage
+                        .set_scheduled_job_next_run(&job.id, next_run, now)
+                        .context("failed to set next run")?;
+                }
+                Err(e) => {
+                    tracing::warn!(job_id = %job.id, error = %e, "Failed to compute next run, marking job completed");
+                    storage
+                        .set_scheduled_job_completed(&job.id, now, true, Some(&e.to_string()))
+                        .context("failed to mark job failed")?;
+                }
+            }
+        } else {
+            storage
+                .set_scheduled_job_completed(&job.id, now, false, None)
+                .context("failed to mark job completed")?;
+        }
+    } else {
+        storage
+            .set_scheduled_job_completed(&job.id, now, false, None)
+            .context("failed to mark job completed")?;
+    }
+    Ok(())
 }
 
 fn truncate_preview(text: &str) -> String {

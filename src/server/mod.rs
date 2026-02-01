@@ -4,7 +4,9 @@ mod handlers;
 mod http;
 mod websocket;
 
-use crate::server::handlers::ServerContext;
+use crate::server::handlers::{run_scheduled_task, ServerContext};
+use crate::services::ScheduleService;
+use crate::storage::ScheduledJob;
 use crate::{
     config::AppConfig,
     prompts::PromptManager,
@@ -12,6 +14,7 @@ use crate::{
 };
 use agentic_loop::mcp_servers_registry::MCPServerRegistry;
 use anyhow::{Context, Result};
+use chrono::Utc;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
 
@@ -57,6 +60,7 @@ async fn launch(options: ServerOptions) -> Result<()> {
     let storage = Arc::new(Mutex::new(storage));
     let mcp_registry = Arc::new(RwLock::new(MCPServerRegistry::new()));
     let subscriptions = Arc::new(conversation_subscriptions::ConversationSubscriptions::new());
+    let schedule_service = Arc::new(ScheduleService::new(storage.clone()));
     let mcp_config = load_mcp_config(&config);
     initialize_mcp_registry(&mcp_registry, &mcp_config, &config).await;
 
@@ -67,12 +71,16 @@ async fn launch(options: ServerOptions) -> Result<()> {
         storage: storage.clone(),
         mcp_registry,
         subscriptions,
+        schedule_service,
     });
 
     // Spawn background title generation thread only if profile is configured
     if config.title_summary.title_generation_profile.is_some() {
         spawn_title_generation_thread(config.clone(), storage);
     }
+
+    // Scheduler loop: run due scheduled jobs every 45s
+    spawn_scheduler_loop(ctx.clone());
 
     // Single server on host:port: HTTP (/api/*) and WebSocket (/ws)
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
@@ -183,6 +191,56 @@ async fn initialize_mcp_registry(
         total = connected_count + failed_count,
         "MCP server initialization complete"
     );
+}
+
+const SCHEDULER_INTERVAL_SECS: u64 = 45;
+const SCHEDULER_BATCH_LIMIT: u32 = 10;
+
+fn spawn_scheduler_loop(ctx: Arc<ServerContext>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(SCHEDULER_INTERVAL_SECS));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let now = Utc::now().timestamp();
+            let jobs: Vec<ScheduledJob> = {
+                let storage = ctx.storage.lock().await;
+                match storage.get_due_scheduled_jobs(now, SCHEDULER_BATCH_LIMIT) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        tracing::warn!("Scheduler: failed to get due jobs: {}", e);
+                        continue;
+                    }
+                }
+            };
+            for job in jobs {
+                let taken = {
+                    let storage = ctx.storage.lock().await;
+                    match storage.set_scheduled_job_running(&job.id, now) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            tracing::warn!(job_id = %job.id, "Scheduler: failed to mark running: {}", e);
+                            continue;
+                        }
+                    }
+                };
+                if !taken {
+                    continue;
+                }
+                let job_id = job.id.clone();
+                if let Err(e) = run_scheduled_task(ctx.clone(), job).await {
+                    tracing::warn!("Scheduler: run_scheduled_task failed: {}", e);
+                    let storage = ctx.storage.lock().await;
+                    let _ = storage.set_scheduled_job_completed(
+                        &job_id,
+                        Utc::now().timestamp(),
+                        true,
+                        Some(&e.to_string()),
+                    );
+                }
+            }
+        }
+    });
 }
 
 fn spawn_title_generation_thread(

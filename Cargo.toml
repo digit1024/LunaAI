@@ -24,6 +24,7 @@ clap = { version = "4.0", features = ["derive"] }
 
 # Date/time
 chrono = { version = "0.4", features = ["serde"] }
+cron = "0.12"
 
 # UUIDs
 uuid = { version = "1.0", features = ["v4", "serde"] }

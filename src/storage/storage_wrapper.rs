@@ -5,7 +5,7 @@ use tracing;
 use uuid::Uuid;
 
 use super::conversation_storage::{Conversation as FileConversation, StoredMessage, Turn};
-use super::sqlite_storage_simple::{MessageMetadata, SqliteSettings, SqliteStorage};
+use super::sqlite_storage_simple::{MessageMetadata, ScheduledJob, SqliteSettings, SqliteStorage};
 
 /// Wrapper that provides compatibility with the existing file-based storage API
 pub struct Storage {
@@ -376,6 +376,31 @@ impl Storage {
         summary_content: &str,
     ) -> SqliteResult<()> {
         self.sqlite.perform_summarization(conversation_id, messages_to_summarize, summary_content)
+    }
+
+    /// Insert a scheduled job
+    pub fn insert_scheduled_job(&self, job: &ScheduledJob) -> SqliteResult<()> {
+        self.sqlite.insert_scheduled_job(job)
+    }
+
+    /// Get due scheduled jobs
+    pub fn get_due_scheduled_jobs(&self, now_utc_secs: i64, limit: u32) -> SqliteResult<Vec<ScheduledJob>> {
+        self.sqlite.get_due_scheduled_jobs(now_utc_secs, limit)
+    }
+
+    /// Mark scheduled job as running
+    pub fn set_scheduled_job_running(&self, id: &str, now_utc_secs: i64) -> SqliteResult<bool> {
+        self.sqlite.set_scheduled_job_running(id, now_utc_secs)
+    }
+
+    /// Mark scheduled job completed or failed
+    pub fn set_scheduled_job_completed(&self, id: &str, now_utc_secs: i64, failed: bool, error_message: Option<&str>) -> SqliteResult<()> {
+        self.sqlite.set_scheduled_job_completed(id, now_utc_secs, failed, error_message)
+    }
+
+    /// Set next run for recurring scheduled job
+    pub fn set_scheduled_job_next_run(&self, id: &str, next_run_utc_secs: i64, now_utc_secs: i64) -> SqliteResult<()> {
+        self.sqlite.set_scheduled_job_next_run(id, next_run_utc_secs, now_utc_secs)
     }
 }
 

@@ -1,5 +1,12 @@
-
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+/// Context passed into the agent loop for internal tools (e.g. schedule_task).
+#[derive(Debug, Clone)]
+pub struct RunContext {
+    pub conversation_id: Option<Uuid>,
+    pub profile_name: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlannedTool {

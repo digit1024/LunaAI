@@ -53,6 +53,22 @@ pub struct Snippet {
     pub rank: f64,
 }
 
+/// A scheduled job (one-shot or recurring via cron)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledJob {
+    pub id: String,
+    pub conversation_id: Option<String>,
+    pub run_at_utc_secs: i64,
+    pub message: String,
+    pub profile_name: Option<String>,
+    pub title: Option<String>,
+    pub status: String,
+    pub created_at_utc_secs: i64,
+    pub updated_at_utc_secs: i64,
+    pub error_message: Option<String>,
+    pub schedule: Option<String>,
+}
+
 /// SQLite-based storage implementation
 pub struct SqliteStorage {
     conn: Connection,
@@ -239,6 +255,24 @@ impl SqliteStorage {
 
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at)",
+            [],
+        )?;
+
+        // Scheduled jobs (cron + once)
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS scheduled_jobs (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT,
+                run_at_utc_secs INTEGER NOT NULL,
+                message TEXT NOT NULL,
+                profile_name TEXT,
+                title TEXT,
+                status TEXT NOT NULL,
+                created_at_utc_secs INTEGER NOT NULL,
+                updated_at_utc_secs INTEGER NOT NULL,
+                error_message TEXT,
+                schedule TEXT
+            )",
             [],
         )?;
 
@@ -705,11 +739,17 @@ impl SqliteStorage {
         &self.conn
     }
 
-    /// Get conversations without generated titles
+    /// Get conversations without generated titles (only those that have at least one message)
     pub fn get_conversations_without_title(&self) -> SqliteResult<Vec<Conversation>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, title, created_at, title_generated, profile_name, last_message FROM conversations WHERE title_generated = 0 ORDER BY created_at ASC")?;
+            .prepare(
+                "SELECT c.id, c.title, c.created_at, c.title_generated, c.profile_name, c.last_message
+                 FROM conversations c
+                 WHERE c.title_generated = 0
+                   AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)
+                 ORDER BY c.created_at ASC",
+            )?;
 
         let conversation_iter = stmt.query_map([], |row| {
             Ok(Conversation {
@@ -738,6 +778,78 @@ impl SqliteStorage {
         )?;
 
         Ok(changes > 0)
+    }
+
+    /// Insert a scheduled job
+    pub fn insert_scheduled_job(&self, job: &ScheduledJob) -> SqliteResult<()> {
+        self.conn.execute(
+            "INSERT INTO scheduled_jobs (id, conversation_id, run_at_utc_secs, message, profile_name, title, status, created_at_utc_secs, updated_at_utc_secs, error_message, schedule) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                job.id,
+                job.conversation_id,
+                job.run_at_utc_secs,
+                job.message,
+                job.profile_name,
+                job.title,
+                job.status,
+                job.created_at_utc_secs,
+                job.updated_at_utc_secs,
+                job.error_message,
+                job.schedule,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Get due scheduled jobs (pending, run_at <= now)
+    pub fn get_due_scheduled_jobs(&self, now_utc_secs: i64, limit: u32) -> SqliteResult<Vec<ScheduledJob>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, conversation_id, run_at_utc_secs, message, profile_name, title, status, created_at_utc_secs, updated_at_utc_secs, error_message, schedule FROM scheduled_jobs WHERE status = 'pending' AND run_at_utc_secs <= ?1 ORDER BY run_at_utc_secs ASC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![now_utc_secs, limit as i64], |row| {
+            Ok(ScheduledJob {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                run_at_utc_secs: row.get(2)?,
+                message: row.get(3)?,
+                profile_name: row.get(4)?,
+                title: row.get(5)?,
+                status: row.get(6)?,
+                created_at_utc_secs: row.get(7)?,
+                updated_at_utc_secs: row.get(8)?,
+                error_message: row.get(9)?,
+                schedule: row.get(10)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Mark job as running; returns true if the row was updated (idempotent take)
+    pub fn set_scheduled_job_running(&self, id: &str, now_utc_secs: i64) -> SqliteResult<bool> {
+        let changes = self.conn.execute(
+            "UPDATE scheduled_jobs SET status = 'running', updated_at_utc_secs = ?1 WHERE id = ?2 AND status = 'pending'",
+            params![now_utc_secs, id],
+        )?;
+        Ok(changes > 0)
+    }
+
+    /// Mark job completed or failed
+    pub fn set_scheduled_job_completed(&self, id: &str, now_utc_secs: i64, failed: bool, error_message: Option<&str>) -> SqliteResult<()> {
+        let status = if failed { "failed" } else { "completed" };
+        self.conn.execute(
+            "UPDATE scheduled_jobs SET status = ?1, updated_at_utc_secs = ?2, error_message = ?3 WHERE id = ?4",
+            params![status, now_utc_secs, error_message, id],
+        )?;
+        Ok(())
+    }
+
+    /// Set next run for recurring job and set status back to pending
+    pub fn set_scheduled_job_next_run(&self, id: &str, next_run_utc_secs: i64, now_utc_secs: i64) -> SqliteResult<()> {
+        self.conn.execute(
+            "UPDATE scheduled_jobs SET run_at_utc_secs = ?1, status = 'pending', updated_at_utc_secs = ?2 WHERE id = ?3",
+            params![next_run_utc_secs, now_utc_secs, id],
+        )?;
+        Ok(())
     }
 }
 
