@@ -402,6 +402,11 @@ impl Storage {
     pub fn set_scheduled_job_next_run(&self, id: &str, next_run_utc_secs: i64, now_utc_secs: i64) -> SqliteResult<()> {
         self.sqlite.set_scheduled_job_next_run(id, next_run_utc_secs, now_utc_secs)
     }
+
+    /// Delete a scheduled job by id
+    pub fn delete_scheduled_job(&self, id: &str) -> SqliteResult<bool> {
+        self.sqlite.delete_scheduled_job(id)
+    }
 }
 
 impl Default for Storage {

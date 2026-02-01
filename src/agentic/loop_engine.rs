@@ -42,6 +42,23 @@ fn schedule_task_tool_definition() -> ToolDefinition {
     }
 }
 
+fn cancel_scheduled_task_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "cancel_scheduled_task".to_string(),
+        description: "Cancel (delete) a scheduled task by its id. Use when the user asks to cancel, remove, or stop a scheduled reminder or recurring task. The job id was returned when the task was scheduled (e.g. 'Scheduled for ... (id: abc-123)').".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "job_id": {
+                    "type": "string",
+                    "description": "UUID of the scheduled job to cancel, as returned when the task was scheduled."
+                }
+            },
+            "required": ["job_id"]
+        }),
+    }
+}
+
 pub struct AgenticLoop {
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
     pub llm_client: Arc<dyn LlmClient>,
@@ -74,6 +91,7 @@ impl AgenticLoop {
                     .context("Failed to get enabled tools")?;
                 let mut defs = tools_to_definitions(&tools);
                 defs.push(schedule_task_tool_definition());
+                defs.push(cancel_scheduled_task_tool_definition());
                 tracing::debug!(tool_count = defs.len(), "Enabled tools");
                 defs
             };
@@ -201,6 +219,8 @@ impl AgenticLoop {
 
                 let result = if tool_call.name == "schedule_task" {
                     self.execute_schedule_task(&tool_call, run_context_clone.as_ref()).await
+                } else if tool_call.name == "cancel_scheduled_task" {
+                    self.execute_cancel_scheduled_task(&tool_call).await
                 } else {
                     self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref()).await
                 };
@@ -292,6 +312,44 @@ impl AgenticLoop {
         }
     }
 
+    async fn execute_cancel_scheduled_task(&self, tool_call: &ToolCall) -> ToolResult {
+        let Some(svc) = &self.schedule_service else {
+            return ToolResult {
+                content: "cancel_scheduled_task is not available (no schedule service)".to_string(),
+                is_error: true,
+            };
+        };
+        let job_id = tool_call
+            .parameters
+            .get("job_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if job_id.is_empty() {
+            return ToolResult {
+                content: "cancel_scheduled_task requires non-empty 'job_id'".to_string(),
+                is_error: true,
+            };
+        }
+        match svc.cancel_scheduled_task(job_id).await {
+            Ok(true) => ToolResult {
+                content: format!("Scheduled task {} has been cancelled.", job_id),
+                is_error: false,
+            },
+            Ok(false) => ToolResult {
+                content: format!(
+                    "No scheduled task found with id '{}'. It may have already run or been cancelled.",
+                    job_id
+                ),
+                is_error: false,
+            },
+            Err(e) => ToolResult {
+                content: format!("Failed to cancel scheduled task: {}", e),
+                is_error: true,
+            },
+        }
+    }
+
     async fn execute_tool_with_retry(
         &self,
         tool_call: ToolCall,
@@ -363,6 +421,7 @@ impl AgenticLoop {
                     .context("Failed to get enabled tools")?;
                 let mut defs = tools_to_definitions(&tools);
                 defs.push(schedule_task_tool_definition());
+                defs.push(cancel_scheduled_task_tool_definition());
                 defs
             };
 
@@ -442,6 +501,8 @@ impl AgenticLoop {
 
                 let result = if tool_call.name == "schedule_task" {
                     self.execute_schedule_task(&tool_call, run_context.as_ref()).await
+                } else if tool_call.name == "cancel_scheduled_task" {
+                    self.execute_cancel_scheduled_task(&tool_call).await
                 } else {
                     self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref()).await
                 };

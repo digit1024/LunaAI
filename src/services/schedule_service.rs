@@ -141,4 +141,12 @@ impl ScheduleService {
         guard.insert_scheduled_job(&job).context("Failed to insert scheduled job")?;
         Ok(job)
     }
+
+    /// Cancel (delete) a scheduled job by id. Returns true if the job existed and was removed.
+    pub async fn cancel_scheduled_task(&self, job_id: &str) -> Result<bool> {
+        let guard = self.storage.lock().await;
+        guard
+            .delete_scheduled_job(job_id)
+            .context("Failed to delete scheduled job")
+    }
 }

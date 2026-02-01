@@ -851,6 +851,12 @@ impl SqliteStorage {
         )?;
         Ok(())
     }
+
+    /// Delete a scheduled job by id. Returns true if a row was deleted.
+    pub fn delete_scheduled_job(&self, id: &str) -> SqliteResult<bool> {
+        let changes = self.conn.execute("DELETE FROM scheduled_jobs WHERE id = ?1", params![id])?;
+        Ok(changes > 0)
+    }
 }
 
 #[cfg(test)]
