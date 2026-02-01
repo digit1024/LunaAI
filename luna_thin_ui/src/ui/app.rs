@@ -585,11 +585,17 @@ impl LunaThinApp {
         });
     }
 
-    /// Helper: On connection established - send initial commands
+    /// Helper: On connection established - send initial commands.
+    /// If we have a current conversation, re-subscribe so we receive any in-flight stream (broadcast).
     pub(crate) fn on_connect(&mut self) {
         self.send_command(ClientCommand::HealthCheck);
         self.list_conversations();
         self.send_command(ClientCommand::ListProfiles);
+        if let Some(ref id) = self.current_conversation_id {
+            self.send_command(ClientCommand::LoadConversation {
+                conversation_id: id.clone(),
+            });
+        }
     }
 
     // ========================================================================

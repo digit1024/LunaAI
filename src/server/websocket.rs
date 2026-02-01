@@ -1,4 +1,5 @@
 use super::handlers::{ServerContext, ServerHandler};
+use crate::server::conversation_subscriptions::ConnectionId;
 use crate::server::dto::{ClientCommand, ServerEvent};
 use anyhow::Result;
 use axum::extract::ws::{Message, WebSocket};
@@ -12,15 +13,15 @@ use serde_json;
 /// Runs the WebSocket command loop after upgrade. Auth is performed by the HTTP layer before upgrade.
 pub async fn handle_ws_upgraded(socket: WebSocket, ctx: Arc<ServerContext>) -> Result<()> {
     let connection_start = Instant::now();
-    let connection_id = uuid::Uuid::new_v4();
-    tracing::info!("WebSocket connection {}", connection_id);
+    let connection_id = ConnectionId::new();
+    tracing::info!("WebSocket connection {}", connection_id.0);
 
     let (write, mut read) = socket.split();
     let sink: Arc<tokio::sync::Mutex<SplitSink<WebSocket, Message>>> =
         Arc::new(tokio::sync::Mutex::new(write));
     let sink_writer = sink.clone();
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<ServerEvent>();
-    let mut handler = ServerHandler::new(ctx, out_tx.clone())?;
+    let mut handler = ServerHandler::new(ctx.clone(), connection_id, out_tx.clone())?;
 
     handler.handle_command(ClientCommand::HealthCheck).await;
 
@@ -30,7 +31,7 @@ pub async fn handle_ws_upgraded(socket: WebSocket, ctx: Arc<ServerContext>) -> R
             match serde_json::to_string(&event) {
                 Ok(payload) => {
                     if matches!(event, ServerEvent::Error { .. }) {
-                        log_error_response(&connection_id, &payload, event_start.elapsed());
+                        log_error_response(&connection_id.0, &payload, event_start.elapsed());
                     }
                     let mut guard = sink_writer.lock().await;
                     if guard
@@ -43,7 +44,7 @@ pub async fn handle_ws_upgraded(socket: WebSocket, ctx: Arc<ServerContext>) -> R
                 }
                 Err(err) => {
                     tracing::error!("Failed to serialize ServerEvent: {}", err);
-                    log_serialization_error(&connection_id, &event, &err);
+                    log_serialization_error(&connection_id.0, &event, &err);
                     break;
                 }
             }
@@ -54,13 +55,13 @@ pub async fn handle_ws_upgraded(socket: WebSocket, ctx: Arc<ServerContext>) -> R
         let msg_start = Instant::now();
         match msg {
             Ok(Message::Text(text)) => {
-                log_incoming_request(&connection_id, &text, msg_start.elapsed());
+                log_incoming_request(&connection_id.0, &text, msg_start.elapsed());
                 match serde_json::from_str::<ClientCommand>(&text) {
                     Ok(command) => {
                         handler.handle_command(command).await;
                     }
                     Err(err) => {
-                        log_parse_error(&connection_id, &text, &err);
+                        log_parse_error(&connection_id.0, &text, &err);
                         let _ = out_tx.send(ServerEvent::Error {
                             message: format!("Invalid command payload: {}", err),
                         });
@@ -68,7 +69,7 @@ pub async fn handle_ws_upgraded(socket: WebSocket, ctx: Arc<ServerContext>) -> R
                 }
             }
             Ok(Message::Close(_)) => {
-                tracing::info!("Connection {} closed by client", connection_id);
+                tracing::info!("Connection {} closed by client", connection_id.0);
                 break;
             }
             Ok(Message::Ping(payload)) => {
@@ -76,7 +77,7 @@ pub async fn handle_ws_upgraded(socket: WebSocket, ctx: Arc<ServerContext>) -> R
                 let _ = guard.send(Message::Pong(payload)).await;
             }
             Err(e) => {
-                tracing::warn!("WebSocket error for connection {}: {}", connection_id, e);
+                tracing::warn!("WebSocket error for connection {}: {}", connection_id.0, e);
                 break;
             }
             _ => {}
@@ -85,7 +86,12 @@ pub async fn handle_ws_upgraded(socket: WebSocket, ctx: Arc<ServerContext>) -> R
 
     drop(out_tx);
     let _ = writer.await;
-    tracing::info!("Connection {} closed after {:?}", connection_id, connection_start.elapsed());
+    ctx.subscriptions.on_connection_closed(connection_id).await;
+    tracing::info!(
+        "Connection {} closed after {:?}",
+        connection_id.0,
+        connection_start.elapsed()
+    );
     Ok(())
 }
 

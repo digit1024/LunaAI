@@ -38,7 +38,7 @@ pub enum ClientCommand {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerEvent {
     HealthOk {

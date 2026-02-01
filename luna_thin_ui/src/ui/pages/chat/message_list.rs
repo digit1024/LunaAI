@@ -46,10 +46,22 @@ pub fn message_list(app: &LunaThinApp) -> Element<Message> {
     // Filter out empty messages and render based on bubble type
     // Use actual message indices for context calculation
     for (i, msg) in app.messages.iter().enumerate() {
-        // Skip empty messages (except tool calls which have their own content)
+        // Skip only when there is nothing to show (content and reasoning both empty)
         if matches!(msg.bubble_type, BubbleType::User | BubbleType::Assistant | BubbleType::Summary) {
-            if msg.content.trim().is_empty() {
-                continue; // Skip empty messages
+            let content_empty = msg.content.trim().is_empty();
+            let reasoning_empty = msg.reasoning_content.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
+            match msg.bubble_type {
+                BubbleType::User => {
+                    if content_empty {
+                        continue; // User has no reasoning
+                    }
+                }
+                BubbleType::Assistant | BubbleType::Summary => {
+                    if content_empty && reasoning_empty {
+                        continue; // Skip only when both content and reasoning are empty
+                    }
+                }
+                _ => {}
             }
         }
         

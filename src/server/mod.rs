@@ -1,3 +1,4 @@
+pub mod conversation_subscriptions;
 pub mod dto;
 mod handlers;
 mod http;
@@ -55,6 +56,7 @@ async fn launch(options: ServerOptions) -> Result<()> {
 
     let storage = Arc::new(Mutex::new(storage));
     let mcp_registry = Arc::new(RwLock::new(MCPServerRegistry::new()));
+    let subscriptions = Arc::new(conversation_subscriptions::ConversationSubscriptions::new());
     let mcp_config = load_mcp_config(&config);
     initialize_mcp_registry(&mcp_registry, &mcp_config, &config).await;
 
@@ -64,6 +66,7 @@ async fn launch(options: ServerOptions) -> Result<()> {
         prompt_manager,
         storage: storage.clone(),
         mcp_registry,
+        subscriptions,
     });
 
     // Spawn background title generation thread only if profile is configured

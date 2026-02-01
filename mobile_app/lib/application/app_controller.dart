@@ -257,15 +257,11 @@ class AppController extends Notifier<AppState> {
     
     await connect(silent: true);
     
-    // After silent reconnect, if we were in a chat, reload that conversation
-    // but only if we don't already have it loaded
+    // After reconnect, if we were in a chat, re-subscribe to that conversation
+    // so we receive any in-flight stream (broadcast) and stay in sync
     if (wasInChat && activeConversationId != null) {
-      // Check if we still have the conversation loaded
-      if (state.activeConversation?.id != activeConversationId) {
-        // Conversation was lost, reload it
-        debugPrint('Reloading conversation after reconnect: $activeConversationId');
-        wsClient.send(ClientCommand.loadConversation(activeConversationId));
-      }
+      debugPrint('Re-subscribing to conversation after reconnect: $activeConversationId');
+      wsClient.send(ClientCommand.loadConversation(activeConversationId));
     }
   }
 

@@ -9,6 +9,7 @@ use crate::{
     llm::context_manager::SmartContextManager,
     prompts::PromptManager,
     services::{ContextService, MessageConverter},
+    server::conversation_subscriptions::ConnectionId,
     server::dto::{
         ClientCommand, ConversationSummary, ConversationView, MessageView, PlannedToolView,
         SearchResult, ServerEvent,
@@ -34,6 +35,7 @@ pub struct ServerContext {
     pub prompt_manager: PromptManager,
     pub storage: Arc<Mutex<Storage>>,
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
+    pub subscriptions: Arc<crate::server::conversation_subscriptions::ConversationSubscriptions>,
 }
 
 pub struct SessionState {
@@ -86,14 +88,20 @@ impl SessionState {
 pub struct ServerHandler {
     pub ctx: Arc<ServerContext>,
     pub session: SessionState,
+    pub connection_id: ConnectionId,
     outbound: UnboundedSender<ServerEvent>,
 }
 
 impl ServerHandler {
-    pub fn new(ctx: Arc<ServerContext>, outbound: UnboundedSender<ServerEvent>) -> Result<Self> {
+    pub fn new(
+        ctx: Arc<ServerContext>,
+        connection_id: ConnectionId,
+        outbound: UnboundedSender<ServerEvent>,
+    ) -> Result<Self> {
         Ok(Self {
             session: SessionState::new(&ctx.config)?,
             ctx,
+            connection_id,
             outbound,
         })
     }
@@ -186,7 +194,13 @@ impl ServerHandler {
             
             // Track this as the active conversation
             self.session.active_conversation_id = Some(uuid);
-            
+
+            // Subscribe this connection to conversation-scoped events (broadcast)
+            self.ctx
+                .subscriptions
+                .set_viewing(self.connection_id, Some(uuid), self.outbound.clone())
+                .await;
+
             let view = to_conversation_view(&conv);
             let _ = self
                 .outbound
@@ -329,6 +343,16 @@ impl ServerHandler {
         let _ = self.outbound.send(ServerEvent::MessageAccepted {
             conversation_id: conversation_uuid.to_string(),
         });
+
+        // Subscribe this connection so it (and any other viewer) receives broadcast events
+        self.ctx
+            .subscriptions
+            .set_viewing(
+                self.connection_id,
+                Some(conversation_uuid),
+                self.outbound.clone(),
+            )
+            .await;
 
         let profile = self.session.active_profile(&self.ctx.config)?.clone();
         let mut llm_messages = self.build_llm_messages(conversation_uuid).await?;
@@ -501,32 +525,36 @@ impl ServerHandler {
             );
         }
 
-        let outbound = self.outbound.clone();
+        let subscriptions = self.ctx.subscriptions.clone();
         let llm_client = self.session.llm_client.clone();
         let mcp_registry = self.ctx.mcp_registry.clone();
         let timeout = Duration::from_secs(self.ctx.server_cfg.stream_timeout_secs);
-        let conversation_key = conversation_uuid.to_string();
         let storage = self.ctx.storage.clone();
         let convo_for_persistence = conversation_uuid;
 
         let handle = tokio::spawn(async move {
             let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel::<AgentUpdate>();
             let mut loop_engine = AgenticLoop::new(mcp_registry, llm_client);
-            let outbound_clone = outbound.clone();
+            let subs = subscriptions.clone();
             let stream_task = tokio::spawn(async move {
                 let mut persistence = PersistenceContext::new(storage, convo_for_persistence);
                 while let Some(update) = agent_rx.recv().await {
                     if let Err(err) = process_agent_update(
-                        &outbound_clone,
-                        &conversation_key,
+                        &subs,
+                        convo_for_persistence,
                         &mut persistence,
                         update,
                     )
                     .await
                     {
-                        let _ = outbound_clone.send(ServerEvent::Error {
-                            message: err.to_string(),
-                        });
+                        let _ = subs
+                            .broadcast(
+                                convo_for_persistence,
+                                ServerEvent::Error {
+                                    message: err.to_string(),
+                                },
+                            )
+                            .await;
                     }
                 }
             });
@@ -540,14 +568,24 @@ impl ServerHandler {
             match result {
                 Ok(Ok(_)) => {}
                 Ok(Err(err)) => {
-                    let _ = outbound.send(ServerEvent::Error {
-                        message: err.to_string(),
-                    });
+                    subscriptions
+                        .broadcast(
+                            convo_for_persistence,
+                            ServerEvent::Error {
+                                message: err.to_string(),
+                            },
+                        )
+                        .await;
                 }
                 Err(elapsed) => {
-                    let _ = outbound.send(ServerEvent::Error {
-                        message: format!("Streaming timeout after {:?}", elapsed),
-                    });
+                    subscriptions
+                        .broadcast(
+                            convo_for_persistence,
+                            ServerEvent::Error {
+                                message: format!("Streaming timeout after {:?}", elapsed),
+                            },
+                        )
+                        .await;
                 }
             }
 
@@ -628,19 +666,25 @@ impl ServerHandler {
     }
 
     async fn handle_stop_streaming(&mut self, conversation_id: Option<String>) -> Result<()> {
-        // Abort all inflight tasks
+        // Abort all inflight tasks started by this connection
         let mut handles = Vec::new();
         std::mem::swap(&mut handles, &mut self.session.inflight);
-        
+
         for handle in handles {
             handle.abort();
         }
-        
-        let conv_id = conversation_id.unwrap_or_else(|| "unknown".to_string());
-        let _ = self.outbound.send(ServerEvent::StreamingStopped {
-            conversation_id: conv_id,
-        });
-        
+
+        let conv_id_str = conversation_id.unwrap_or_else(|| "unknown".to_string());
+        let event = ServerEvent::StreamingStopped {
+            conversation_id: conv_id_str.clone(),
+        };
+        // Notify this connection
+        let _ = self.outbound.send(event.clone());
+        // Broadcast so all viewers of this conversation see the stop
+        if let Ok(uuid) = Uuid::parse_str(&conv_id_str) {
+            self.ctx.subscriptions.broadcast(uuid, event).await;
+        }
+
         Ok(())
     }
 
@@ -785,37 +829,60 @@ impl PersistenceContext {
 }
 
 async fn process_agent_update(
-    outbound: &UnboundedSender<ServerEvent>,
-    conversation_id: &str,
+    subscriptions: &std::sync::Arc<
+        crate::server::conversation_subscriptions::ConversationSubscriptions,
+    >,
+    conversation_id: Uuid,
     persistence: &mut PersistenceContext,
     update: AgentUpdate,
 ) -> Result<()> {
+    let cid = conversation_id.to_string();
     match update {
         AgentUpdate::AssistantStreamingStarted => {
-            let _ = outbound.send(ServerEvent::StreamingStarted {
-                conversation_id: conversation_id.to_string(),
-            });
+            subscriptions
+                .broadcast(
+                    conversation_id,
+                    ServerEvent::StreamingStarted {
+                        conversation_id: cid.clone(),
+                    },
+                )
+                .await;
         }
         AgentUpdate::AssistantDelta { text_chunk, seq } => {
-            let _ = outbound.send(ServerEvent::AssistantDelta {
-                conversation_id: conversation_id.to_string(),
-                chunk: text_chunk,
-                seq,
-            });
+            subscriptions
+                .broadcast(
+                    conversation_id,
+                    ServerEvent::AssistantDelta {
+                        conversation_id: cid.clone(),
+                        chunk: text_chunk,
+                        seq,
+                    },
+                )
+                .await;
         }
         AgentUpdate::ReasoningContentDelta { chunk } => {
-            let _ = outbound.send(ServerEvent::ReasoningContentDelta {
-                conversation_id: conversation_id.to_string(),
-                chunk,
-            });
+            subscriptions
+                .broadcast(
+                    conversation_id,
+                    ServerEvent::ReasoningContentDelta {
+                        conversation_id: cid.clone(),
+                        chunk,
+                    },
+                )
+                .await;
         }
         AgentUpdate::AssistantComplete { full_text, reasoning_content } => {
             persistence.persist_assistant(&full_text, reasoning_content.as_deref()).await?;
-            let _ = outbound.send(ServerEvent::AssistantComplete {
-                conversation_id: conversation_id.to_string(),
-                content: full_text,
-                reasoning_content: reasoning_content.clone(),
-            });
+            subscriptions
+                .broadcast(
+                    conversation_id,
+                    ServerEvent::AssistantComplete {
+                        conversation_id: cid.clone(),
+                        content: full_text,
+                        reasoning_content: reasoning_content.clone(),
+                    },
+                )
+                .await;
         }
         AgentUpdate::ToolPlanned { plan_items } => {
             persistence.register_tools(&plan_items);
@@ -831,10 +898,15 @@ async fn process_agent_update(
                         })
                 })
                 .collect();
-            let _ = outbound.send(ServerEvent::ToolPlanned {
-                conversation_id: conversation_id.to_string(),
-                tools: converted,
-            });
+            subscriptions
+                .broadcast(
+                    conversation_id,
+                    ServerEvent::ToolPlanned {
+                        conversation_id: cid.clone(),
+                        tools: converted,
+                    },
+                )
+                .await;
         }
         AgentUpdate::ToolStarted {
             tool_call_id,
@@ -844,12 +916,17 @@ async fn process_agent_update(
             persistence.mark_tool_started(&tool_call_id, &params_json);
             let params_value =
                 serde_json::from_str::<Value>(&params_json).unwrap_or(Value::String(params_json));
-            let _ = outbound.send(ServerEvent::ToolStarted {
-                conversation_id: conversation_id.to_string(),
-                tool_call_id,
-                name,
-                params_json: params_value,
-            });
+            subscriptions
+                .broadcast(
+                    conversation_id,
+                    ServerEvent::ToolStarted {
+                        conversation_id: cid.clone(),
+                        tool_call_id,
+                        name,
+                        params_json: params_value,
+                    },
+                )
+                .await;
         }
         AgentUpdate::ToolResult {
             tool_call_id,
@@ -861,12 +938,17 @@ async fn process_agent_update(
                 .await?;
             let result_value = serde_json::from_str::<Value>(&result_json)
                 .unwrap_or(Value::String(result_json.clone()));
-            let _ = outbound.send(ServerEvent::ToolResult {
-                conversation_id: conversation_id.to_string(),
-                tool_call_id,
-                name,
-                result_json: result_value,
-            });
+            subscriptions
+                .broadcast(
+                    conversation_id,
+                    ServerEvent::ToolResult {
+                        conversation_id: cid.clone(),
+                        tool_call_id,
+                        name,
+                        result_json: result_value,
+                    },
+                )
+                .await;
         }
         AgentUpdate::ToolError {
             tool_call_id,
@@ -877,20 +959,32 @@ async fn process_agent_update(
             persistence
                 .persist_tool_result(&tool_call_id, &name, &error, "error")
                 .await?;
-            let _ = outbound.send(ServerEvent::ToolError {
-                conversation_id: conversation_id.to_string(),
-                tool_call_id,
-                name,
-                error,
-            });
+            subscriptions
+                .broadcast(
+                    conversation_id,
+                    ServerEvent::ToolError {
+                        conversation_id: cid.clone(),
+                        tool_call_id,
+                        name,
+                        error,
+                    },
+                )
+                .await;
         }
         AgentUpdate::ConversationComplete { .. } => {
-            let _ = outbound.send(ServerEvent::ConversationComplete {
-                conversation_id: conversation_id.to_string(),
-            });
+            subscriptions
+                .broadcast(
+                    conversation_id,
+                    ServerEvent::ConversationComplete {
+                        conversation_id: cid.clone(),
+                    },
+                )
+                .await;
         }
         AgentUpdate::ModelError { error } => {
-            let _ = outbound.send(ServerEvent::Error { message: error });
+            subscriptions
+                .broadcast(conversation_id, ServerEvent::Error { message: error })
+                .await;
         }
     }
     Ok(())
