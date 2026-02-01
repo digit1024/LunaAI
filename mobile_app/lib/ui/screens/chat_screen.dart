@@ -521,6 +521,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final config = ref.watch(serverConfigProvider);
     final heading = state.activeConversation?.title ?? 'AI Chat';
 
+    ref.listen<String?>(
+      appControllerProvider.select((s) => s.infoMessage),
+      (_, infoMessage) {
+        if (infoMessage != null && infoMessage.isNotEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(infoMessage)),
+          );
+          controller.clearInfoMessage();
+        }
+      },
+    );
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(

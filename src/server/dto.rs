@@ -48,6 +48,10 @@ pub enum ServerEvent {
     Error {
         message: String,
     },
+    /// Informational message (e.g. context truncation) – show as toast, do not treat as error.
+    Info {
+        message: String,
+    },
     ConversationCreated {
         conversation_id: String,
     },

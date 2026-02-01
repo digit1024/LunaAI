@@ -73,6 +73,18 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
     final controller = ref.read(appControllerProvider.notifier);
     final config = ref.watch(serverConfigProvider);
 
+    ref.listen<String?>(
+      appControllerProvider.select((s) => s.infoMessage),
+      (_, infoMessage) {
+        if (infoMessage != null && infoMessage.isNotEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(infoMessage)),
+          );
+          controller.clearInfoMessage();
+        }
+      },
+    );
+
     // Update offset and hasMore when conversations change
     final currentCount = state.conversations.length;
     

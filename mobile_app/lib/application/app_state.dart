@@ -153,6 +153,8 @@ class ToolCallChip extends Equatable {
 }
 
 class AppState extends Equatable {
+  static const Object _infoMessageUnset = Object();
+
   final ConnectionStatus connection;
   final ActivePane pane;
   final List<ConversationSummary> conversations;
@@ -163,6 +165,8 @@ class AppState extends Equatable {
   final bool streaming;
   final bool backgrounded;
   final String? error;
+  /// Informational message to show as toast (e.g. context truncation). Cleared after display.
+  final String? infoMessage;
   final List<String> availableProfiles;
   final String defaultProfile;
   final String currentProfile; // Current server profile (from server, not config)
@@ -183,6 +187,7 @@ class AppState extends Equatable {
     required this.streaming,
     required this.backgrounded,
     required this.error,
+    required this.infoMessage,
     required this.availableProfiles,
     required this.defaultProfile,
     required this.currentProfile,
@@ -203,6 +208,7 @@ class AppState extends Equatable {
         streaming: false,
         backgrounded: false,
         error: null,
+        infoMessage: null,
         availableProfiles: [],
         defaultProfile: '',
         currentProfile: '',
@@ -223,6 +229,7 @@ class AppState extends Equatable {
     bool? streaming,
     bool? backgrounded,
     String? error,
+    Object? infoMessage = _infoMessageUnset,
     List<String>? availableProfiles,
     String? defaultProfile,
     String? currentProfile,
@@ -242,6 +249,9 @@ class AppState extends Equatable {
       streaming: streaming ?? this.streaming,
       backgrounded: backgrounded ?? this.backgrounded,
       error: error,
+      infoMessage: identical(infoMessage, _infoMessageUnset)
+          ? this.infoMessage
+          : infoMessage as String?,
       availableProfiles: availableProfiles ?? this.availableProfiles,
       defaultProfile: defaultProfile ?? this.defaultProfile,
       currentProfile: currentProfile ?? this.currentProfile,
@@ -264,6 +274,7 @@ class AppState extends Equatable {
         streaming,
         backgrounded,
         error,
+        infoMessage,
         availableProfiles,
         defaultProfile,
         currentProfile,

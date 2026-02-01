@@ -12,6 +12,8 @@ sealed class ServerEvent {
         );
       case 'error':
         return ErrorEvent(json['message'] as String? ?? 'Unknown error');
+      case 'info':
+        return InfoEvent(json['message'] as String? ?? '');
       case 'conversation_created':
         return ConversationCreatedEvent(json['conversation_id'] as String);
       case 'conversation_loaded':
@@ -108,6 +110,11 @@ class HealthOkEvent extends ServerEvent {
 class ErrorEvent extends ServerEvent {
   final String message;
   const ErrorEvent(this.message);
+}
+
+class InfoEvent extends ServerEvent {
+  final String message;
+  const InfoEvent(this.message);
 }
 
 class ConversationCreatedEvent extends ServerEvent {

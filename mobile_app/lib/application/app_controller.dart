@@ -218,6 +218,11 @@ class AppController extends Notifier<AppState> {
     state = state.copyWith(pane: ActivePane.setup);
   }
 
+  /// Clear the info toast message after it has been shown.
+  void clearInfoMessage() {
+    state = state.copyWith(infoMessage: null);
+  }
+
   void openSettings() {
     state = state.copyWith(pane: ActivePane.setup);
   }
@@ -457,7 +462,7 @@ class AppController extends Notifier<AppState> {
         wsClient.send(ClientCommand.listConversations(limit: 10));
       }
     } else if (event is ErrorEvent) {
-      // Error might indicate stream timeout - reset streaming state
+      // Real errors only – conversation-breaking (model error, invalid command, etc.)
       if (state.streaming) {
         wsClient.setStreaming(false);
       }
@@ -467,6 +472,9 @@ class AppController extends Notifier<AppState> {
         pane: ActivePane.setup,
         streaming: false,
       );
+    } else if (event is InfoEvent) {
+      // Informational (e.g. context truncation) – show as toast, stay on current screen
+      state = state.copyWith(infoMessage: event.message);
     } else if (event is ConversationsListEvent) {
       final sorted = [...event.conversations]
         ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));

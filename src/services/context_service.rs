@@ -299,7 +299,14 @@ impl ContextService {
             .filter(|msg| !msg.is_summary && !msg.is_summarized && msg.role != "tool")
             .collect();
 
-        let keep_recent_count = 10;
+        // Keep fewer recent messages when context is small so that after summarization we stay
+        // below the threshold (summary + recent messages). Otherwise we'd hit the threshold
+        // every message and trigger truncation toasts every time.
+        const SUMMARY_TOKEN_ESTIMATE: usize = 2000;
+        const AVG_TOKENS_PER_MESSAGE: usize = 400;
+        let keep_recent_count = (summarize_threshold_tokens.saturating_sub(SUMMARY_TOKEN_ESTIMATE))
+            .saturating_div(AVG_TOKENS_PER_MESSAGE)
+            .clamp(3, 10);
         let messages_to_summarize_count = regular_messages.len().saturating_sub(keep_recent_count);
 
         if messages_to_summarize_count == 0 {
@@ -317,18 +324,22 @@ impl ContextService {
             "Will summarize messages"
         );
 
-        // Get IDs to summarize
-        let ids_to_summarize: Vec<i64> = regular_messages[..messages_to_summarize_count]
+        // IDs of user/assistant messages we will summarize (oldest N)
+        let ids_to_summarize: std::collections::HashSet<i64> = regular_messages
+            [..messages_to_summarize_count]
             .iter()
             .map(|msg| msg.id)
             .collect();
 
-        // Get full messages to summarize
-        let msgs_to_summarize: Vec<_> = db_messages
+        // Include all messages from the start up to and including the last summarized message,
+        // so tool calls and results in that range are included in the summary (chronological order).
+        let last_index = db_messages
             .iter()
-            .filter(|msg| ids_to_summarize.contains(&msg.id))
-            .cloned()
-            .collect();
+            .rposition(|m| ids_to_summarize.contains(&m.id))
+            .ok_or_else(|| {
+                anyhow::anyhow!("No message in db_messages matched ids_to_summarize (should not happen)")
+            })?;
+        let msgs_to_summarize: Vec<_> = db_messages[0..=last_index].to_vec();
 
         // Convert to LlmMessage for summarization using MessageConverter
         use crate::services::MessageConverter;
@@ -355,7 +366,7 @@ impl ContextService {
             "Summary generated"
         );
 
-        // Perform database summarization
+        // Perform database summarization (marks all msgs_to_summarize as summarized, including tools)
         {
             let storage_guard = storage.lock().await;
             storage_guard
@@ -422,7 +433,14 @@ impl ContextService {
             .filter(|msg| !msg.is_summary && !msg.is_summarized && msg.role != "tool")
             .collect();
 
-        let keep_recent_count = 10;
+        // Keep fewer recent messages when context is small so that after summarization we stay
+        // below the threshold (summary + recent messages). Otherwise we'd hit the threshold
+        // every message and trigger truncation toasts every time.
+        const SUMMARY_TOKEN_ESTIMATE: usize = 2000;
+        const AVG_TOKENS_PER_MESSAGE: usize = 400;
+        let keep_recent_count = (summarize_threshold_tokens.saturating_sub(SUMMARY_TOKEN_ESTIMATE))
+            .saturating_div(AVG_TOKENS_PER_MESSAGE)
+            .clamp(3, 10);
         let messages_to_summarize_count = regular_messages.len().saturating_sub(keep_recent_count);
 
         if messages_to_summarize_count == 0 {
@@ -440,18 +458,22 @@ impl ContextService {
             "Will summarize messages"
         );
 
-        // Get IDs to summarize
-        let ids_to_summarize: Vec<i64> = regular_messages[..messages_to_summarize_count]
+        // IDs of user/assistant messages we will summarize (oldest N)
+        let ids_to_summarize: std::collections::HashSet<i64> = regular_messages
+            [..messages_to_summarize_count]
             .iter()
             .map(|msg| msg.id)
             .collect();
 
-        // Get full messages to summarize
-        let msgs_to_summarize: Vec<_> = db_messages
+        // Include all messages from the start up to and including the last summarized message,
+        // so tool calls and results in that range are included in the summary (chronological order).
+        let last_index = db_messages
             .iter()
-            .filter(|msg| ids_to_summarize.contains(&msg.id))
-            .cloned()
-            .collect();
+            .rposition(|m| ids_to_summarize.contains(&m.id))
+            .ok_or_else(|| {
+                anyhow::anyhow!("No message in db_messages matched ids_to_summarize (should not happen)")
+            })?;
+        let msgs_to_summarize: Vec<_> = db_messages[0..=last_index].to_vec();
 
         // Convert to LlmMessage for summarization using MessageConverter
         use crate::services::MessageConverter;

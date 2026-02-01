@@ -93,13 +93,14 @@ impl Storage {
                 })
                 .collect();
 
+            let updated_at_secs = db_conv.last_message.unwrap_or(db_conv.created_at);
             let conversation = FileConversation {
                 id: *id,
                 title: db_conv.title,
                 created_at: DateTime::from_timestamp(db_conv.created_at, 0)
                     .unwrap_or_else(Utc::now),
-                updated_at: DateTime::from_timestamp(db_conv.created_at, 0)
-                    .unwrap_or_else(Utc::now), // SQLite doesn't track updated_at yet
+                updated_at: DateTime::from_timestamp(updated_at_secs, 0)
+                    .unwrap_or_else(Utc::now),
                 messages: stored_messages,
                 turns: Vec::new(), // Turns are not yet migrated to SQLite
                 profile_name: db_conv.profile_name.clone(),
@@ -167,12 +168,13 @@ impl Storage {
                 })
                 .collect();
 
+            let updated_at_secs = db_conv.last_message.unwrap_or(db_conv.created_at);
             let conversation = FileConversation {
                 id,
                 title: db_conv.title,
                 created_at: DateTime::from_timestamp(db_conv.created_at, 0)
                     .unwrap_or_else(Utc::now),
-                updated_at: DateTime::from_timestamp(db_conv.created_at, 0)
+                updated_at: DateTime::from_timestamp(updated_at_secs, 0)
                     .unwrap_or_else(Utc::now),
                 messages: stored_messages,
                 turns: Vec::new(), // Turns are not yet migrated to SQLite

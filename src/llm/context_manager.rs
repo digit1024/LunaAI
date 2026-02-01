@@ -303,7 +303,10 @@ impl SmartContextManager {
             return Err(LlmError::Config("Cannot summarize empty message list".into()));
         }
 
-        // Build a formatted representation of messages for summarization
+        // Max length for tool result content in the summarization input (save tokens)
+        const TOOL_CONTENT_MAX_CHARS: usize = 800;
+
+        // Build a formatted representation of messages for summarization (include tool calls/results)
         let mut conversation_text = String::new();
         for msg in &messages_to_summarize {
             let role_str = match msg.role {
@@ -312,9 +315,14 @@ impl SmartContextManager {
                 Role::System => "System",
                 Role::Tool => "Tool",
             };
-            conversation_text.push_str(&format!("[{}]: {}\n\n", role_str, msg.content));
-            
-            // Include tool calls if present
+            let content = if msg.role == Role::Tool && msg.content.len() > TOOL_CONTENT_MAX_CHARS {
+                format!("{}... [truncated]", &msg.content[..TOOL_CONTENT_MAX_CHARS])
+            } else {
+                msg.content.clone()
+            };
+            conversation_text.push_str(&format!("[{}]: {}\n\n", role_str, content));
+
+            // Include tool calls if present (assistant requested tools)
             if let Some(tool_calls) = &msg.tool_calls {
                 for tool_call in tool_calls {
                     conversation_text.push_str(&format!(
@@ -326,12 +334,13 @@ impl SmartContextManager {
             }
         }
 
-        // Build summarization prompt
+        // Build summarization prompt: include tool usage briefly, save tokens
         let prompt = format!(
-            "Summarize the following conversation history concisely. \
-            Preserve key facts, decisions, and important context. \
-            Keep tool call results if they contain important data. \
-            Focus on maintaining continuity for future conversation.\n\n\
+            "Summarize the following conversation history in a compact way to save tokens. \
+            Include: key facts, decisions, and what matters for future turns. \
+            For tool calls and results: mention which tools were used and the outcome in one short line each (e.g. \"Used search: found X\"; \"Read file Y: key point Z\"). \
+            Do not copy long tool output verbatim; compress to the essential result. \
+            Goal: preserve continuity and context in as few tokens as possible.\n\n\
             Conversation:\n{}",
             conversation_text
         );

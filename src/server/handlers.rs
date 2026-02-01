@@ -448,8 +448,8 @@ impl ServerHandler {
                 "Emergency truncation: messages and tokens reduced"
             );
             
-            // Notify user about truncation
-            let _ = self.outbound.send(ServerEvent::Error {
+            // Notify user about truncation (info, not error – conversation continues)
+            let _ = self.outbound.send(ServerEvent::Info {
                 message: format!(
                     "Context exceeded limit! Truncated: {} messages -> {} messages ({} tokens)",
                     original_count,
@@ -478,8 +478,8 @@ impl ServerHandler {
                 selected_tokens
             );
             
-            // Notify user about truncation
-            let _ = self.outbound.send(ServerEvent::Error {
+            // Notify user about truncation (info, not error – conversation continues)
+            let _ = self.outbound.send(ServerEvent::Info {
                 message: format!(
                     "Context truncated: {} messages selected from {} ({} tokens used)",
                     selected_count,
