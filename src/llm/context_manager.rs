@@ -266,6 +266,22 @@ impl SmartContextManager {
         // Combine selected messages
         selected.extend(additional_messages);
 
+        // Third pass: Remove orphaned tool results (tool result whose assistant wasn't added due to budget).
+        // Otherwise we'd send a tool result with tool_call_id that has no preceding assistant tool_call -> API "tool_call_id not found".
+        let selected_tool_call_ids: std::collections::HashSet<String> = selected
+            .iter()
+            .flat_map(|m| m.message.tool_calls.as_deref().unwrap_or(&[]).iter())
+            .map(|tc| tc.id.clone())
+            .collect();
+        selected.retain(|m| {
+            if let Some(ref tid) = m.tool_call_id {
+                if !selected_tool_call_ids.contains(tid) {
+                    return false; // drop orphaned tool result
+                }
+            }
+            true
+        });
+
         // Sort selected messages back to original order
         selected.sort_by_key(|m| m.index);
 
