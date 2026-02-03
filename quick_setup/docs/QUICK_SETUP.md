@@ -75,7 +75,7 @@ sqlite_busy_timeout_ms = 5000
 | Server | Purpose | Command / env |
 |--------|--------|----------------|
 | shell | Safe shell commands | `uvx mcp-shell-server`, `ALLOW_COMMANDS` |
-| cosmic-llm-memory | Luna history + memory | `mcp_luna_history`, `COSMIC_LLM_DB_PATH` |
+| cosmic-llm-memory | Luna history + memory | `mcp_luna_history`, `COSMIC_LLM_DB_PATH`. Binary: [releases](https://github.com/digit1024/mcp_luna_memory/releases/download/1.0/mcp_luna_history) |
 | skills | Agent skills | `uvx agent-skills-mcp`, `SKILL_FOLDER`, `MODE=tool` |
 | filesystem | Read/write files | `npx @modelcontextprotocol/server-filesystem`, home dir |
 | fetch | Fetch URL → markdown | `uvx mcp-server-fetch` |

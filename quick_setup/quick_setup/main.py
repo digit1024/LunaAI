@@ -160,8 +160,14 @@ def _ask_server() -> tuple[str, int, str]:
     return host, port, api_key
 
 
+# Luna MCP Memory server: release binary (no build required)
+MCP_LUNA_MEMORY_RELEASE_URL = "https://github.com/digit1024/mcp_luna_memory/releases/download/1.0/mcp_luna_history"
+
+
 def _ask_mcp_memory_path() -> str:
-    default = str(paths.cosmic_llm_dir().parent / "mcp_luna_memory" / "target" / "release" / "mcp_luna_history")
+    default_dir = paths.cosmic_llm_dir() / "bin"
+    default = str(default_dir / "mcp_luna_history")
+    print(f"  Download binary if needed: {MCP_LUNA_MEMORY_RELEASE_URL}")
     raw = input(f"  Path to mcp_luna_history binary [{default}]: ").strip() or default
     return raw
 

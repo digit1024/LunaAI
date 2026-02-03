@@ -38,7 +38,7 @@ Analysis of [awesome-mcp-servers](https://github.com/punkpeye/awesome-mcp-server
 | **Brave Search** | API key | Web search. |
 | **GitHub** (official) | Token | Repos, PRs, issues. |
 | **Postgres / SQLite** (official) | Connection string / path | DB queries. |
-| **cosmic-llm-memory / Luna memory** | Binary path | Conversation memory; added separately in quick_setup. |
+| **cosmic-llm-memory / Luna memory** | Binary path | Conversation memory; added separately in quick_setup. Binary: [mcp_luna_history (v1.0)](https://github.com/digit1024/mcp_luna_memory/releases/download/1.0/mcp_luna_history). |
 
 ---
 

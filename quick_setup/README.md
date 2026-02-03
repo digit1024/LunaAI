@@ -36,7 +36,7 @@ luna-quick-setup
 ## Catalog & sample data
 
 - **Providers/models**: `catalog/providers_models.json` – providers, models, endpoints, suggested default model, context window sizes.
-- **MCP servers**: `catalog/mcp_servers.json` – **no-setup only** (no API keys, no connection strings). Listed: shell, filesystem, fetch, skills, git, memory, markitdown. See `docs/MCP_SERVERS_CURATED.md` for the curated list (from awesome-mcp-servers). Luna memory is added separately when you provide the binary path.
+- **MCP servers**: `catalog/mcp_servers.json` – **no-setup only** (no API keys, no connection strings). Listed: shell, filesystem, fetch, skills, git, memory, markitdown. See `docs/MCP_SERVERS_CURATED.md` for the curated list (from awesome-mcp-servers). Luna memory is added separately when you provide the binary path (download: [mcp_luna_history v1.0](https://github.com/digit1024/mcp_luna_memory/releases/download/1.0/mcp_luna_history)).
 - **Sample personas**: `sample_data/personas/` – `luna.md`, `vera.md`, `jude.md`.
 
 ## Project layout
