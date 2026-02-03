@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "luna-quick-setup"
+version = "0.1.0"
+description = "Opinionated quick configuration for Luna AI (server + thin_ui)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["toml>=0.10.2", "pytest>=7.0.0"]
+
+[project.scripts]
+luna-quick-setup = "quick_setup.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["quick_setup*"]

@@ -1,0 +1,63 @@
+{
+  "_comment": "Catalog validated for February 2026. Model IDs match provider APIs; update periodically.",
+  "providers": {
+    "openai": {
+      "label": "OpenAI",
+      "backend": "openai",
+      "endpoint": "https://api.openai.com/v1",
+      "default_model_id": "gpt-4.1-mini",
+      "models": [
+        { "id": "gpt-5.2", "label": "GPT-5.2", "context_window": 128000, "note": "Flagship, coding & agents" },
+        { "id": "gpt-5-mini", "label": "GPT-5 Mini", "context_window": 128000, "note": "Faster, cheaper" },
+        { "id": "gpt-4.1-mini", "label": "GPT-4.1 Mini", "context_window": 128000, "note": "Fast & cheap, recommended default" },
+        { "id": "gpt-4.1", "label": "GPT-4.1", "context_window": 128000, "note": "Best balance" },
+        { "id": "gpt-4o-mini", "label": "GPT-4o Mini", "context_window": 128000, "note": "Legacy option" }
+      ]
+    },
+    "claude": {
+      "label": "Anthropic Claude",
+      "backend": "anthropic",
+      "endpoint": "https://api.anthropic.com",
+      "default_model_id": "claude-sonnet-4-5",
+      "models": [
+        { "id": "claude-opus-4-5-20251101", "label": "Claude Opus 4.5", "context_window": 200000, "note": "Most capable" },
+        { "id": "claude-sonnet-4-5", "label": "Claude Sonnet 4.5", "context_window": 200000, "note": "Best for coding/agents, recommended default" },
+        { "id": "claude-3-5-haiku-20241022", "label": "Claude 3.5 Haiku", "context_window": 200000, "note": "Faster, cheaper" }
+      ]
+    },
+    "gemini": {
+      "label": "Google Gemini",
+      "backend": "gemini",
+      "endpoint": "https://generativelanguage.googleapis.com",
+      "default_model_id": "gemini-2.5-flash",
+      "models": [
+        { "id": "gemini-3-flash-preview", "label": "Gemini 3 Flash", "context_window": 1048576, "note": "Newest, fast" },
+        { "id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash", "context_window": 1048576, "note": "Best price/performance, recommended default" },
+        { "id": "gemini-2.5-pro", "label": "Gemini 2.5 Pro", "context_window": 1048576, "note": "Higher quality" },
+        { "id": "gemini-2.0-flash", "label": "Gemini 2.0 Flash", "context_window": 1048576, "note": "Stable GA" }
+      ]
+    },
+    "deepseek": {
+      "label": "DeepSeek",
+      "backend": "deepseek",
+      "endpoint": "https://api.deepseek.com",
+      "default_model_id": "deepseek-chat",
+      "models": [
+        { "id": "deepseek-chat", "label": "DeepSeek Chat (V3.2)", "context_window": 131072, "note": "Recommended default" },
+        { "id": "deepseek-reasoner", "label": "DeepSeek Reasoner", "context_window": 131072, "note": "Thinking mode" }
+      ]
+    },
+    "openrouter": {
+      "label": "OpenRouter (many models)",
+      "backend": "openrouter",
+      "endpoint": "https://openrouter.ai/api/v1",
+      "default_model_id": "mistralai/mixtral-8x22b-instruct",
+      "models": [
+        { "id": "deepseek/deepseek-chat", "label": "DeepSeek Chat (via OpenRouter)", "context_window": 163840, "note": "Best value, ~90% GPT-5.1 at 1/50 cost" },
+        { "id": "mistralai/mixtral-8x22b-instruct", "label": "Mixtral 8x22B Instruct", "context_window": 65536, "note": "Mistral default, strong coding" },
+        { "id": "mistralai/devstral-2", "label": "Mistral Devstral 2", "context_window": 256000, "note": "Free tier, agentic coding" },
+        { "id": "mistralai/mixtral-8x7b-instruct", "label": "Mixtral 8x7B Instruct", "context_window": 32768, "note": "Lighter Mistral" }
+      ]
+    }
+  }
+}

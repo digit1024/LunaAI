@@ -8,3 +8,4 @@ mcp_server.log
 __pycache__/trigger.cpython-312.pyc
 telegram-bridge.env
 cloudflared-config.yml
+quick_setup/.venv
