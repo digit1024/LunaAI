@@ -109,6 +109,6 @@ flowchart TD
 | **F1** – Warn when `api_key` is empty for backends that require it | ✅ Done: warn after asking API key (except ollama) |
 | **F6** – If MCP catalog missing/empty, print clear message | ✅ Done: "MCP catalog not found..." / "MCP catalog is empty..." |
 | **F8** – Dedupe MCP selected_ids | ✅ Done: list(dict.fromkeys(...)) |
-| **F4** – Validate port 1–65535 | Not done |
-| **F5** – Document or ask re thin_ui host | Not done |
-| **F7** – Load catalogs earlier to fail fast | Not done |
+| **F4** – Validate port 1–65535 | ✅ Done: _clamp_port in main + server_config; user port adjusted with message |
+| **F5** – Document or ask re thin_ui host | ✅ Done: runtime message when host=0.0.0.0; README documents remote edit |
+| **F7** – Load catalogs earlier to fail fast | ✅ Done: _load_catalog() right after deps output, before "Continue anyway?" |

@@ -141,12 +141,19 @@ def _ask_profile_name(suggested: str) -> str:
     return raw.strip() or suggested
 
 
+def _clamp_port(port: int) -> int:
+    """Ensure port is in valid range 1-65535."""
+    return max(1, min(65535, port))
+
+
 def _ask_server() -> tuple[str, int, str]:
     print("\n  Server API (Luna backend):")
     host = input("  Host [0.0.0.0]: ").strip() or "0.0.0.0"
     port_raw = input("  Port [8080]: ").strip() or "8080"
     try:
-        port = int(port_raw)
+        port = _clamp_port(int(port_raw))
+        if port != int(port_raw):
+            print("  Port adjusted to valid range 1-65535.")
     except ValueError:
         port = 8080
     api_key = input("  Server API key (optional): ").strip()
@@ -199,20 +206,45 @@ def _ask_mcp_servers_from_catalog() -> tuple[list[str], bool, str | None]:
     return selected_ids, add_luna, luna_bin
 
 
+def _ensure_toml() -> None:
+    """Ensure the 'toml' package is available; try to install if missing."""
+    try:
+        import toml  # noqa: F401
+        return
+    except ImportError:
+        pass
+    print("  Python package 'toml' required for writing config. Installing...")
+    import subprocess
+    r = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "toml"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if r.returncode == 0:
+        print("  ✓ toml installed")
+        return
+    print("  Could not install toml. Run: pip install toml")
+    print("  Then run this setup again.")
+    sys.exit(1)
+
+
 def run() -> None:
     print("  Luna AI Quick Setup")
     print("  —————————————————")
+    _ensure_toml()
     # Ensure commands needed for MCP (uvx, npx) are installed
     required = commands_required_for_mcp_catalog()
     print("\n  Checking dependencies (uvx, npx for MCP):")
     all_ok, msgs = ensure_commands(required, install=True)
     for m in msgs:
         print(m)
+    # Load catalog early so missing file fails before any other prompts (F7)
+    catalog = _load_catalog()
     if not all_ok:
         print("  Some tools are missing. You can still continue; MCP servers that need them will fail until installed.")
         if input("  Continue anyway? [Y/n]: ").strip().lower() in ("n", "no"):
             sys.exit(1)
-    catalog = _load_catalog()
     sample_root = _sample_data_root()
 
     # 1) Provider & model & API key
@@ -265,6 +297,8 @@ def run() -> None:
     connect_host = thin_ui_connect_host(host)
     print("  Server section written to config.toml.")
     print(f"  Thin UI configured: {thin_ui_path} → {connect_host}:{port} (run luna-thin to connect).")
+    if host.strip() == "0.0.0.0":
+        print("  (Thin UI uses localhost → same-machine only; for remote access edit server_config.toml host.)")
 
     # 4b) Install self_config skill (for skills MCP server)
     ok, msg = install_self_config_skill(_project_root())

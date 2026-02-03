@@ -8,7 +8,7 @@
 1. **Provider & model** – Choose provider (OpenAI, Claude, Gemini, DeepSeek, OpenRouter), pick a model (with a suggested default: good balance of speed and cost), enter API key.
 2. **Personality** – Pick one of 3 sample system prompts (Luna, Vera, Jude) and install it.
 3. **Profile** – Asks temperature (default 0.3), max tokens (default 4000), profile name (suggested: `{persona}_{model}`), writes `[profiles.<name>]` to `config.toml`.
-4. **Server** – Asks for server API (host, port, api_key) and writes `[server]` to `config.toml`. Writes **Thin UI** config to `~/.config/luna_thin_ui/server_config.toml` with the same port and api_key so you can **connect right away** with `luna-thin` (host becomes `localhost` when server is `0.0.0.0`).
+4. **Server** – Asks for server API (host, port, api_key) and writes `[server]` to `config.toml`. Writes **Thin UI** config to `~/.config/luna_thin_ui/server_config.toml` so you can **connect right away** with `luna-thin`. When server host is `0.0.0.0`, Thin UI is set to `localhost` (same-machine only); for remote access, edit `server_config.toml` and set `host` to the server’s IP or hostname.
 4b. **Skills** – Installs the **self_config** skill from `quick_setup/self_config/` into `~/.local/share/cosmic_llm/skills/self_config/` so the **skills** MCP server can use it (Luna self-administration).
 5. **MCP** – Pick which MCP servers to add from a **catalog** (no-setup only: shell, filesystem, fetch, skills). Optionally add Luna memory server if you have the binary. Writes `mcp_config.json`.
 6. **Systemd** – Optionally install **user** systemd unit `luna-server.service` (~/.config/systemd/user/), then **enable** and **start** it. Prompts for path to `cosmic_llm` binary (default: repo `target/release/cosmic_llm`). For run-at-boot without login: `loginctl enable-linger $USER`.
@@ -36,7 +36,7 @@ luna-quick-setup
 ## Catalog & sample data
 
 - **Providers/models**: `catalog/providers_models.json` – providers, models, endpoints, suggested default model, context window sizes.
-- **MCP servers**: `catalog/mcp_servers.json` – **no-setup only** (no API keys, no connection strings). Listed: shell, filesystem, fetch, skills. Luna memory is added separately when you provide the binary path.
+- **MCP servers**: `catalog/mcp_servers.json` – **no-setup only** (no API keys, no connection strings). Listed: shell, filesystem, fetch, skills, git, memory, markitdown. See `docs/MCP_SERVERS_CURATED.md` for the curated list (from awesome-mcp-servers). Luna memory is added separately when you provide the binary path.
 - **Sample personas**: `sample_data/personas/` – `luna.md`, `vera.md`, `jude.md`.
 
 ## Project layout
