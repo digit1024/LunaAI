@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import json
 import getpass
+import os
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.request import Request, urlopen
 
 from . import paths
 from .profile_creator import (
@@ -164,11 +166,33 @@ def _ask_server() -> tuple[str, int, str]:
 MCP_LUNA_MEMORY_RELEASE_URL = "https://github.com/digit1024/mcp_luna_memory/releases/download/1.0/mcp_luna_history"
 
 
+def _download_mcp_luna_memory_binary(dest: Path) -> bool:
+    """Download mcp_luna_history from release URL to dest. Create parent dir, chmod +x. Return True on success."""
+    dest = Path(dest).resolve()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        req = Request(MCP_LUNA_MEMORY_RELEASE_URL, headers={"User-Agent": "LunaQuickSetup/1.0"})
+        with urlopen(req, timeout=60) as resp:
+            data = resp.read()
+        dest.write_bytes(data)
+        os.chmod(dest, 0o755)
+        return True
+    except OSError as e:
+        print(f"  Download failed: {e}")
+        print(f"  Get binary manually: {MCP_LUNA_MEMORY_RELEASE_URL}")
+        return False
+
+
 def _ask_mcp_memory_path() -> str:
     default_dir = paths.cosmic_llm_dir() / "bin"
-    default = str(default_dir / "mcp_luna_history")
-    print(f"  Download binary if needed: {MCP_LUNA_MEMORY_RELEASE_URL}")
+    default_path = default_dir / "mcp_luna_history"
+    default = str(default_path)
     raw = input(f"  Path to mcp_luna_history binary [{default}]: ").strip() or default
+    if raw == default and not default_path.exists():
+        print("  Downloading mcp_luna_history from release...")
+        if _download_mcp_luna_memory_binary(default_path):
+            print("  Done.")
+        # else: already printed error + URL
     return raw
 
 
@@ -206,7 +230,7 @@ def _ask_mcp_servers_from_catalog() -> tuple[list[str], bool, str | None]:
         selected_ids = list(dict.fromkeys(selected_ids))  # dedupe
     add_luna = False
     luna_bin = None
-    if input("  Add Luna memory server? (requires binary path) [y/N]: ").strip().lower() in ("y", "yes"):
+    if input("  Add Luna memory server? (binary downloaded automatically if needed) [y/N]: ").strip().lower() in ("y", "yes"):
         add_luna = True
         luna_bin = _ask_mcp_memory_path()
     return selected_ids, add_luna, luna_bin
