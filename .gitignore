@@ -1,11 +1,19 @@
 /target
 .agentic_tool_calls.log
 agentic_tool_calls.log
-agentic_tool_calls.log
 mcp_server.log
 /.local
 /internal
-__pycache__/trigger.cpython-312.pyc
 telegram-bridge.env
 cloudflared-config.yml
 quick_setup/.venv
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Packaging
+packaging/out/

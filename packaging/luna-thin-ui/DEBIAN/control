@@ -1,0 +1,10 @@
+Package: luna-thin-ui
+Version: 0.1.0
+Section: x11
+Priority: optional
+Architecture: amd64
+Depends: libc6 (>= 2.34), libgcc-s1 (>= 10), libasound2 (>= 1.0.16), libssl3 (>= 3.0), libxkbcommon0 (>= 1.0)
+Maintainer: Luna AI <noreply@localhost>
+Description: Luna AI Thin Client (desktop app)
+ Connects to Luna AI server via WebSocket. COSMIC/libcosmic desktop app.
+ Start from application menu "Luna AI" or run: luna-thin

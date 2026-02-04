@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Luna AI
+Comment=Thin client for Luna AI – chat with your server
+Exec=luna-thin
+Icon=com.github.digit1024.luna
+Terminal=false
+Type=Application
+Categories=Chat;Network;Utility;
+StartupNotify=true
+StartupWMClass=luna-thin

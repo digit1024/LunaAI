@@ -355,7 +355,13 @@ def run() -> None:
         print("  Skipped MCP servers.")
 
     # 6) User systemd: install service, enable and start
-    default_binary = _project_root().parent / "target" / "release" / "cosmic_llm"
+    installed_binary = Path("/usr/bin/cosmic_llm")
+    dev_binary = _project_root().parent / "target" / "release" / "cosmic_llm"
+    # Prefer installed binary when running from /usr/share (deb install); else dev if present
+    if _project_root().resolve().parts[:3] == ("/", "usr", "share"):
+        default_binary = installed_binary
+    else:
+        default_binary = dev_binary if dev_binary.exists() else installed_binary
     if input("\n  Install Luna server in user systemd (enable + start)? [Y/n]: ").strip().lower() not in ("n", "no"):
         binary_raw = input(f"  Path to cosmic_llm binary [{default_binary}]: ").strip() or str(default_binary)
         ok, msg = install_user_service(Path(binary_raw))

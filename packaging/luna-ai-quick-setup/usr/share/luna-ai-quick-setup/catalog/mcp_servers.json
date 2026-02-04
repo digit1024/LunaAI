@@ -1,0 +1,50 @@
+{
+  "_comment": "Only MCP servers that require no setup (no API keys, no connection strings). From awesome-mcp-servers (File Systems + most useful). Omitted: brave-search, github, postgres, cosmic-llm-memory.",
+  "servers": [
+    {
+      "id": "shell",
+      "label": "Shell (command execution)",
+      "command": "uvx",
+      "args": ["mcp-shell-server"],
+      "env": {
+        "ALLOW_COMMANDS": "ls,cat,pwd,grep,wc,touch,find,echo,mkdir,rmdir,cp,mv,rm,chmod,chown,git,ps,df,du,whoami,head,tail,sort,uniq,curl,wget,sqlite3,flatpak,python3,systemctl,cargo"
+      },
+      "note": "Runs whitelisted shell commands"
+    },
+    {
+      "id": "filesystem",
+      "label": "Filesystem (read/write files)",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "{{HOME}}"],
+      "env": {},
+      "note": "Access to your home directory"
+    },
+    {
+      "id": "fetch",
+      "label": "Fetch (URL → markdown)",
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
+      "env": { "PYTHONIOENCODING": "utf-8" },
+      "note": "Fetches URLs and converts to markdown"
+    },
+    {
+      "id": "skills",
+      "label": "Skills (agent skills / tools)",
+      "command": "uvx",
+      "args": ["agent-skills-mcp"],
+      "env": {
+        "SKILL_FOLDER": "{{COSMIC_LLM_DIR}}/skills",
+        "MODE": "tool"
+      },
+      "note": "Uses Luna skills folder"
+    },
+    {
+      "id": "markitdown",
+      "label": "MarkItDown (PDF/Word/URL → Markdown)",
+      "command": "npx",
+      "args": ["-y", "markitdown-mcp-npx"],
+      "env": {},
+      "note": "Microsoft MarkItDown; converts files and URLs to Markdown for LLMs"
+    }
+  ]
+}

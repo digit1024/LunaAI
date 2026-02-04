@@ -1,0 +1,9 @@
+#!/usr/bin/python3
+import sys, os
+_SHARE = "/usr/share/luna-ai-quick-setup"
+if os.path.isdir(_SHARE):
+    sys.path.insert(0, _SHARE)
+    os.chdir(_SHARE)
+from quick_setup.main import main
+if __name__ == "__main__":
+    main()

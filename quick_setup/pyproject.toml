@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 dependencies = ["toml>=0.10.2", "pytest>=7.0.0"]
 
 [project.scripts]
+luna_ai_quick_setup = "quick_setup.main:main"
 luna-quick-setup = "quick_setup.main:main"
 
 [tool.setuptools.packages.find]

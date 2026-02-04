@@ -4,8 +4,8 @@
     "openai": {
       "label": "OpenAI",
       "backend": "openai",
-      "endpoint": "https://api.openai.com/v1",
-      "default_model_id": "gpt-4.1-mini",
+      "endpoint": "https://api.openai.com/v1/chat/completions",
+      "default_model_id": "gpt-5-mini",
       "models": [
         { "id": "gpt-5.2", "label": "GPT-5.2", "context_window": 128000, "note": "Flagship, coding & agents" },
         { "id": "gpt-5-mini", "label": "GPT-5 Mini", "context_window": 128000, "note": "Faster, cheaper" },
@@ -17,7 +17,7 @@
     "claude": {
       "label": "Anthropic Claude",
       "backend": "anthropic",
-      "endpoint": "https://api.anthropic.com",
+      "endpoint": "https://api.anthropic.com/v1/messages",
       "default_model_id": "claude-sonnet-4-5",
       "models": [
         { "id": "claude-opus-4-5-20251101", "label": "Claude Opus 4.5", "context_window": 200000, "note": "Most capable" },
@@ -28,7 +28,7 @@
     "gemini": {
       "label": "Google Gemini",
       "backend": "gemini",
-      "endpoint": "https://generativelanguage.googleapis.com",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models",
       "default_model_id": "gemini-2.5-flash",
       "models": [
         { "id": "gemini-3-flash-preview", "label": "Gemini 3 Flash", "context_window": 1048576, "note": "Newest, fast" },
@@ -40,7 +40,7 @@
     "deepseek": {
       "label": "DeepSeek",
       "backend": "deepseek",
-      "endpoint": "https://api.deepseek.com",
+      "endpoint": "https://api.deepseek.com/chat/completions",
       "default_model_id": "deepseek-chat",
       "models": [
         { "id": "deepseek-chat", "label": "DeepSeek Chat (V3.2)", "context_window": 131072, "note": "Recommended default" },
@@ -50,7 +50,7 @@
     "openrouter": {
       "label": "OpenRouter (many models)",
       "backend": "openrouter",
-      "endpoint": "https://openrouter.ai/api/v1",
+      "endpoint": "https://openrouter.ai/api/v1/chat/completions",
       "default_model_id": "mistralai/mixtral-8x22b-instruct",
       "models": [
         { "id": "deepseek/deepseek-chat", "label": "DeepSeek Chat (via OpenRouter)", "context_window": 163840, "note": "Best value, ~90% GPT-5.1 at 1/50 cost" },

@@ -1,0 +1,11 @@
+Package: luna-ai-quick-setup
+Version: 0.1.0
+Section: utils
+Priority: optional
+Architecture: all
+Depends: python3 (>= 3.10), python3-toml (>= 0.10)
+Recommends: luna-ai-server
+Maintainer: Luna AI <noreply@localhost>
+Description: Quick configuration for Luna AI (server + thin UI)
+ Interactive setup: config.toml, profiles, MCP, systemd user service.
+ Run: luna_ai_quick_setup

@@ -1,0 +1,11 @@
+Package: luna-ai-server
+Version: 0.1.0
+Section: net
+Priority: optional
+Architecture: amd64
+Depends: libc6 (>= 2.34), libssl3 (>= 3.0), liblzma5 (>= 5.2)
+Maintainer: Luna AI <noreply@localhost>
+Description: Luna AI server (cosmic_llm)
+ Backend server for Luna AI: LLM API, conversations, MCP, scheduling.
+ Run as user service: systemctl --user start luna-server.service
+ (after quick setup: luna_ai_quick_setup)
