@@ -223,7 +223,7 @@ impl ServerHandler {
         let storage = self.ctx.storage.lock().await;
         if let Some(q) = query.filter(|s| !s.trim().is_empty()) {
             let results = storage
-                .search_history(&q, limit.unwrap_or(20) as usize)
+                .search_history(&q, limit.unwrap_or(240) as usize)
                 .context("history search failed")?;
             let mapped: Vec<SearchResult> = results
                 .into_iter()
