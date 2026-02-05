@@ -14,7 +14,8 @@ use axum::{
 use futures::stream;
 use multer::Multipart;
 use serde::Serialize;
-use std::{path::Path as StdPath, sync::Arc};
+use std::path::{Path as StdPath, PathBuf};
+use std::sync::Arc;
 use uuid::Uuid;
 
 #[derive(Debug, Serialize)]
@@ -273,11 +274,49 @@ async fn ws_handler(
     .into_response()
 }
 
+/// Serve static files from config_dir/static at /api/static/{api_key}/{*path}.
+/// Auth: api_key is the first path segment (e.g. /api/static/YourKey/conv-id/image.jpg).
+pub async fn static_file_handler(
+    Path((api_key, path)): Path<(String, String)>,
+    State(ctx): State<Arc<ServerContext>>,
+) -> Response {
+    if api_key != ctx.server_cfg.api_key {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let path = path.trim_start_matches('/');
+    if path.is_empty() || path.contains("..") {
+        return (StatusCode::NOT_FOUND, "Not found").into_response();
+    }
+    let static_base = ctx.config.static_dir();
+    let full_path: PathBuf = static_base.join(path);
+    if !full_path.starts_with(&static_base) {
+        return (StatusCode::NOT_FOUND, "Not found").into_response();
+    }
+    let meta = match tokio::fs::metadata(&full_path).await {
+        Ok(m) => m,
+        Err(_) => return (StatusCode::NOT_FOUND, "Not found").into_response(),
+    };
+    if !meta.is_file() {
+        return (StatusCode::NOT_FOUND, "Not found").into_response();
+    }
+    let body = match tokio::fs::read(&full_path).await {
+        Ok(b) => b,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file").into_response(),
+    };
+    let mime_type = mime_guess::from_path(&full_path).first_or_octet_stream();
+    (
+        [(header::CONTENT_TYPE, mime_type.as_ref())],
+        body,
+    )
+        .into_response()
+}
+
 pub fn create_http_router(ctx: Arc<ServerContext>) -> Router {
     Router::new()
         .route("/api/attach-file", post(attach_file_handler))
         .route("/api/attach-file/{file_id}", delete(remove_file_handler))
         .route("/api/mcp-servers", get(list_mcp_servers_handler))
+        .route("/api/static/{api_key}/{*path}", get(static_file_handler))
         .route("/ws", get(ws_handler))
         .with_state(ctx)
 }

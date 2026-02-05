@@ -416,6 +416,13 @@ class AppController extends Notifier<AppState> {
       return;
     }
     
+    // If we don't have the profiles list yet, don't send change_profile — we might
+    // send a profile name (e.g. "default") that doesn't exist on the server and
+    // trigger "Profile not found" and a setup loop. Wait for ProfilesList.
+    if (state.availableProfiles.isEmpty) {
+      return;
+    }
+    
     // If we have available profiles, check if saved profile is valid
     if (state.availableProfiles.isNotEmpty) {
       if (!state.availableProfiles.contains(savedProfile)) {

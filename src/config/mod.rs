@@ -242,6 +242,11 @@ impl AppConfig {
         Self::config_dir().join("uploads")
     }
 
+    /// Directory for static assets served at /api/static: `config_dir/static`
+    pub fn static_dir(&self) -> PathBuf {
+        Self::config_dir().join("static")
+    }
+
     pub fn load() -> Result<Self, ConfigError> {
         Self::load_from_path(None::<&Path>)
     }
