@@ -662,7 +662,12 @@ pub fn spawn_agent_task(
 
     tokio::spawn(async move {
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel::<AgentUpdate>();
-        let mut loop_engine = AgenticLoop::new(mcp_registry, llm_client, Some(schedule_service));
+        let mut loop_engine = AgenticLoop::new(
+            mcp_registry,
+            llm_client,
+            Some(schedule_service),
+            ctx.server_cfg.tool_call_timeout_secs,
+        );
         let subs = subscriptions.clone();
         let stream_task = tokio::spawn(async move {
             let mut persistence = PersistenceContext::new(storage, conversation_id);

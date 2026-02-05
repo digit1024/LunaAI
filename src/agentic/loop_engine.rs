@@ -63,6 +63,7 @@ pub struct AgenticLoop {
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
     pub llm_client: Arc<dyn LlmClient>,
     pub schedule_service: Option<Arc<ScheduleService>>,
+    pub tool_call_timeout_secs: u64,
 }
 
 impl AgenticLoop {
@@ -70,11 +71,13 @@ impl AgenticLoop {
         mcp_registry: Arc<RwLock<MCPServerRegistry>>,
         llm_client: Arc<dyn LlmClient>,
         schedule_service: Option<Arc<ScheduleService>>,
+        tool_call_timeout_secs: u64,
     ) -> Self {
         Self {
             mcp_registry,
             llm_client,
             schedule_service,
+            tool_call_timeout_secs,
         }
     }
 
@@ -357,7 +360,7 @@ impl AgenticLoop {
     ) -> ToolResult {
         let mut attempt: u8 = 0;
         let max_retries: u8 = 2;
-        let per_call_timeout = Duration::from_secs(20);
+        let per_call_timeout = Duration::from_secs(self.tool_call_timeout_secs);
 
         loop {
             attempt += 1;

@@ -95,6 +95,8 @@ pub struct ServerConfig {
     pub api_key: String,
     #[serde(default = "default_stream_timeout_secs")]
     pub stream_timeout_secs: u64,
+    #[serde(default = "default_tool_call_timeout_secs")]
+    pub tool_call_timeout_secs: u64,
     #[serde(default = "default_healthcheck_interval_secs")]
     pub healthcheck_interval_secs: u64,
     #[serde(default = "default_wal_enabled")]
@@ -125,6 +127,10 @@ fn default_stream_timeout_secs() -> u64 {
     600  // 10 minutes - increased to support long-running streams
 }
 
+fn default_tool_call_timeout_secs() -> u64 {
+    240  // 4 minutes per MCP tool call (was 20s)
+}
+
 fn default_healthcheck_interval_secs() -> u64 {
     30
 }
@@ -149,6 +155,7 @@ impl Default for ServerConfig {
             port: default_server_port(),
             api_key: default_server_api_key(),
             stream_timeout_secs: default_stream_timeout_secs(),
+            tool_call_timeout_secs: default_tool_call_timeout_secs(),
             healthcheck_interval_secs: default_healthcheck_interval_secs(),
             wal_enabled: default_wal_enabled(),
             wal_autocheckpoint: default_wal_autocheckpoint(),
