@@ -2,6 +2,7 @@
 //!
 //! This module provides a connection manager for a single MCP server using stdio transport.
 pub mod model;
+mod no_stderr_transport;
 
 use std::sync::Arc;
 use rust_mcp_sdk::schema::{CallToolRequestParams, CallToolResult, ListToolsResult};
@@ -10,11 +11,11 @@ use tracing::{debug, info};
 use crate::error::{AgenticLoopError, Result};
 use crate::mcp_config::model::MCPServerConfig;
 
-
+use no_stderr_transport::NoStderrTransport;
 use rust_mcp_sdk::{
     mcp_client::{client_runtime, ClientHandler, McpClientOptions},
     schema::{ClientCapabilities, Implementation, InitializeRequestParams, LATEST_PROTOCOL_VERSION},
-    McpClient, StdioTransport, ToMcpClientHandler, TransportOptions,
+    McpClient, ToMcpClientHandler, TransportOptions,
 };
 
 fn default_client_details() -> InitializeRequestParams 
@@ -72,7 +73,7 @@ impl MCPConnection {
             Some(self.config.env.clone())
         };
 
-        let transport = StdioTransport::create_with_server_launch(
+        let transport = NoStderrTransport::create_with_server_launch(
             &self.config.command,
             self.config.args.clone(),
             env,

@@ -81,6 +81,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           if (previous != true) _startTypingFeedback();
         } else if (previous == true) {
           _stopTypingFeedback(playCompletion: true);
+          // Turn complete: resume STT in dialog mode if not currently speaking (e.g. empty last message)
+          final state = ref.read(appControllerProvider);
+          if (state.isDialogModeActive &&
+              state.dialogModeState != DialogModeState.speaking) {
+            _resumeListening();
+          }
         }
       },
     );
@@ -169,13 +175,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
     if (playCompletion) {
       _donePlayer.stop();
-      _donePlayer.play(AssetSource('audio/done.mp3')).then((_) {
-        // After done.mp3 finishes, trigger TTS if enabled
-        // Wait a small delay to ensure message is finalized
-        Future.delayed(const Duration(milliseconds: 300), () {
-          _triggerTtsForLastMessage();
-        });
-      });
+      _donePlayer.play(AssetSource('audio/done.mp3'));
+      // TTS is triggered only from _handleNewAssistantMessages (completed-messages path)
     }
   }
 
@@ -232,29 +233,51 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       }
     }
     
-    // Handle TTS for completed messages (when streaming finishes)
-    // Find messages that were streaming and are now complete
-    final completedMessages = next.where(
-      (m) => m.bubbleType == BubbleType.assistant && 
-             !m.isStreaming,
-    ).where((m) {
-      // Check if this message was streaming in previous state
-      final wasStreaming = previous?.any((p) => p.id == m.id && p.isStreaming) ?? false;
-      // Or if it's a new message that completed immediately (shouldn't happen, but handle it)
+    // Handle TTS for completed messages (single path: only the last assistant message)
+    // Last = last assistant (not streaming) in the full conversation
+    final lastAssistant = next.isEmpty
+        ? null
+        : next.lastWhere(
+            (m) => m.bubbleType == BubbleType.assistant && !m.isStreaming,
+            orElse: () => ChatMessage(
+              id: '',
+              role: 'assistant',
+              content: '',
+              timestamp: DateTime.now(),
+              bubbleType: BubbleType.assistant,
+            ),
+          );
+    final lastAssistantId = lastAssistant?.id ?? '';
+    if (lastAssistantId.isEmpty) return;
+
+    // Only run TTS when that last message just completed in this update
+    final completedMessages = next
+        .where(
+            (m) => m.bubbleType == BubbleType.assistant && !m.isStreaming)
+        .where((m) {
+      final wasStreaming =
+          previous?.any((p) => p.id == m.id && p.isStreaming) ?? false;
       return wasStreaming || !previousIds.contains(m.id);
     }).toList();
-    
-    // Process completed messages for TTS
-    if (completedMessages.isNotEmpty && (ttsPrefs.enabled || state.isDialogModeActive)) {
-      for (final message in completedMessages) {
-        // Skip if already processed for TTS
-        if (_processedMessageIds.contains('${message.id}_tts')) continue;
-        _processedMessageIds.add('${message.id}_tts');
-        
-        // Stop any ongoing TTS and start new one
-        _playTtsForMessage(message);
-      }
+    final lastJustCompleted =
+        completedMessages.any((m) => m.id == lastAssistantId);
+
+    if (!lastJustCompleted ||
+        (!ttsPrefs.enabled && !state.isDialogModeActive)) return;
+
+    if (_processedMessageIds.contains('${lastAssistantId}_tts')) return;
+    _processedMessageIds.add('${lastAssistantId}_tts');
+
+    // Empty: don't start TTS; STT will resume when streaming goes false (streaming listener)
+    final cleanText = stripEmojisAndMarkdown(lastAssistant!.content);
+    if (lastAssistant.content.isEmpty || cleanText.trim().isEmpty) {
+      return;
     }
+
+    _playTtsForMessage(
+      lastAssistant,
+      shouldResumeListening: state.isDialogModeActive,
+    );
   }
 
   Future<void> _playTtsForMessage(
@@ -282,66 +305,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final controller = ref.read(appControllerProvider.notifier);
       controller.setDialogModeState(DialogModeState.speaking);
       
-      // Only resume listening after TTS if this is the last message
+      // Only resume listening after TTS when the turn is complete (streaming false)
       await ttsService.speak(cleanText, onComplete: shouldResumeListening ? () {
-        // TTS finished, resume listening if still in dialog mode
         final currentState = ref.read(appControllerProvider);
-        if (currentState.isDialogModeActive) {
+        if (currentState.isDialogModeActive && !currentState.streaming) {
           _resumeListening();
         }
       } : null);
     } else {
       await ttsService.speak(cleanText);
     }
-  }
-
-  Future<void> _triggerTtsForLastMessage() async {
-    final state = ref.read(appControllerProvider);
-    final ttsPrefs = ref.read(ttsPreferencesProvider);
-    
-    // In dialog mode, always use TTS. Otherwise, check if TTS is enabled.
-    if (!state.isDialogModeActive && !ttsPrefs.enabled) {
-      // TTS is disabled, mark the last message as processed so it doesn't play buble.mp3
-      if (state.chatMessages.isNotEmpty) {
-        final lastAssistant = state.chatMessages.lastWhere(
-          (m) => m.bubbleType == BubbleType.assistant && !m.isStreaming,
-          orElse: () => ChatMessage(
-            id: '',
-            role: 'assistant',
-            content: '',
-            timestamp: DateTime.now(),
-            bubbleType: BubbleType.assistant,
-          ),
-        );
-        if (lastAssistant.id.isNotEmpty) {
-          _processedMessageIds.add(lastAssistant.id);
-        }
-      }
-      return;
-    }
-
-    if (state.chatMessages.isEmpty) return;
-
-    // Get the last assistant message
-    final lastAssistant = state.chatMessages.lastWhere(
-      (m) => m.bubbleType == BubbleType.assistant && !m.isStreaming,
-      orElse: () => ChatMessage(
-        id: '',
-        role: 'assistant',
-        content: '',
-        timestamp: DateTime.now(),
-        bubbleType: BubbleType.assistant,
-      ),
-    );
-
-    if (lastAssistant.content.isEmpty) return;
-    
-    // Skip if we already processed this message
-    if (_processedMessageIds.contains(lastAssistant.id)) return;
-    _processedMessageIds.add(lastAssistant.id);
-
-    // Play TTS for the last message and resume listening after it completes
-    await _playTtsForMessage(lastAssistant, shouldResumeListening: true);
   }
 
   Future<void> _startDialogMode() async {
@@ -480,7 +453,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     debugPrint('ChatScreen: Sending prompt');
     controller.sendPrompt(text);
     
-    // State will switch to speaking when TTS starts (handled in _triggerTtsForLastMessage)
+    // State will switch to speaking when TTS starts (handled in _handleNewAssistantMessages)
     debugPrint('ChatScreen: _sendVoiceMessage completed');
   }
 
