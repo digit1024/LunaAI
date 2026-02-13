@@ -6,9 +6,11 @@ import '../../application/app_state.dart';
 import '../../core/config/server_config.dart';
 import '../../core/config/theme_config.dart';
 import '../../core/config/tts_preferences.dart';
+import '../../core/config/tts_provider_type.dart';
 import '../../core/config/stt_preferences.dart';
 import '../../services/tts_service.dart';
 import '../widgets/language_favorites_dialog.dart';
+import 'qween_tts_settings_screen.dart';
 
 class SetupScreen extends ConsumerStatefulWidget {
   const SetupScreen({super.key});
@@ -272,6 +274,47 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
                             },
                           ),
                           const Divider(),
+                          // TTS Provider switch: Built-in vs Qween
+                          Text(
+                            'TTS Provider',
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                          const SizedBox(height: 4),
+                          DropdownButtonFormField<TtsProviderType>(
+                            value: ttsPrefs.providerType,
+                            decoration: const InputDecoration(
+                              border: OutlineInputBorder(),
+                              isDense: true,
+                            ),
+                            isExpanded: true,
+                            items: TtsProviderType.values
+                                .map((t) => DropdownMenuItem(
+                                      value: t,
+                                      child: Text(t.label),
+                                    ))
+                                .toList(),
+                            onChanged: (value) {
+                              if (value != null) {
+                                ttsPrefsNotifier.setProviderType(value);
+                              }
+                            },
+                          ),
+                          // Qween TTS settings - show when Qween selected
+                          if (ttsPrefs.providerType == TtsProviderType.qween)
+                            ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text('Qween TTS Settings'),
+                              trailing: const Icon(Icons.chevron_right),
+                              onTap: () {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                    builder: (_) => const QweenTtsSettingsScreen(),
+                                  ),
+                                );
+                              },
+                            ),
+                          // Voice Language - only for Built-in TTS (Qween uses English)
+                          if (ttsPrefs.providerType != TtsProviderType.qween) ...[
                           const SizedBox(height: 8),
                           Text(
                             'Voice Language',
@@ -324,6 +367,7 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
                               icon: const Icon(Icons.refresh, size: 18),
                               label: const Text('Load Languages'),
                             ),
+                          ],
                           const SizedBox(height: 16),
                           // Favorite Languages - Button to open dialog
                           Row(

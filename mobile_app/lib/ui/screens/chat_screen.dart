@@ -13,8 +13,11 @@ import '../../application/app_state.dart';
 import '../../core/config/server_config.dart';
 import '../../data/http/file_client.dart';
 import '../../core/config/tts_preferences.dart';
+import '../../core/config/tts_provider_type.dart';
 import '../../core/config/stt_preferences.dart';
+import '../../ui/screens/qween_tts_settings_screen.dart';
 import '../../services/speech_service.dart';
+import '../../services/tts_provider_resolver.dart';
 import '../../services/tts_service.dart';
 import '../../utils/text_processing.dart';
 import '../../utils/platform_utils.dart';
@@ -283,9 +286,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         completedMessages.any((m) => m.id == lastAssistantId);
 
     if (!lastJustCompleted ||
-        (!ttsPrefs.enabled && !state.isDialogModeActive)) return;
+        (!ttsPrefs.enabled && !state.isDialogModeActive)) {
+      return;
+    }
 
-    if (_processedMessageIds.contains('${lastAssistantId}_tts')) return;
+    if (_processedMessageIds.contains('${lastAssistantId}_tts')) {
+      return;
+    }
     _processedMessageIds.add('${lastAssistantId}_tts');
 
     // Empty: don't start TTS; STT will resume when streaming goes false (streaming listener)
@@ -307,18 +314,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (message.content.isEmpty) return;
     
     final state = ref.read(appControllerProvider);
-    final ttsPrefs = ref.read(ttsPreferencesProvider);
     
     // Strip emojis and markdown
     final cleanText = stripEmojisAndMarkdown(message.content);
     if (cleanText.trim().isEmpty) return;
 
-    // Get TTS service and set language
-    final ttsService = ref.read(ttsServiceProvider);
-    await ttsService.setLanguage(ttsPrefs.language);
-    
-    // Stop any ongoing TTS before starting new one
-    await ttsService.stop();
+    // Get active TTS provider (Built-in or Qween) and stop any ongoing TTS
+    final ttsProvider = ref.read(ttsProviderResolver);
+    await ttsProvider.stop();
     
     if (state.isDialogModeActive) {
       // In dialog mode, set state to speaking
@@ -326,14 +329,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       controller.setDialogModeState(DialogModeState.speaking);
       
       // Only resume listening after TTS when the turn is complete (streaming false)
-      await ttsService.speak(cleanText, onComplete: shouldResumeListening ? () {
+      await ttsProvider.speak(cleanText, onComplete: shouldResumeListening ? () {
         final currentState = ref.read(appControllerProvider);
         if (currentState.isDialogModeActive && !currentState.streaming) {
           _resumeListening();
         }
       } : null);
     } else {
-      await ttsService.speak(cleanText);
+      await ttsProvider.speak(cleanText);
     }
   }
 
@@ -373,8 +376,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final currentState = ref.read(appControllerProvider);
       if (currentState.dialogModeState == DialogModeState.speaking && text.trim().isNotEmpty) {
         debugPrint('ChatScreen: User speaking during TTS, stopping TTS');
-        final ttsService = ref.read(ttsServiceProvider);
-        ttsService.stop();
+        final ttsProvider = ref.read(ttsProviderResolver);
+        ttsProvider.stop();
         controller.setDialogModeState(DialogModeState.listening);
       }
     };
@@ -499,9 +502,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final appState = ref.read(appControllerProvider);
     if (!appState.isDialogModeActive) return;
     
-    // Stop TTS
-    final ttsService = ref.read(ttsServiceProvider);
-    await ttsService.stop();
+    // Stop TTS (works for both Built-in and Qween)
+    final ttsProvider = ref.read(ttsProviderResolver);
+    await ttsProvider.stop();
     
     // Resume listening
     await _resumeListening();
@@ -876,70 +879,110 @@ class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
               ttsPrefsNotifier.setEnabled(value);
             },
           ),
-          const Divider(),
-          // Language Selection (applies to both STT and TTS)
-          // Only show favorite languages in the burger menu
+          // TTS Provider: Built-in vs Qween
           ListTile(
-            leading: const Icon(Icons.language),
-            title: const Text('Voice Language'),
-            subtitle: _loadingLanguages
-                ? const Text('Loading...')
-                : (_availableLanguages != null && _availableLanguages!.isNotEmpty)
-                    ? Builder(
-                        builder: (context) {
-                          // Filter to only show favorite languages
-                          final favoriteLanguages = sttPrefs.favoriteLanguages;
-                          final favoriteLangItems = _availableLanguages!
-                              .where((lang) {
-                                final langCode = lang.toString();
-                                return favoriteLanguages.contains(langCode);
-                              })
-                              .toList();
-                          
-                          // If current language is not in favorites, add it temporarily
-                          final currentLangCode = ttsPrefs.language;
-                          if (!favoriteLanguages.contains(currentLangCode)) {
-                            favoriteLangItems.insert(0, currentLangCode);
-                          }
-                          
-                          if (favoriteLangItems.isEmpty) {
-                            return TextButton.icon(
-                              onPressed: _loadLanguages,
-                              icon: const Icon(Icons.refresh, size: 18),
-                              label: const Text('Load Languages'),
-                            );
-                          }
-                          
-                          return DropdownButton<String>(
-                            value: ttsPrefs.language,
-                            isExpanded: true,
-                            underline: Container(),
-                            items: favoriteLangItems
-                                .map<DropdownMenuItem<String>>((lang) {
-                              final langCode = lang.toString();
-                              final displayName = _getLanguageDisplayName(langCode);
-                              return DropdownMenuItem<String>(
-                                value: langCode,
-                                child: Text(displayName),
-                              );
-                            }).toList(),
-                            onChanged: (value) {
-                              if (value != null) {
-                                // Set both TTS and STT language
-                                ttsPrefsNotifier.setLanguage(value);
-                                sttPrefsNotifier.setLanguage(value);
-                                ref.read(ttsServiceProvider).setLanguage(value);
-                              }
-                            },
-                          );
-                        },
-                      )
-                    : TextButton.icon(
-                        onPressed: _loadLanguages,
-                        icon: const Icon(Icons.refresh, size: 18),
-                        label: const Text('Load Languages'),
-                      ),
+            leading: const Icon(Icons.record_voice_over),
+            title: const Text('TTS Provider'),
+            subtitle: Text(ttsPrefs.providerType.label),
+            onTap: () {
+              showModalBottomSheet<void>(
+                context: context,
+                builder: (ctx) => SafeArea(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: TtsProviderType.values
+                        .map((t) => ListTile(
+                              title: Text(t.label),
+                              onTap: () {
+                                ttsPrefsNotifier.setProviderType(t);
+                                Navigator.pop(ctx);
+                              },
+                            ))
+                        .toList(),
+                  ),
+                ),
+              );
+            },
           ),
+          // Qween TTS settings - show when Qween selected
+          if (ttsPrefs.providerType == TtsProviderType.qween)
+            ListTile(
+              leading: const Icon(Icons.settings_voice),
+              title: const Text('Qween TTS Settings'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const QweenTtsSettingsScreen(),
+                  ),
+                );
+              },
+            ),
+          const Divider(),
+          // Language Selection (applies to STT and Built-in TTS only)
+          // Hide when Qween TTS - Qween uses English fixed
+          if (ttsPrefs.providerType != TtsProviderType.qween)
+            ListTile(
+              leading: const Icon(Icons.language),
+              title: const Text('Voice Language'),
+              subtitle: _loadingLanguages
+                  ? const Text('Loading...')
+                  : (_availableLanguages != null && _availableLanguages!.isNotEmpty)
+                      ? Builder(
+                          builder: (context) {
+                            // Filter to only show favorite languages
+                            final favoriteLanguages = sttPrefs.favoriteLanguages;
+                            final favoriteLangItems = _availableLanguages!
+                                .where((lang) {
+                                  final langCode = lang.toString();
+                                  return favoriteLanguages.contains(langCode);
+                                })
+                                .toList();
+                            
+                            // If current language is not in favorites, add it temporarily
+                            final currentLangCode = ttsPrefs.language;
+                            if (!favoriteLanguages.contains(currentLangCode)) {
+                              favoriteLangItems.insert(0, currentLangCode);
+                            }
+                            
+                            if (favoriteLangItems.isEmpty) {
+                              return TextButton.icon(
+                                onPressed: _loadLanguages,
+                                icon: const Icon(Icons.refresh, size: 18),
+                                label: const Text('Load Languages'),
+                              );
+                            }
+                            
+                            return DropdownButton<String>(
+                              value: ttsPrefs.language,
+                              isExpanded: true,
+                              underline: Container(),
+                              items: favoriteLangItems
+                                  .map<DropdownMenuItem<String>>((lang) {
+                                final langCode = lang.toString();
+                                final displayName = _getLanguageDisplayName(langCode);
+                                return DropdownMenuItem<String>(
+                                  value: langCode,
+                                  child: Text(displayName),
+                                );
+                              }).toList(),
+                              onChanged: (value) {
+                                if (value != null) {
+                                  // Set both TTS and STT language
+                                  ttsPrefsNotifier.setLanguage(value);
+                                  sttPrefsNotifier.setLanguage(value);
+                                  ref.read(ttsServiceProvider).setLanguage(value);
+                                }
+                              },
+                            );
+                          },
+                        )
+                      : TextButton.icon(
+                          onPressed: _loadLanguages,
+                          icon: const Icon(Icons.refresh, size: 18),
+                          label: const Text('Load Languages'),
+                        ),
+            ),
           const Divider(),
           // History
           ListTile(

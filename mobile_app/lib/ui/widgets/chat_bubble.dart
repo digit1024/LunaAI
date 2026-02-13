@@ -6,7 +6,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../application/app_state.dart';
-import '../../services/tts_service.dart';
+import '../../services/tts_provider_resolver.dart';
 
 /// Slide direction for bubble animations
 enum SlideDirection { left, right, center }
@@ -371,12 +371,11 @@ class _TtsPlayButtonState extends ConsumerState<_TtsPlayButton> {
   bool _isPlaying = false;
 
   Future<void> _toggleTts() async {
+    final ttsProvider = ref.read(ttsProviderResolver);
     if (_isPlaying) {
-      final ttsService = ref.read(ttsServiceProvider);
-      await ttsService.stop();
+      await ttsProvider.stop();
       setState(() => _isPlaying = false);
     } else {
-      final ttsService = ref.read(ttsServiceProvider);
       // Clean text (remove markdown)
       final cleanText = widget.text
           .replaceAll(RegExp(r'#+\s+'), '') // Remove headers
@@ -388,7 +387,7 @@ class _TtsPlayButtonState extends ConsumerState<_TtsPlayButton> {
 
       if (cleanText.isNotEmpty) {
         setState(() => _isPlaying = true);
-        await ttsService.speak(cleanText, onComplete: () {
+        await ttsProvider.speak(cleanText, onComplete: () {
           if (mounted) {
             setState(() => _isPlaying = false);
           }
