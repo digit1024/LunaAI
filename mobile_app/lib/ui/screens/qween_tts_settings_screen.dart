@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/config/qween_tts_preferences.dart';
-import '../../core/config/tts_provider_type.dart';
-import '../../core/config/tts_preferences.dart';
 
 class QweenTtsSettingsScreen extends ConsumerStatefulWidget {
   const QweenTtsSettingsScreen({super.key});
@@ -18,7 +16,6 @@ class _QweenTtsSettingsScreenState extends ConsumerState<QweenTtsSettingsScreen>
   late final TextEditingController _instructionsController;
   bool _obscureApiKey = true;
   bool _loadingApiKey = true;
-  bool _saving = false;
   String? _error;
 
   @override
@@ -55,47 +52,30 @@ class _QweenTtsSettingsScreenState extends ConsumerState<QweenTtsSettingsScreen>
     }
   }
 
-  Future<void> _save() async {
-    setState(() {
-      _saving = true;
-      _error = null;
-    });
-
-    final apiKey = _apiKeyController.text.trim();
-    if (apiKey.isEmpty) {
-      setState(() {
-        _saving = false;
-        _error = 'API Key is required';
-      });
-      return;
-    }
-
+  Future<void> _saveApiKey(String value) async {
     try {
-      final notifier = ref.read(qweenTtsPreferencesProvider.notifier);
-      await notifier.setApiKey(apiKey);
-      await notifier.setInstructions(_instructionsController.text.trim());
-      await notifier.setVoice(
-        ref.read(qweenTtsPreferencesProvider).voice,
-      );
-
-      if (mounted) {
-        setState(() => _saving = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Qween TTS settings saved')),
-        );
-      }
+      await ref.read(qweenTtsPreferencesProvider.notifier).setApiKey(value);
     } catch (e) {
       if (mounted) {
-        setState(() {
-          _saving = false;
-          _error = e.toString();
-        });
+        setState(() => _error = 'Failed to save API key');
       }
     }
   }
 
+  Future<void> _saveInstructions(String value) async {
+    await ref.read(qweenTtsPreferencesProvider.notifier).setInstructions(value);
+  }
+
   @override
   void dispose() {
+    // Save on close
+    final apiKey = _apiKeyController.text.trim();
+    final instructions = _instructionsController.text.trim();
+    if (apiKey.isNotEmpty) {
+      ref.read(qweenTtsPreferencesProvider.notifier).setApiKey(apiKey);
+    }
+    ref.read(qweenTtsPreferencesProvider.notifier).setInstructions(instructions);
+
     _apiKeyController.dispose();
     _instructionsController.dispose();
     super.dispose();
@@ -105,15 +85,10 @@ class _QweenTtsSettingsScreenState extends ConsumerState<QweenTtsSettingsScreen>
   Widget build(BuildContext context) {
     final qweenPrefs = ref.watch(qweenTtsPreferencesProvider);
     final qweenNotifier = ref.read(qweenTtsPreferencesProvider.notifier);
-    final ttsNotifier = ref.read(ttsPreferencesProvider.notifier);
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Qween TTS Settings'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
       ),
       body: _loadingApiKey
           ? const Center(child: CircularProgressIndicator())
@@ -131,49 +106,50 @@ class _QweenTtsSettingsScreenState extends ConsumerState<QweenTtsSettingsScreen>
                       ),
                       child: Row(
                         children: [
-                          Icon(
-                            Icons.error_outline,
-                            color: Theme.of(context).colorScheme.error,
-                          ),
+                          Icon(Icons.error_outline,
+                              color: Theme.of(context).colorScheme.error),
                           const SizedBox(width: 8),
                           Expanded(
-                            child: Text(
-                              _error!,
-                              style: TextStyle(
-                                color: Theme.of(context).colorScheme.onErrorContainer,
-                              ),
-                            ),
+                            child: Text(_error!,
+                                style: TextStyle(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onErrorContainer)),
                           ),
                         ],
                       ),
                     ),
                     const SizedBox(height: 16),
                   ],
-                  Text(
-                    'Configure Alibaba Qwen TTS. API Key is stored securely.',
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
-                  const SizedBox(height: 24),
+
+                  // API Key
                   TextField(
                     controller: _apiKeyController,
                     obscureText: _obscureApiKey,
                     decoration: InputDecoration(
-                      labelText: 'API Key (required)',
-                      hintText: 'DASHSCOPE_API_KEY',
+                      labelText: 'API Key',
+                      helperText: 'DashScope API key. Stored securely on device.',
                       border: const OutlineInputBorder(),
                       suffixIcon: IconButton(
-                        icon: Icon(
-                          _obscureApiKey ? Icons.visibility : Icons.visibility_off,
-                        ),
+                        icon: Icon(_obscureApiKey
+                            ? Icons.visibility
+                            : Icons.visibility_off),
                         onPressed: () {
                           setState(() => _obscureApiKey = !_obscureApiKey);
                         },
                       ),
                     ),
+                    onChanged: (v) {
+                      if (v.trim().isNotEmpty) _saveApiKey(v);
+                    },
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 20),
+
+                  // Voice
                   DropdownButtonFormField<String>(
-                    value: qweenPrefs.voice,
+                    value: kQwenSupportedVoices.contains(qweenPrefs.voice)
+                        ? qweenPrefs.voice
+                        : kQwenSupportedVoices.first,
                     decoration: const InputDecoration(
                       labelText: 'Voice',
                       border: OutlineInputBorder(),
@@ -182,45 +158,29 @@ class _QweenTtsSettingsScreenState extends ConsumerState<QweenTtsSettingsScreen>
                         .map((v) => DropdownMenuItem(value: v, child: Text(v)))
                         .toList(),
                     onChanged: (value) {
-                      if (value != null) {
-                        qweenNotifier.setVoice(value);
-                      }
+                      if (value != null) qweenNotifier.setVoice(value);
                     },
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 20),
+
+                  // Instructions
                   TextField(
                     controller: _instructionsController,
                     maxLines: 4,
                     decoration: const InputDecoration(
-                      labelText: 'Instructions (optional)',
-                      hintText: kQweenDefaultInstructions,
+                      labelText: 'Instructions',
+                      helperText:
+                          'Natural language control for voice style. Leave blank for default.',
+                      helperMaxLines: 2,
                       border: OutlineInputBorder(),
                       alignLabelWithHint: true,
                     ),
+                    onChanged: _saveInstructions,
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Controls expressiveness. Only for qwen3-tts-instruct-flash.',
+                    'Model: qwen3-tts-instruct-flash (supports instruction control)',
                     style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  const SizedBox(height: 32),
-                  FilledButton(
-                    onPressed: _saving ? null : _save,
-                    child: _saving
-                        ? const SizedBox(
-                            height: 20,
-                            width: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Text('Save'),
-                  ),
-                  const SizedBox(height: 16),
-                  OutlinedButton(
-                    onPressed: () {
-                      ttsNotifier.setProviderType(TtsProviderType.qween);
-                      Navigator.of(context).pop();
-                    },
-                    child: const Text('Use Qween TTS'),
                   ),
                 ],
               ),

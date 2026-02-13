@@ -10,26 +10,16 @@ const String kQweenDefaultInstructions =
 /// Default Qween voice per supported system voices.
 const String kQweenDefaultVoice = 'Katerina';
 
-/// Supported Qwen TTS voices (qwen3-tts-flash / qwen3-tts-instruct-flash).
-/// See: https://www.alibabacloud.com/help/en/model-studio/qwen-tts#bac280ddf5a1u
+/// Supported Qwen TTS voices.
+/// Cherry, Ethan, Chelsie, Vivian are confirmed in official docs/examples.
+/// Katerina is specified in the issue requirements as default.
+/// Others are from community reports of the 49-voice set.
 const List<String> kQwenSupportedVoices = [
   'Katerina',
   'Cherry',
-  'Sophia',
-  'Emma',
-  'Lily',
-  'Aria',
-  'Nova',
-  'Echo',
-  'Rose',
-  'Luna',
-  'Ivy',
-  'Mia',
-  'Zoe',
-  'Ruby',
-  'Stella',
-  'Grace',
-  'Claire',
+  'Ethan',
+  'Chelsie',
+  'Vivian',
 ];
 
 class QweenTtsPreferences {

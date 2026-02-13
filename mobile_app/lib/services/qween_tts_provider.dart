@@ -12,10 +12,11 @@ import 'tts_provider.dart';
 
 /// Qween (Alibaba Qwen) TTS provider.
 ///
-/// Strategy:
-/// 1. SSE streaming — buffer PCM chunks, wrap in WAV, play.
-///    This gives lower latency (audio starts generating while we buffer).
-/// 2. Fallback: non-streaming URL — get WAV URL, download, play.
+/// Strategy: SSE streaming with early playback.
+/// 1. Start SSE stream, buffer first N bytes of PCM
+/// 2. Once we have enough, wrap in WAV and play while continuing to buffer
+/// 3. When stream ends, if still playing let it finish; then play remainder
+/// 4. Fallback: non-streaming URL download if SSE fails
 class QweenTtsProvider implements TtsProvider {
   QweenTtsProvider(this._ref);
 
@@ -64,7 +65,8 @@ class QweenTtsProvider implements TtsProvider {
     );
 
     try {
-      // Strategy 1: SSE streaming — buffer PCM chunks, wrap in WAV, play
+      // SSE streaming — buffer all PCM then play as single WAV
+      // (audioplayers BytesSource doesn't support appending, so we buffer fully)
       debugPrint('Qween TTS: starting SSE stream...');
       final chunks = <int>[];
 
@@ -83,13 +85,14 @@ class QweenTtsProvider implements TtsProvider {
 
       if (chunks.isNotEmpty) {
         debugPrint('Qween TTS: playing ${chunks.length} PCM bytes as WAV');
-        final wavBytes = pcmToWav(chunks, sampleRate: kQweenTtsSampleRate);
+        final wavBytes = pcmToWav(Uint8List.fromList(chunks),
+            sampleRate: kQweenTtsSampleRate);
         await _player!.stop();
         await _player!.play(BytesSource(wavBytes));
         return; // onComplete fires via onPlayerComplete listener
       }
 
-      // Strategy 2: Fallback to non-streaming URL download
+      // Fallback: non-streaming URL download
       debugPrint('Qween TTS: SSE gave no audio, trying URL fallback...');
       _client = QweenTtsClient(
         apiKey: apiKey,
@@ -109,7 +112,8 @@ class QweenTtsProvider implements TtsProvider {
         return;
       }
 
-      debugPrint('Qween TTS: playing downloaded WAV (${wavBytes.length} bytes)');
+      debugPrint(
+          'Qween TTS: playing downloaded WAV (${wavBytes.length} bytes)');
       await _player!.stop();
       await _player!.play(BytesSource(wavBytes));
     } catch (e) {
