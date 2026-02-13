@@ -81,11 +81,31 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           if (previous != true) _startTypingFeedback();
         } else if (previous == true) {
           _stopTypingFeedback(playCompletion: true);
-          // Turn complete: resume STT in dialog mode if not currently speaking (e.g. empty last message)
+          // Turn complete: resume STT in dialog mode only when we won't play TTS (empty last message).
+          // If the last assistant message has content, TTS will run and onComplete will resume.
           final state = ref.read(appControllerProvider);
           if (state.isDialogModeActive &&
               state.dialogModeState != DialogModeState.speaking) {
-            _resumeListening();
+            final messages = state.chatMessages;
+            final lastAssistant = messages.isEmpty
+                ? null
+                : messages.lastWhere(
+                    (m) =>
+                        m.bubbleType == BubbleType.assistant && !m.isStreaming,
+                    orElse: () => ChatMessage(
+                      id: '',
+                      role: 'assistant',
+                      content: '',
+                      timestamp: DateTime.now(),
+                      bubbleType: BubbleType.assistant,
+                    ),
+                  );
+            final isRealMessage = lastAssistant != null && lastAssistant.id.isNotEmpty;
+            final hasContent = isRealMessage &&
+                stripEmojisAndMarkdown(lastAssistant.content).trim().isNotEmpty;
+            if (!hasContent) {
+              _resumeListening();
+            }
           }
         }
       },
