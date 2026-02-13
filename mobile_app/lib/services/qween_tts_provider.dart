@@ -11,7 +11,11 @@ import '../utils/wav_utils.dart';
 import 'tts_provider.dart';
 
 /// Qween (Alibaba Qwen) TTS provider.
-/// Uses DashScope API, plays audio via audioplayers.
+///
+/// Strategy:
+/// 1. SSE streaming — buffer PCM chunks, wrap in WAV, play.
+///    This gives lower latency (audio starts generating while we buffer).
+/// 2. Fallback: non-streaming URL — get WAV URL, download, play.
 class QweenTtsProvider implements TtsProvider {
   QweenTtsProvider(this._ref);
 
@@ -47,10 +51,11 @@ class QweenTtsProvider implements TtsProvider {
 
     if (apiKey == null || apiKey.trim().isEmpty) {
       debugPrint('Qween TTS: No API key configured');
-      _pendingOnComplete?.call();
-      _pendingOnComplete = null;
+      _callOnComplete();
       return;
     }
+
+    _initPlayer();
 
     _client = QweenTtsClient(
       apiKey: apiKey,
@@ -58,42 +63,11 @@ class QweenTtsProvider implements TtsProvider {
       instructions: qweenPrefs.instructions,
     );
 
-    _player ??= AudioPlayer()
-      ..setReleaseMode(ReleaseMode.stop)
-      ..onPlayerComplete.listen((_) {
-        debugPrint('Qween TTS: player completed');
-        if (!_stopped) {
-          _pendingOnComplete?.call();
-          _pendingOnComplete = null;
-        }
-      });
-
     try {
-      // Strategy 1: Non-streaming (full response) - most reliable
-      debugPrint('Qween TTS: requesting non-streaming audio...');
-      final audioBytes = await _client!.synthesize(text);
-
-      if (_stopped) {
-        _callOnComplete();
-        return;
-      }
-
-      if (audioBytes != null && audioBytes.isNotEmpty) {
-        debugPrint('Qween TTS: playing ${audioBytes.length} bytes');
-        await _player!.stop();
-        await _player!.play(BytesSource(audioBytes));
-        return; // onComplete fires via onPlayerComplete listener
-      }
-
-      // Strategy 2: Streaming fallback - buffer all chunks then play
-      debugPrint('Qween TTS: non-streaming failed, trying streaming...');
-      _client = QweenTtsClient(
-        apiKey: apiKey,
-        voice: qweenPrefs.voice,
-        instructions: qweenPrefs.instructions,
-      );
-
+      // Strategy 1: SSE streaming — buffer PCM chunks, wrap in WAV, play
+      debugPrint('Qween TTS: starting SSE stream...');
       final chunks = <int>[];
+
       await for (final chunk in _client!.synthesizeStream(text)) {
         if (_stopped) {
           _callOnComplete();
@@ -102,15 +76,40 @@ class QweenTtsProvider implements TtsProvider {
         chunks.addAll(chunk);
       }
 
-      if (_stopped || chunks.isEmpty) {
-        debugPrint('Qween TTS: no streaming audio received (${chunks.length} bytes)');
+      if (_stopped) {
         _callOnComplete();
         return;
       }
 
-      // Wrap PCM in WAV header for playback
-      debugPrint('Qween TTS: wrapping ${chunks.length} PCM bytes in WAV');
-      final wavBytes = pcmToWav(chunks, sampleRate: kQweenTtsSampleRate);
+      if (chunks.isNotEmpty) {
+        debugPrint('Qween TTS: playing ${chunks.length} PCM bytes as WAV');
+        final wavBytes = pcmToWav(chunks, sampleRate: kQweenTtsSampleRate);
+        await _player!.stop();
+        await _player!.play(BytesSource(wavBytes));
+        return; // onComplete fires via onPlayerComplete listener
+      }
+
+      // Strategy 2: Fallback to non-streaming URL download
+      debugPrint('Qween TTS: SSE gave no audio, trying URL fallback...');
+      _client = QweenTtsClient(
+        apiKey: apiKey,
+        voice: qweenPrefs.voice,
+        instructions: qweenPrefs.instructions,
+      );
+
+      final url = await _client!.synthesizeUrl(text);
+      if (_stopped || url == null) {
+        _callOnComplete();
+        return;
+      }
+
+      final wavBytes = await _client!.downloadWav(url);
+      if (_stopped || wavBytes == null || wavBytes.isEmpty) {
+        _callOnComplete();
+        return;
+      }
+
+      debugPrint('Qween TTS: playing downloaded WAV (${wavBytes.length} bytes)');
       await _player!.stop();
       await _player!.play(BytesSource(wavBytes));
     } catch (e) {
@@ -120,6 +119,17 @@ class QweenTtsProvider implements TtsProvider {
       _client?.dispose();
       _client = null;
     }
+  }
+
+  void _initPlayer() {
+    _player ??= AudioPlayer()
+      ..setReleaseMode(ReleaseMode.stop)
+      ..onPlayerComplete.listen((_) {
+        debugPrint('Qween TTS: playback complete');
+        if (!_stopped) {
+          _callOnComplete();
+        }
+      });
   }
 
   void _callOnComplete() {
