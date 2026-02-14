@@ -1,31 +1,32 @@
 import 'dart:async';
 
-import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_sound/flutter_sound.dart';
 
 import '../core/config/qween_tts_preferences.dart';
 import '../data/http/qween_tts_client.dart';
 import '../utils/platform_utils.dart';
-import '../utils/wav_utils.dart';
 import 'tts_provider.dart';
 
-/// Qween (Alibaba Qwen) TTS provider.
+/// Qween (Alibaba Qwen) TTS provider with real-time streaming playback.
 ///
-/// Strategy: SSE streaming with early playback.
-/// 1. Start SSE stream, buffer first N bytes of PCM
-/// 2. Once we have enough, wrap in WAV and play while continuing to buffer
-/// 3. When stream ends, if still playing let it finish; then play remainder
-/// 4. Fallback: non-streaming URL download if SSE fails
+/// Uses flutter_sound's startPlayerFromStream + feedUint8FromStream to play
+/// PCM chunks as they arrive from the SSE stream — no buffering delay.
+///
+/// Splits text into chunks ≤ 600 chars (API limit) and plays them sequentially.
 class QweenTtsProvider implements TtsProvider {
   QweenTtsProvider(this._ref);
 
   final Ref _ref;
 
   QweenTtsClient? _client;
-  AudioPlayer? _player;
+  FlutterSoundPlayer? _player;
   VoidCallback? _pendingOnComplete;
   bool _stopped = false;
+  bool _playerOpen = false;
+  bool _streamStarted = false;
+  bool _allChunksFed = false;
 
   @override
   Future<void> speak(
@@ -56,84 +57,173 @@ class QweenTtsProvider implements TtsProvider {
       return;
     }
 
-    _initPlayer();
+    await _ensurePlayerOpen();
 
-    _client = QweenTtsClient(
-      apiKey: apiKey,
-      voice: qweenPrefs.voice,
-      instructions: qweenPrefs.instructions,
-    );
+    final chunks = chunkTextForTts(text);
+    if (chunks.isEmpty) {
+      _callOnComplete();
+      return;
+    }
+
+    debugPrint('Qween TTS: ▶ voice="${qweenPrefs.voice}" ${chunks.length} chunk(s)');
 
     try {
-      // SSE streaming — buffer all PCM then play as single WAV
-      // (audioplayers BytesSource doesn't support appending, so we buffer fully)
-      debugPrint('Qween TTS: starting SSE stream...');
-      final chunks = <int>[];
+      for (var i = 0; i < chunks.length && !_stopped; i++) {
+        await _playSingleChunk(
+          apiKey: apiKey,
+          voice: qweenPrefs.voice,
+          text: chunks[i],
+          isLast: i == chunks.length - 1,
+        );
+      }
+    } catch (e) {
+      debugPrint('Qween TTS error: $e');
+      _callOnComplete();
+    }
+  }
 
-      await for (final chunk in _client!.synthesizeStream(text)) {
+  /// Plays one text chunk and returns when playback finishes.
+  Future<void> _playSingleChunk({
+    required String apiKey,
+    required String voice,
+    required String text,
+    required bool isLast,
+  }) async {
+    _streamStarted = false;
+    _allChunksFed = false;
+
+    _client = QweenTtsClient(apiKey: apiKey, voice: voice);
+
+    final playbackDone = Completer<void>();
+
+    try {
+      var gotAudio = false;
+
+      await for (final pcmChunk in _client!.synthesizeStream(text)) {
         if (_stopped) {
-          _callOnComplete();
+          playbackDone.complete();
           return;
         }
-        chunks.addAll(chunk);
+
+        if (!_streamStarted) {
+          await _player!.startPlayerFromStream(
+            codec: Codec.pcm16,
+            numChannels: 1,
+            sampleRate: kQweenTtsSampleRate,
+            interleaved: true,
+            bufferSize: 8192,
+            onBufferUnderflow: () {
+              if (_allChunksFed && !_stopped) {
+                if (!playbackDone.isCompleted) playbackDone.complete();
+                if (isLast) _callOnComplete();
+              }
+            },
+          );
+          _streamStarted = true;
+        }
+
+        await _player!.feedUint8FromStream(Uint8List.fromList(pcmChunk));
+        gotAudio = true;
       }
 
       if (_stopped) {
-        _callOnComplete();
+        playbackDone.complete();
         return;
       }
 
-      if (chunks.isNotEmpty) {
-        debugPrint('Qween TTS: playing ${chunks.length} PCM bytes as WAV');
-        final wavBytes = pcmToWav(Uint8List.fromList(chunks),
-            sampleRate: kQweenTtsSampleRate);
-        await _player!.stop();
-        await _player!.play(BytesSource(wavBytes));
-        return; // onComplete fires via onPlayerComplete listener
+      if (!gotAudio) {
+        debugPrint('Qween TTS: SSE gave no audio, trying URL fallback...');
+        await _playChunkFromUrl(
+          apiKey,
+          voice,
+          text,
+          playbackDone: playbackDone,
+          isLast: isLast,
+        );
+        return;
       }
 
-      // Fallback: non-streaming URL download
-      debugPrint('Qween TTS: SSE gave no audio, trying URL fallback...');
-      _client = QweenTtsClient(
-        apiKey: apiKey,
-        voice: qweenPrefs.voice,
-        instructions: qweenPrefs.instructions,
-      );
+      _allChunksFed = true;
+      await playbackDone.future;
+    } finally {
+      _client?.dispose();
+      _client = null;
+      await _stopStream();
+    }
+  }
 
+  Future<void> _playChunkFromUrl(
+    String apiKey,
+    String voice,
+    String text, {
+    required Completer<void> playbackDone,
+    required bool isLast,
+  }) async {
+    _client = QweenTtsClient(apiKey: apiKey, voice: voice);
+
+    try {
       final url = await _client!.synthesizeUrl(text);
       if (_stopped || url == null) {
-        _callOnComplete();
+        playbackDone.complete();
+        if (isLast) _callOnComplete();
         return;
       }
 
       final wavBytes = await _client!.downloadWav(url);
       if (_stopped || wavBytes == null || wavBytes.isEmpty) {
-        _callOnComplete();
+        playbackDone.complete();
+        if (isLast) _callOnComplete();
         return;
       }
 
-      debugPrint(
-          'Qween TTS: playing downloaded WAV (${wavBytes.length} bytes)');
-      await _player!.stop();
-      await _player!.play(BytesSource(wavBytes));
+      final pcmData = wavBytes.length > 44
+          ? Uint8List.sublistView(wavBytes, 44)
+          : wavBytes;
+
+      _allChunksFed = false;
+      await _player!.startPlayerFromStream(
+        codec: Codec.pcm16,
+        numChannels: 1,
+        sampleRate: kQweenTtsSampleRate,
+        interleaved: true,
+        bufferSize: 8192,
+        onBufferUnderflow: () {
+          if (_allChunksFed && !_stopped) {
+            if (!playbackDone.isCompleted) playbackDone.complete();
+            if (isLast) _callOnComplete();
+          }
+        },
+      );
+      _streamStarted = true;
+
+      await _player!.feedUint8FromStream(pcmData);
+      _allChunksFed = true;
+      await playbackDone.future;
     } catch (e) {
-      debugPrint('Qween TTS error: $e');
-      _callOnComplete();
+      debugPrint('Qween TTS URL fallback error: $e');
+      playbackDone.complete();
+      if (isLast) _callOnComplete();
     } finally {
       _client?.dispose();
       _client = null;
     }
   }
 
-  void _initPlayer() {
-    _player ??= AudioPlayer()
-      ..setReleaseMode(ReleaseMode.stop)
-      ..onPlayerComplete.listen((_) {
-        debugPrint('Qween TTS: playback complete');
-        if (!_stopped) {
-          _callOnComplete();
-        }
-      });
+  Future<void> _ensurePlayerOpen() async {
+    _player ??= FlutterSoundPlayer();
+    if (!_playerOpen) {
+      await _player!.openPlayer();
+      _playerOpen = true;
+    }
+  }
+
+  Future<void> _stopStream() async {
+    if (_streamStarted) {
+      try {
+        await _player?.stopPlayer();
+      } catch (_) {}
+      _streamStarted = false;
+    }
   }
 
   void _callOnComplete() {
@@ -147,14 +237,17 @@ class QweenTtsProvider implements TtsProvider {
     _client?.cancel();
     _client?.dispose();
     _client = null;
-    await _player?.stop();
+    await _stopStream();
     _callOnComplete();
   }
 
   void dispose() {
     _client?.dispose();
     _client = null;
-    _player?.dispose();
+    if (_playerOpen) {
+      _player?.closePlayer();
+      _playerOpen = false;
+    }
     _player = null;
   }
 }

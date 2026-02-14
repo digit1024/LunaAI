@@ -23,7 +23,7 @@ use crate::{
 use agentic_loop::mcp_servers_registry::MCPServerRegistry;
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::{HashMap, HashSet}, sync::Arc, time::Duration};
 use tokio::{
     sync::{mpsc::UnboundedSender, Mutex, RwLock},
     task::JoinHandle,
@@ -38,6 +38,8 @@ pub struct ServerContext {
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
     pub subscriptions: Arc<crate::server::conversation_subscriptions::ConversationSubscriptions>,
     pub schedule_service: Arc<ScheduleService>,
+    /// Tracks which memory IDs have been injected per conversation (dedup for Memory RAG)
+    pub memory_dedup: Mutex<HashMap<Uuid, HashSet<i64>>>,
 }
 
 pub struct SessionState {
@@ -384,7 +386,26 @@ impl ServerHandler {
         
         // Re-inject prompts after reload
         llm_messages = ContextService::inject_prompts(llm_messages, &self.ctx.prompt_manager, &profile)?;
-        
+
+        // Memory RAG: search and inject relevant memories
+        {
+            let storage_guard = self.ctx.storage.lock().await;
+            let mut dedup_guard = self.ctx.memory_dedup.lock().await;
+            let used_ids = dedup_guard.entry(conversation_uuid).or_default();
+            if let Some(memory_msg) = crate::services::memory_rag::retrieve_memory_context(
+                &storage_guard,
+                &content,
+                used_ids,
+            ) {
+                // Insert after system prompts but before conversation history
+                let insert_pos = llm_messages
+                    .iter()
+                    .position(|m| !matches!(m.role, Role::System))
+                    .unwrap_or(llm_messages.len());
+                llm_messages.insert(insert_pos, LlmMessage::new(Role::System, memory_msg));
+            }
+        }
+
         // Recalculate tokens after summarization (if it happened)
         let token_counter = TokenCounter::new(&profile);
         let total_tokens: usize = llm_messages.iter()
@@ -667,7 +688,7 @@ pub fn spawn_agent_task(
             llm_client,
             Some(schedule_service),
             ctx.server_cfg.tool_call_timeout_secs,
-        );
+        ).with_storage(storage.clone());
         let subs = subscriptions.clone();
         let stream_task = tokio::spawn(async move {
             let mut persistence = PersistenceContext::new(storage, conversation_id);

@@ -13,7 +13,6 @@ class QweenTtsSettingsScreen extends ConsumerStatefulWidget {
 
 class _QweenTtsSettingsScreenState extends ConsumerState<QweenTtsSettingsScreen> {
   late final TextEditingController _apiKeyController;
-  late final TextEditingController _instructionsController;
   bool _obscureApiKey = true;
   bool _loadingApiKey = true;
   String? _error;
@@ -22,9 +21,6 @@ class _QweenTtsSettingsScreenState extends ConsumerState<QweenTtsSettingsScreen>
   void initState() {
     super.initState();
     _apiKeyController = TextEditingController();
-    _instructionsController = TextEditingController(
-      text: kQweenDefaultInstructions,
-    );
     _loadSettings();
   }
 
@@ -34,12 +30,10 @@ class _QweenTtsSettingsScreenState extends ConsumerState<QweenTtsSettingsScreen>
       _error = null;
     });
     try {
-      final qweenPrefs = ref.read(qweenTtsPreferencesProvider);
       final apiKey = await ref.read(qweenTtsPreferencesProvider.notifier).getApiKey();
 
       if (mounted) {
         _apiKeyController.text = apiKey ?? '';
-        _instructionsController.text = qweenPrefs.instructions;
         setState(() => _loadingApiKey = false);
       }
     } catch (e) {
@@ -62,22 +56,13 @@ class _QweenTtsSettingsScreenState extends ConsumerState<QweenTtsSettingsScreen>
     }
   }
 
-  Future<void> _saveInstructions(String value) async {
-    await ref.read(qweenTtsPreferencesProvider.notifier).setInstructions(value);
-  }
-
   @override
   void dispose() {
-    // Save on close
     final apiKey = _apiKeyController.text.trim();
-    final instructions = _instructionsController.text.trim();
     if (apiKey.isNotEmpty) {
       ref.read(qweenTtsPreferencesProvider.notifier).setApiKey(apiKey);
     }
-    ref.read(qweenTtsPreferencesProvider.notifier).setInstructions(instructions);
-
     _apiKeyController.dispose();
-    _instructionsController.dispose();
     super.dispose();
   }
 
@@ -161,25 +146,9 @@ class _QweenTtsSettingsScreenState extends ConsumerState<QweenTtsSettingsScreen>
                       if (value != null) qweenNotifier.setVoice(value);
                     },
                   ),
-                  const SizedBox(height: 20),
-
-                  // Instructions
-                  TextField(
-                    controller: _instructionsController,
-                    maxLines: 4,
-                    decoration: const InputDecoration(
-                      labelText: 'Instructions',
-                      helperText:
-                          'Natural language control for voice style. Leave blank for default.',
-                      helperMaxLines: 2,
-                      border: OutlineInputBorder(),
-                      alignLabelWithHint: true,
-                    ),
-                    onChanged: _saveInstructions,
-                  ),
                   const SizedBox(height: 8),
                   Text(
-                    'Model: qwen3-tts-instruct-flash (supports instruction control)',
+                    'Model: qwen3-tts-flash',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],

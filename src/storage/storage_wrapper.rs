@@ -380,6 +380,33 @@ impl Storage {
         self.sqlite.perform_summarization(conversation_id, messages_to_summarize, summary_content)
     }
 
+    // ── Long-term memory methods ──
+
+    /// Store a memory entry
+    pub fn store_memory(&self, content: &str, category: Option<&str>, importance: Option<i32>) -> SqliteResult<super::sqlite_storage_simple::MemoryEntry> {
+        self.sqlite.store_memory(content, category, importance)
+    }
+
+    /// Search memory via FTS5
+    pub fn search_memory(&self, keywords: &[String], limit: usize) -> SqliteResult<Vec<super::sqlite_storage_simple::MemoryEntry>> {
+        self.sqlite.search_memory(keywords, limit)
+    }
+
+    /// Search memory by category
+    pub fn search_memory_by_category(&self, category: &str, limit: usize) -> SqliteResult<Vec<super::sqlite_storage_simple::MemoryEntry>> {
+        self.sqlite.search_memory_by_category(category, limit)
+    }
+
+    /// Delete a memory entry by ID
+    pub fn delete_memory(&self, memory_id: i64) -> SqliteResult<bool> {
+        self.sqlite.delete_memory(memory_id)
+    }
+
+    /// List all memory entries
+    pub fn list_memory(&self, limit: usize) -> SqliteResult<Vec<super::sqlite_storage_simple::MemoryEntry>> {
+        self.sqlite.list_memory(limit)
+    }
+
     /// Insert a scheduled job
     pub fn insert_scheduled_job(&self, job: &ScheduledJob) -> SqliteResult<()> {
         self.sqlite.insert_scheduled_job(job)

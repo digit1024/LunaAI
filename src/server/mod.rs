@@ -72,6 +72,7 @@ async fn launch(options: ServerOptions) -> Result<()> {
         mcp_registry,
         subscriptions,
         schedule_service,
+        memory_dedup: tokio::sync::Mutex::new(std::collections::HashMap::new()),
     });
 
     // Spawn background title generation thread only if profile is configured

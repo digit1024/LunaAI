@@ -8,6 +8,7 @@
 
 #include <audioplayers_windows/audioplayers_windows_plugin.h>
 #include <flutter_secure_storage_windows/flutter_secure_storage_windows_plugin.h>
+#include <flutter_sound/flutter_sound_plugin_c_api.h>
 #include <flutter_tts/flutter_tts_plugin.h>
 #include <speech_to_text_windows/speech_to_text_windows.h>
 
@@ -16,6 +17,8 @@ void RegisterPlugins(flutter::PluginRegistry* registry) {
       registry->GetRegistrarForPlugin("AudioplayersWindowsPlugin"));
   FlutterSecureStorageWindowsPluginRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("FlutterSecureStorageWindowsPlugin"));
+  FlutterSoundPluginCApiRegisterWithRegistrar(
+      registry->GetRegistrarForPlugin("FlutterSoundPluginCApi"));
   FlutterTtsPluginRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("FlutterTtsPlugin"));
   SpeechToTextWindowsRegisterWithRegistrar(

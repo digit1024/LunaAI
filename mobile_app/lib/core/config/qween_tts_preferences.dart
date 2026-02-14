@@ -3,48 +3,76 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Default Qween TTS instructions per issue requirements.
-const String kQweenDefaultInstructions =
-    'speed: medium, Pitch Medium, Emotion: gentle and bit seductive, characteristics: Magnetic, Usage voice assistant colleague.';
-
-/// Default Qween voice per supported system voices.
+/// Default Qween voice (qwen3-tts-flash supported).
 const String kQweenDefaultVoice = 'Katerina';
 
-/// Supported Qwen TTS voices.
-/// Cherry, Ethan, Chelsie, Vivian are confirmed in official docs/examples.
-/// Katerina is specified in the issue requirements as default.
-/// Others are from community reports of the 49-voice set.
+/// Supported Qwen TTS voices for qwen3-tts-flash.
+/// From https://www.alibabacloud.com/help/en/model-studio/qwen-tts#80027657a7cm4
 const List<String> kQwenSupportedVoices = [
-  'Katerina',
   'Cherry',
+  'Serena',
   'Ethan',
   'Chelsie',
+  'Momo',
   'Vivian',
+  'Moon',
+  'Maia',
+  'Kai',
+  'Nofish',
+  'Bella',
+  'Jennifer',
+  'Ryan',
+  'Katerina',
+  'Aiden',
+  'Eldric Sage',
+  'Mia',
+  'Mochi',
+  'Bellona',
+  'Vincent',
+  'Bunny',
+  'Neil',
+  'Elias',
+  'Arthur',
+  'Nini',
+  'Ebona',
+  'Seren',
+  'Pip',
+  'Stella',
+  'Bodega',
+  'Sonrisa',
+  'Alek',
+  'Dolce',
+  'Sohee',
+  'Ono Anna',
+  'Lenn',
+  'Emilien',
+  'Andre',
+  'Radio Gol',
+  // Dialect voices
+  'Jada',
+  'Dylan',
+  'Li',
+  'Marcus',
+  'Roy',
+  'Peter',
+  'Sunny',
+  'Eric',
+  'Rocky',
+  'Kiki',
 ];
 
 class QweenTtsPreferences {
   final String voice;
-  final String instructions;
 
-  const QweenTtsPreferences({
-    this.voice = kQweenDefaultVoice,
-    this.instructions = kQweenDefaultInstructions,
-  });
+  const QweenTtsPreferences({this.voice = kQweenDefaultVoice});
 
-  QweenTtsPreferences copyWith({
-    String? voice,
-    String? instructions,
-  }) {
-    return QweenTtsPreferences(
-      voice: voice ?? this.voice,
-      instructions: instructions ?? this.instructions,
-    );
+  QweenTtsPreferences copyWith({String? voice}) {
+    return QweenTtsPreferences(voice: voice ?? this.voice);
   }
 }
 
 class QweenTtsPreferencesNotifier extends Notifier<QweenTtsPreferences> {
   static const _voiceKey = 'qween_tts_voice';
-  static const _instructionsKey = 'qween_tts_instructions';
   static const _apiKeyStorageKey = 'qween_tts_api_key';
 
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage(
@@ -64,28 +92,16 @@ class QweenTtsPreferencesNotifier extends Notifier<QweenTtsPreferences> {
   Future<void> _loadFromPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     final voice = prefs.getString(_voiceKey) ?? kQweenDefaultVoice;
-    final instructions =
-        prefs.getString(_instructionsKey) ?? kQweenDefaultInstructions;
-
-    state = QweenTtsPreferences(
-      voice: voice,
-      instructions: instructions,
-    );
+    state = QweenTtsPreferences(voice: voice);
   }
 
   Future<void> _saveToPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_voiceKey, state.voice);
-    await prefs.setString(_instructionsKey, state.instructions);
   }
 
   Future<void> setVoice(String value) async {
     state = state.copyWith(voice: value);
-    await _saveToPrefs();
-  }
-
-  Future<void> setInstructions(String value) async {
-    state = state.copyWith(instructions: value);
     await _saveToPrefs();
   }
 

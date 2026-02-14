@@ -31,10 +31,12 @@ def test_non_streaming(api_key: str, text: str):
 
     body = {
         "model": MODEL,
-        "input": {"text": text},
-        "parameters": {
+        "input": {
+            "text": text,
             "voice": VOICE,
             "language_type": "English",
+        },
+        "parameters": {
             "instructions": INSTRUCTIONS,
             "optimize_instructions": True,
         },
@@ -102,10 +104,12 @@ def test_streaming(api_key: str, text: str):
 
     body = {
         "model": MODEL,
-        "input": {"text": text},
-        "parameters": {
+        "input": {
+            "text": text,
             "voice": VOICE,
             "language_type": "English",
+        },
+        "parameters": {
             "instructions": INSTRUCTIONS,
             "optimize_instructions": True,
         },
@@ -189,6 +193,67 @@ def test_streaming(api_key: str, text: str):
         print(f"  Combined audio: {len(combined)} bytes → saved to {out}")
 
 
+def test_voice_comparison(api_key: str):
+    """Test multiple voices on BOTH models to see which one respects voice param."""
+    print("\n" + "=" * 60)
+    print("TEST: VOICE COMPARISON (instruct-flash vs flash)")
+    print("=" * 60)
+
+    voices_to_test = ["Katerina", "Cherry", "Ethan", "Chelsie"]
+    models_to_test = [
+        "qwen3-tts-instruct-flash",
+        "qwen3-tts-flash",
+    ]
+    short_text = "Hello, how are you today?"
+
+    for model in models_to_test:
+        print(f"\n  --- Model: {model} ---")
+        for voice in voices_to_test:
+            body = {
+                "model": model,
+                "input": {
+                    "text": short_text,
+                    "voice": voice,
+                    "language_type": "English",
+                },
+            }
+            # Add instructions only for instruct model
+            if "instruct" in model:
+                body["parameters"] = {
+                    "instructions": "Normal speaking pace.",
+                    "optimize_instructions": True,
+                }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            resp = requests.post(ENDPOINT, headers=headers, json=body, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                audio = data.get("output", {}).get("audio", {})
+                url = audio.get("url", "")
+                audio_id = audio.get("id", "")
+                print(f"  ✓ {voice:20s}  status=200  id={audio_id[-12:]}  url={'yes' if url else 'no'}")
+
+                # Download and save to compare file sizes
+                if url:
+                    wav_resp = requests.get(url, timeout=10)
+                    if wav_resp.status_code == 200:
+                        suffix = "instruct" if "instruct" in model else "flash"
+                        out = OUT_DIR / f"voice_{suffix}_{voice}.wav"
+                        out.write_bytes(wav_resp.content)
+                        print(f"    → {out.name}  {len(wav_resp.content)} bytes")
+            else:
+                err = resp.json().get("message", resp.text[:200])
+                print(f"  ✗ {voice:20s}  status={resp.status_code}  {err[:100]}")
+        except Exception as e:
+            print(f"  ✗ {voice:20s}  error: {e}")
+
+    print(f"\n  Compare WAV files in {OUT_DIR}/ — different sizes = different voices")
+
+
 def test_non_streaming_pcm(api_key: str, text: str):
     """Non-streaming with sample_rate only (no response_format)."""
     print("\n" + "=" * 60)
@@ -197,10 +262,12 @@ def test_non_streaming_pcm(api_key: str, text: str):
 
     body = {
         "model": MODEL,
-        "input": {"text": text},
-        "parameters": {
+        "input": {
+            "text": text,
             "voice": VOICE,
             "language_type": "English",
+        },
+        "parameters": {
             "sample_rate": 24000,
             "instructions": INSTRUCTIONS,
             "optimize_instructions": True,
@@ -242,8 +309,8 @@ def test_non_streaming_wav(api_key: str, text: str):
 
     body = {
         "model": "qwen3-tts-flash",
-        "input": {"text": text},
-        "parameters": {
+        "input": {
+            "text": text,
             "voice": VOICE,
             "language_type": "English",
         },
@@ -364,6 +431,7 @@ def main():
 
     test_non_streaming(api_key, text)
     test_streaming(api_key, text)
+    test_voice_comparison(api_key)
     test_non_streaming_pcm(api_key, text)
     test_non_streaming_wav(api_key, text)
 

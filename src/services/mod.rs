@@ -8,6 +8,7 @@ pub mod context_service;
 pub mod tool_call_manager;
 pub mod mcp_service;
 pub mod schedule_service;
+pub mod memory_rag;
 
 pub use message_converter::MessageConverter;
 pub use context_service::ContextService;

@@ -42,6 +42,83 @@ fn schedule_task_tool_definition() -> ToolDefinition {
     }
 }
 
+fn store_memory_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "store_memory".to_string(),
+        description: "Store important facts, preferences, or relevant information in long-term memory. Use this to remember things across conversations. To update a memory, delete the old one first, then store the new version.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The fact or information to remember"
+                },
+                "category": {
+                    "type": "string",
+                    "description": "A tag for grouping (e.g. 'workflow', 'personal', 'work', 'security')"
+                },
+                "importance": {
+                    "type": "integer",
+                    "description": "Priority score 1-10 (default: 5)"
+                }
+            },
+            "required": ["content"]
+        }),
+    }
+}
+
+fn search_memory_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "search_memory".to_string(),
+        description: "Search long-term memory using full-text search. Use this to recall stored knowledge, user preferences, technical setups, or important facts from previous conversations. Results are ranked by relevance.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "keywords": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Keywords to search in memory (OR semantics)"
+                }
+            },
+            "required": ["keywords"]
+        }),
+    }
+}
+
+fn search_memory_by_category_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "search_memory_by_category".to_string(),
+        description: "Search long-term memory entries by category. Returns all entries in the given category, ordered by importance and recency.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "description": "Category to filter (e.g. 'work', 'personal', 'security')"
+                }
+            },
+            "required": ["category"]
+        }),
+    }
+}
+
+fn delete_memory_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "delete_memory".to_string(),
+        description: "Delete a memory entry by its ID. Use this to remove outdated or incorrect information from long-term memory.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "integer",
+                    "description": "The ID of the memory entry to remove"
+                }
+            },
+            "required": ["memory_id"]
+        }),
+    }
+}
+
 fn cancel_scheduled_task_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "cancel_scheduled_task".to_string(),
@@ -63,6 +140,7 @@ pub struct AgenticLoop {
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
     pub llm_client: Arc<dyn LlmClient>,
     pub schedule_service: Option<Arc<ScheduleService>>,
+    pub storage: Option<Arc<tokio::sync::Mutex<crate::storage::Storage>>>,
     pub tool_call_timeout_secs: u64,
 }
 
@@ -77,8 +155,14 @@ impl AgenticLoop {
             mcp_registry,
             llm_client,
             schedule_service,
+            storage: None,
             tool_call_timeout_secs,
         }
+    }
+
+    pub fn with_storage(mut self, storage: Arc<tokio::sync::Mutex<crate::storage::Storage>>) -> Self {
+        self.storage = Some(storage);
+        self
     }
 
     pub async fn process_message(
@@ -95,6 +179,12 @@ impl AgenticLoop {
                 let mut defs = tools_to_definitions(&tools);
                 defs.push(schedule_task_tool_definition());
                 defs.push(cancel_scheduled_task_tool_definition());
+                if self.storage.is_some() {
+                    defs.push(store_memory_tool_definition());
+                    defs.push(search_memory_tool_definition());
+                    defs.push(search_memory_by_category_tool_definition());
+                    defs.push(delete_memory_tool_definition());
+                }
                 tracing::debug!(tool_count = defs.len(), "Enabled tools");
                 defs
             };
@@ -224,6 +314,12 @@ impl AgenticLoop {
                     self.execute_schedule_task(&tool_call, run_context_clone.as_ref()).await
                 } else if tool_call.name == "cancel_scheduled_task" {
                     self.execute_cancel_scheduled_task(&tool_call).await
+                } else if tool_call.name == "store_memory"
+                    || tool_call.name == "search_memory"
+                    || tool_call.name == "search_memory_by_category"
+                    || tool_call.name == "delete_memory"
+                {
+                    self.execute_memory_tool(&tool_call).await
                 } else {
                     self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref()).await
                 };
@@ -242,6 +338,85 @@ impl AgenticLoop {
                     result.is_error,
                 ));
             }
+        }
+    }
+
+    async fn execute_memory_tool(&self, tool_call: &ToolCall) -> ToolResult {
+        let Some(storage) = &self.storage else {
+            return ToolResult {
+                content: "Memory tools are not available (no storage)".to_string(),
+                is_error: true,
+            };
+        };
+        let params = &tool_call.parameters;
+        let guard = storage.lock().await;
+
+        match tool_call.name.as_str() {
+            "store_memory" => {
+                let content = params.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if content.is_empty() {
+                    return ToolResult { content: "store_memory requires non-empty 'content'".to_string(), is_error: true };
+                }
+                let category = params.get("category").and_then(|v| v.as_str());
+                let importance = params.get("importance").and_then(|v| v.as_i64()).map(|v| v as i32);
+                match guard.store_memory(&content, category, importance) {
+                    Ok(entry) => ToolResult {
+                        content: serde_json::to_string(&entry).unwrap_or_else(|_| format!("Stored memory (id: {})", entry.id)),
+                        is_error: false,
+                    },
+                    Err(e) => ToolResult { content: format!("Failed to store memory: {}", e), is_error: true },
+                }
+            }
+            "search_memory" => {
+                let keywords: Vec<String> = params.get("keywords")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                if keywords.is_empty() {
+                    return ToolResult { content: "search_memory requires non-empty 'keywords'".to_string(), is_error: true };
+                }
+                match guard.search_memory(&keywords, 10) {
+                    Ok(entries) => ToolResult {
+                        content: serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string()),
+                        is_error: false,
+                    },
+                    Err(e) => ToolResult { content: format!("Failed to search memory: {}", e), is_error: true },
+                }
+            }
+            "search_memory_by_category" => {
+                let category = params.get("category").and_then(|v| v.as_str()).unwrap_or("");
+                if category.is_empty() {
+                    return ToolResult { content: "search_memory_by_category requires non-empty 'category'".to_string(), is_error: true };
+                }
+                match guard.search_memory_by_category(category, 50) {
+                    Ok(entries) => ToolResult {
+                        content: serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string()),
+                        is_error: false,
+                    },
+                    Err(e) => ToolResult { content: format!("Failed to search memory by category: {}", e), is_error: true },
+                }
+            }
+            "delete_memory" => {
+                let memory_id = params.get("memory_id").and_then(|v| v.as_i64()).unwrap_or(0);
+                if memory_id == 0 {
+                    return ToolResult { content: "delete_memory requires non-zero 'memory_id'".to_string(), is_error: true };
+                }
+                match guard.delete_memory(memory_id) {
+                    Ok(true) => ToolResult {
+                        content: format!("Memory {} deleted.", memory_id),
+                        is_error: false,
+                    },
+                    Ok(false) => ToolResult {
+                        content: format!("No memory found with id {}.", memory_id),
+                        is_error: false,
+                    },
+                    Err(e) => ToolResult { content: format!("Failed to delete memory: {}", e), is_error: true },
+                }
+            }
+            _ => ToolResult {
+                content: format!("Unknown memory tool: {}", tool_call.name),
+                is_error: true,
+            },
         }
     }
 
@@ -425,6 +600,12 @@ impl AgenticLoop {
                 let mut defs = tools_to_definitions(&tools);
                 defs.push(schedule_task_tool_definition());
                 defs.push(cancel_scheduled_task_tool_definition());
+                if self.storage.is_some() {
+                    defs.push(store_memory_tool_definition());
+                    defs.push(search_memory_tool_definition());
+                    defs.push(search_memory_by_category_tool_definition());
+                    defs.push(delete_memory_tool_definition());
+                }
                 defs
             };
 
@@ -506,6 +687,12 @@ impl AgenticLoop {
                     self.execute_schedule_task(&tool_call, run_context.as_ref()).await
                 } else if tool_call.name == "cancel_scheduled_task" {
                     self.execute_cancel_scheduled_task(&tool_call).await
+                } else if tool_call.name == "store_memory"
+                    || tool_call.name == "search_memory"
+                    || tool_call.name == "search_memory_by_category"
+                    || tool_call.name == "delete_memory"
+                {
+                    self.execute_memory_tool(&tool_call).await
                 } else {
                     self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref()).await
                 };

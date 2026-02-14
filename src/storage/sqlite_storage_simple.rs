@@ -53,6 +53,16 @@ pub struct Snippet {
     pub rank: f64,
 }
 
+/// A long-term memory entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryEntry {
+    pub id: i64,
+    pub content: String,
+    pub category: Option<String>,
+    pub importance: i32,
+    pub created_at: i64,
+}
+
 /// A scheduled job (one-shot or recurring via cron)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScheduledJob {
@@ -275,6 +285,47 @@ impl SqliteStorage {
             )",
             [],
         )?;
+
+        // Long-term memory storage (ported from mcp_luna_memory)
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content TEXT NOT NULL,
+                category TEXT,
+                importance INTEGER DEFAULT 5,
+                created_at INTEGER
+            )",
+            [],
+        )?;
+
+        // FTS5 virtual table for memory full-text search
+        self.conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+                content,
+                content='memory',
+                content_rowid='id'
+            )",
+            [],
+        )?;
+
+        // Trigger: auto-sync FTS index on memory insert
+        self.conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS memory_ai AFTER INSERT ON memory BEGIN
+                INSERT INTO memory_fts(rowid, content) VALUES (new.id, new.content);
+            END",
+            [],
+        )?;
+
+        // Trigger: auto-sync FTS index on memory delete
+        self.conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS memory_ad AFTER DELETE ON memory BEGIN
+                INSERT INTO memory_fts(memory_fts, rowid, content) VALUES('delete', old.id, old.content);
+            END",
+            [],
+        )?;
+
+        // Rebuild FTS index from content table (syncs pre-existing rows not covered by triggers)
+        self.conn.execute("INSERT INTO memory_fts(memory_fts) VALUES('rebuild')", [])?;
 
         Ok(())
     }
@@ -778,6 +829,99 @@ impl SqliteStorage {
         )?;
 
         Ok(changes > 0)
+    }
+
+    // ── Long-term memory methods (ported from mcp_luna_memory) ──
+
+    /// Store a memory entry. Returns the new entry with its assigned ID.
+    pub fn store_memory(&self, content: &str, category: Option<&str>, importance: Option<i32>) -> SqliteResult<MemoryEntry> {
+        let importance = importance.unwrap_or(5);
+        let created_at = Utc::now().timestamp();
+        self.conn.execute(
+            "INSERT INTO memory (content, category, importance, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![content, category, importance, created_at],
+        )?;
+        let id = self.conn.last_insert_rowid();
+        Ok(MemoryEntry {
+            id,
+            content: content.to_string(),
+            category: category.map(|s| s.to_string()),
+            importance,
+            created_at,
+        })
+    }
+
+    /// Search memory via FTS5 full-text search. Keywords are OR-joined.
+    pub fn search_memory(&self, keywords: &[String], limit: usize) -> SqliteResult<Vec<MemoryEntry>> {
+        let fts_query: String = keywords.iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" OR ");
+        if fts_query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT m.id, m.content, m.category, m.importance, m.created_at
+             FROM memory m
+             JOIN memory_fts ON m.id = memory_fts.rowid
+             WHERE memory_fts MATCH ?1
+             ORDER BY bm25(memory_fts) ASC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
+            Ok(MemoryEntry {
+                id: row.get(0)?,
+                content: row.get(1)?,
+                category: row.get(2)?,
+                importance: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Search memory entries by category, ordered by importance then recency.
+    pub fn search_memory_by_category(&self, category: &str, limit: usize) -> SqliteResult<Vec<MemoryEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, content, category, importance, created_at
+             FROM memory
+             WHERE category = ?1
+             ORDER BY importance DESC, created_at DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![category, limit as i64], |row| {
+            Ok(MemoryEntry {
+                id: row.get(0)?,
+                content: row.get(1)?,
+                category: row.get(2)?,
+                importance: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Delete a memory entry by ID. Returns true if a row was deleted.
+    pub fn delete_memory(&self, memory_id: i64) -> SqliteResult<bool> {
+        let changes = self.conn.execute("DELETE FROM memory WHERE id = ?1", params![memory_id])?;
+        Ok(changes > 0)
+    }
+
+    /// List all memory entries, ordered by importance then recency.
+    pub fn list_memory(&self, limit: usize) -> SqliteResult<Vec<MemoryEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, content, category, importance, created_at
+             FROM memory
+             ORDER BY importance DESC, created_at DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(MemoryEntry {
+                id: row.get(0)?,
+                content: row.get(1)?,
+                category: row.get(2)?,
+                importance: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        rows.collect()
     }
 
     /// Insert a scheduled job

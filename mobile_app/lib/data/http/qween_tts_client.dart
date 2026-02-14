@@ -4,17 +4,51 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
-import '../../core/config/qween_tts_preferences.dart';
 
 /// International endpoint (Singapore) for Qwen TTS.
 const String kQweenTtsEndpoint =
     'https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
 
-/// Qwen TTS model with instruction control support.
-const String kQweenTtsModel = 'qwen3-tts-instruct-flash';
+/// Qwen TTS model — Flash for broad voice support (no instruction control).
+const String kQweenTtsModel = 'qwen3-tts-flash';
 
 /// Qwen TTS sample rate (24 kHz PCM).
 const int kQweenTtsSampleRate = 24000;
+
+/// Max input length per API (qwen3-tts-flash).
+const int kQweenTtsMaxInputLength = 600;
+
+/// Splits text into chunks ≤ [maxLen] chars. Prefers sentence, then word boundaries.
+List<String> chunkTextForTts(String text, {int maxLen = kQweenTtsMaxInputLength}) {
+  final trimmed = text.trim();
+  if (trimmed.isEmpty) return [];
+
+  final chunks = <String>[];
+  var start = 0;
+
+  while (start < trimmed.length) {
+    final end = (start + maxLen).clamp(0, trimmed.length);
+    if (end >= trimmed.length) {
+      chunks.add(trimmed.substring(start).trim());
+      break;
+    }
+
+    // Prefer sentence boundary: . ! ?
+    var cut = end;
+    final lastSentence = trimmed.lastIndexOf(RegExp(r'[.!?]\s+'), end);
+    if (lastSentence > start) {
+      cut = lastSentence + 1;
+    } else {
+      final lastSpace = trimmed.lastIndexOf(' ', end);
+      if (lastSpace > start) cut = lastSpace + 1;
+    }
+
+    chunks.add(trimmed.substring(start, cut).trim());
+    start = cut;
+  }
+
+  return chunks.where((c) => c.isNotEmpty).toList();
+}
 
 /// Client for Qwen TTS API.
 ///
@@ -33,14 +67,11 @@ class QweenTtsClient {
   QweenTtsClient({
     required String apiKey,
     required String voice,
-    required String instructions,
   })  : _apiKey = apiKey,
-        _voice = voice,
-        _instructions = instructions;
+        _voice = voice;
 
   final String _apiKey;
   final String _voice;
-  final String _instructions;
 
   http.Client? _client;
   bool _cancelled = false;
@@ -179,23 +210,13 @@ class QweenTtsClient {
   }
 
   Map<String, dynamic> _buildRequestBody(String text) {
-    final params = <String, dynamic>{
-      'voice': _voice,
-      'language_type': 'English',
-    };
-
-    // Instructions only for instruct model
-    if (kQweenTtsModel.contains('instruct')) {
-      params['instructions'] = _instructions.trim().isEmpty
-          ? kQweenDefaultInstructions
-          : _instructions;
-      params['optimize_instructions'] = true;
-    }
-
     return {
       'model': kQweenTtsModel,
-      'input': {'text': text},
-      'parameters': params,
+      'input': {
+        'text': text,
+        'voice': _voice,
+        'language_type': 'English',
+      },
     };
   }
 
