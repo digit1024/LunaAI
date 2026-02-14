@@ -6,4 +6,3 @@ pub mod title_generation;
 // Re-export the storage wrapper as the default Storage
 pub use storage_wrapper::Storage;
 pub use sqlite_storage_simple::ScheduledJob;
-pub use sqlite_storage_simple::MemoryEntry;

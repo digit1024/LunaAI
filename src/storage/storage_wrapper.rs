@@ -407,6 +407,31 @@ impl Storage {
         self.sqlite.list_memory(limit)
     }
 
+    /// Update a memory entry
+    pub fn update_memory(&self, memory_id: i64, content: &str, category: Option<&str>, importance: i32) -> SqliteResult<bool> {
+        self.sqlite.update_memory(memory_id, content, category, importance)
+    }
+
+    /// Get a deep sleep state value
+    pub fn get_deep_sleep_state(&self, key: &str) -> SqliteResult<Option<String>> {
+        self.sqlite.get_deep_sleep_state(key)
+    }
+
+    /// Set a deep sleep state value (upsert)
+    pub fn set_deep_sleep_state(&self, key: &str, value: &str) -> SqliteResult<()> {
+        self.sqlite.set_deep_sleep_state(key, value)
+    }
+
+    /// Get conversations that have messages after a given message ID
+    pub fn get_conversations_with_messages_after(&self, message_id: i64, limit: usize) -> SqliteResult<Vec<super::sqlite_storage_simple::Conversation>> {
+        self.sqlite.get_conversations_with_messages_after(message_id, limit)
+    }
+
+    /// Get the maximum message ID
+    pub fn get_max_message_id(&self) -> SqliteResult<i64> {
+        self.sqlite.get_max_message_id()
+    }
+
     /// Insert a scheduled job
     pub fn insert_scheduled_job(&self, job: &ScheduledJob) -> SqliteResult<()> {
         self.sqlite.insert_scheduled_job(job)

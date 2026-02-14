@@ -733,8 +733,11 @@ impl LunaThinApp {
     }
     
     /// Complete assistant message
+    /// NOTE: Do NOT set is_streaming = false here. In an agentic loop, AssistantComplete
+    /// fires before tool execution begins. The global is_streaming flag must stay true
+    /// so the stop button remains visible during tool execution.
+    /// is_streaming is cleared by ConversationComplete or StreamingStopped events.
     fn complete_assistant(&mut self, content: &str, reasoning_content: Option<&str>) {
-        self.is_streaming = false;
         self.streaming_content.clear();
         self.reasoning_content.clear();
         

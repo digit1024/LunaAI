@@ -199,6 +199,48 @@ impl Default for TitleSummaryConfig {
     }
 }
 
+// ── Deep Sleep config ──
+
+fn default_deep_sleep_enabled() -> bool { false }
+fn default_deep_sleep_interval_hours() -> u64 { 24 }
+fn default_deep_sleep_memory_batch_size() -> usize { 20 }
+fn default_deep_sleep_max_conversations() -> usize { 50 }
+fn default_deep_sleep_inter_call_delay_secs() -> u64 { 2 }
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct DeepSleepConfig {
+    #[serde(default = "default_deep_sleep_enabled")]
+    pub enabled: bool,
+    /// LLM profile name to use for deep sleep analysis
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// How often to run (hours)
+    #[serde(default = "default_deep_sleep_interval_hours")]
+    pub interval_hours: u64,
+    /// Memories per LLM evaluation call
+    #[serde(default = "default_deep_sleep_memory_batch_size")]
+    pub memory_batch_size: usize,
+    /// Max conversations to process per cycle
+    #[serde(default = "default_deep_sleep_max_conversations")]
+    pub max_conversations_per_run: usize,
+    /// Delay between LLM calls (seconds, for RPi4 thermal management)
+    #[serde(default = "default_deep_sleep_inter_call_delay_secs")]
+    pub inter_call_delay_secs: u64,
+}
+
+impl Default for DeepSleepConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_deep_sleep_enabled(),
+            profile: None,
+            interval_hours: default_deep_sleep_interval_hours(),
+            memory_batch_size: default_deep_sleep_memory_batch_size(),
+            max_conversations_per_run: default_deep_sleep_max_conversations(),
+            inter_call_delay_secs: default_deep_sleep_inter_call_delay_secs(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct AppConfig {
     pub default: String,
@@ -211,6 +253,8 @@ pub struct AppConfig {
     pub server: ServerConfig,
     #[serde(default)]
     pub title_summary: TitleSummaryConfig,
+    #[serde(default)]
+    pub deep_sleep: DeepSleepConfig,
 }
 
 impl Default for AppConfig {
@@ -225,6 +269,7 @@ impl Default for AppConfig {
             mcp: MCPConfig::default(),
             server: ServerConfig::default(),
             title_summary: TitleSummaryConfig::default(),
+            deep_sleep: DeepSleepConfig::default(),
         }
     }
 }

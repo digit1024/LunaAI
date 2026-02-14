@@ -61,6 +61,7 @@ pub struct MemoryEntry {
     pub category: Option<String>,
     pub importance: i32,
     pub created_at: i64,
+    pub updated_at: Option<i64>,
 }
 
 /// A scheduled job (one-shot or recurring via cron)
@@ -293,7 +294,23 @@ impl SqliteStorage {
                 content TEXT NOT NULL,
                 category TEXT,
                 importance INTEGER DEFAULT 5,
-                created_at INTEGER
+                created_at INTEGER,
+                updated_at INTEGER
+            )",
+            [],
+        )?;
+
+        // Migration: add updated_at column if missing (existing DBs)
+        let _ = self.conn.execute(
+            "ALTER TABLE memory ADD COLUMN updated_at INTEGER",
+            [],
+        );
+
+        // Deep sleep state (key-value store for tracking progress)
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS deep_sleep_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             )",
             [],
         )?;
@@ -836,10 +853,10 @@ impl SqliteStorage {
     /// Store a memory entry. Returns the new entry with its assigned ID.
     pub fn store_memory(&self, content: &str, category: Option<&str>, importance: Option<i32>) -> SqliteResult<MemoryEntry> {
         let importance = importance.unwrap_or(5);
-        let created_at = Utc::now().timestamp();
+        let now = Utc::now().timestamp();
         self.conn.execute(
-            "INSERT INTO memory (content, category, importance, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params![content, category, importance, created_at],
+            "INSERT INTO memory (content, category, importance, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![content, category, importance, now, now],
         )?;
         let id = self.conn.last_insert_rowid();
         Ok(MemoryEntry {
@@ -847,7 +864,8 @@ impl SqliteStorage {
             content: content.to_string(),
             category: category.map(|s| s.to_string()),
             importance,
-            created_at,
+            created_at: now,
+            updated_at: Some(now),
         })
     }
 
@@ -858,7 +876,7 @@ impl SqliteStorage {
             return Ok(Vec::new());
         }
         let mut stmt = self.conn.prepare(
-            "SELECT m.id, m.content, m.category, m.importance, m.created_at
+            "SELECT m.id, m.content, m.category, m.importance, m.created_at, m.updated_at
              FROM memory m
              JOIN memory_fts ON m.id = memory_fts.rowid
              WHERE memory_fts MATCH ?1
@@ -872,6 +890,7 @@ impl SqliteStorage {
                 category: row.get(2)?,
                 importance: row.get(3)?,
                 created_at: row.get(4)?,
+                updated_at: row.get(5)?,
             })
         })?;
         rows.collect()
@@ -880,7 +899,7 @@ impl SqliteStorage {
     /// Search memory entries by category, ordered by importance then recency.
     pub fn search_memory_by_category(&self, category: &str, limit: usize) -> SqliteResult<Vec<MemoryEntry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, content, category, importance, created_at
+            "SELECT id, content, category, importance, created_at, updated_at
              FROM memory
              WHERE category = ?1
              ORDER BY importance DESC, created_at DESC
@@ -893,6 +912,7 @@ impl SqliteStorage {
                 category: row.get(2)?,
                 importance: row.get(3)?,
                 created_at: row.get(4)?,
+                updated_at: row.get(5)?,
             })
         })?;
         rows.collect()
@@ -907,7 +927,7 @@ impl SqliteStorage {
     /// List all memory entries, ordered by importance then recency.
     pub fn list_memory(&self, limit: usize) -> SqliteResult<Vec<MemoryEntry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, content, category, importance, created_at
+            "SELECT id, content, category, importance, created_at, updated_at
              FROM memory
              ORDER BY importance DESC, created_at DESC
              LIMIT ?1",
@@ -919,9 +939,97 @@ impl SqliteStorage {
                 category: row.get(2)?,
                 importance: row.get(3)?,
                 created_at: row.get(4)?,
+                updated_at: row.get(5)?,
             })
         })?;
         rows.collect()
+    }
+
+    /// Update a memory entry's content, category, importance, and set updated_at = now.
+    pub fn update_memory(&self, memory_id: i64, content: &str, category: Option<&str>, importance: i32) -> SqliteResult<bool> {
+        let now = Utc::now().timestamp();
+        // Read old content first so we can properly delete the old FTS entry
+        let old_content: Option<String> = self.conn.query_row(
+            "SELECT content FROM memory WHERE id = ?1",
+            params![memory_id],
+            |row| row.get(0),
+        ).ok();
+
+        let changes = self.conn.execute(
+            "UPDATE memory SET content = ?1, category = ?2, importance = ?3, updated_at = ?4 WHERE id = ?5",
+            params![content, category, importance, now, memory_id],
+        )?;
+        if changes > 0 {
+            // Manually sync FTS: delete old entry, insert new
+            if let Some(old) = old_content {
+                let _ = self.conn.execute(
+                    "INSERT INTO memory_fts(memory_fts, rowid, content) VALUES('delete', ?1, ?2)",
+                    params![memory_id, old],
+                );
+            }
+            let _ = self.conn.execute(
+                "INSERT INTO memory_fts(rowid, content) VALUES(?1, ?2)",
+                params![memory_id, content],
+            );
+        }
+        Ok(changes > 0)
+    }
+
+    /// Get a deep sleep state value by key.
+    pub fn get_deep_sleep_state(&self, key: &str) -> SqliteResult<Option<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT value FROM deep_sleep_state WHERE key = ?1",
+        )?;
+        let result = stmt.query_row(params![key], |row| row.get(0));
+        match result {
+            Ok(val) => Ok(Some(val)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Set a deep sleep state value (upsert).
+    pub fn set_deep_sleep_state(&self, key: &str, value: &str) -> SqliteResult<()> {
+        self.conn.execute(
+            "INSERT INTO deep_sleep_state (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Get conversations that have at least one message with id > message_id.
+    /// Returns up to `limit` conversations, ordered by oldest first (ASC) so the
+    /// watermark advances naturally through the backlog.
+    pub fn get_conversations_with_messages_after(&self, message_id: i64, limit: usize) -> SqliteResult<Vec<Conversation>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT c.id, c.title, c.created_at, c.title_generated, c.profile_name, c.last_message
+             FROM conversations c
+             JOIN messages m ON m.conversation_id = c.id
+             WHERE m.id > ?1
+             ORDER BY c.last_message ASC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![message_id, limit as i64], |row| {
+            Ok(Conversation {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                created_at: row.get(2)?,
+                title_generated: row.get::<_, i32>(3)? != 0,
+                profile_name: row.get(4)?,
+                last_message: row.get(5)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Get the maximum message ID in the database.
+    pub fn get_max_message_id(&self) -> SqliteResult<i64> {
+        self.conn.query_row(
+            "SELECT COALESCE(MAX(id), 0) FROM messages",
+            [],
+            |row| row.get(0),
+        )
     }
 
     /// Insert a scheduled job

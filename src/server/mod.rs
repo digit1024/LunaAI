@@ -83,6 +83,24 @@ async fn launch(options: ServerOptions) -> Result<()> {
     // Scheduler loop: run due scheduled jobs every 45s
     spawn_scheduler_loop(ctx.clone());
 
+    // Deep sleep loop: periodic memory maintenance
+    if config.deep_sleep.enabled {
+        if let Some(ref profile_name) = config.deep_sleep.profile {
+            tracing::info!(
+                profile = %profile_name,
+                interval_hours = config.deep_sleep.interval_hours,
+                max_conversations = config.deep_sleep.max_conversations_per_run,
+                "Deep Sleep: enabled, first check in {}s",
+                DEEP_SLEEP_POLL_SECS
+            );
+            spawn_deep_sleep_loop(ctx.clone());
+        } else {
+            tracing::warn!("Deep sleep is enabled but no profile configured -- skipping");
+        }
+    } else {
+        tracing::info!("Deep Sleep: disabled (set [deep_sleep] enabled=true in config)");
+    }
+
     // Single server on host:port: HTTP (/api/*) and WebSocket (/ws)
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
     let listener = tokio::net::TcpListener::bind(&bind_addr)
@@ -239,6 +257,65 @@ fn spawn_scheduler_loop(ctx: Arc<ServerContext>) {
                         Some(&e.to_string()),
                     );
                 }
+            }
+        }
+    });
+}
+
+/// Deep sleep background loop: checks every 5 minutes if a cycle is due.
+const DEEP_SLEEP_POLL_SECS: u64 = 300; // 5 minutes
+
+fn spawn_deep_sleep_loop(ctx: Arc<ServerContext>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(DEEP_SLEEP_POLL_SECS));
+        interval.tick().await; // skip immediate first tick
+        loop {
+            interval.tick().await;
+
+            let deep_sleep_cfg = &ctx.config.deep_sleep;
+
+            // Check if due
+            let is_due = {
+                let guard = ctx.storage.lock().await;
+                crate::services::deep_sleep_service::is_due(&guard, deep_sleep_cfg.interval_hours)
+            };
+
+            if !is_due {
+                continue;
+            }
+
+            tracing::info!("Deep Sleep: cycle is due, starting...");
+
+            // Build LLM client from the configured profile
+            let profile_name = match &deep_sleep_cfg.profile {
+                Some(name) => name.clone(),
+                None => {
+                    tracing::warn!("Deep Sleep: no profile configured, skipping");
+                    continue;
+                }
+            };
+
+            let profile = match ctx.config.get_profile(&profile_name) {
+                Some(p) => p.clone(),
+                None => {
+                    tracing::warn!(
+                        profile = %profile_name,
+                        "Deep Sleep: profile not found, skipping"
+                    );
+                    continue;
+                }
+            };
+
+            let llm_client = crate::llm::build_llm_client(&profile);
+
+            if let Err(e) = crate::services::deep_sleep_service::run_deep_sleep_cycle(
+                ctx.storage.clone(),
+                deep_sleep_cfg,
+                llm_client,
+            )
+            .await
+            {
+                tracing::error!(error = %e, "Deep Sleep: cycle failed");
             }
         }
     });
