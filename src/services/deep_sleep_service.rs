@@ -431,9 +431,16 @@ async fn step3_extract_new_memories(
     match new_memories {
         Ok(proposals) => {
             if proposals.is_empty() {
-                tracing::info!("Deep Sleep Step 3: no new memories to extract");
+                tracing::info!(
+                    "Deep Sleep Step 3: no new memories proposed by LLM (check RUST_LOG=debug for response preview)"
+                );
                 return Ok(());
             }
+
+            tracing::info!(
+                proposed = proposals.len(),
+                "Deep Sleep Step 3: LLM proposed new memories, applying dedup and store"
+            );
 
             let guard = storage.lock().await;
             let mut stored = 0usize;
@@ -476,14 +483,14 @@ async fn step3_extract_new_memories(
                                 return false;
                             }
                             let overlap = proposed_words.intersection(&existing_words).count();
-                            (overlap as f32 / proposed_words.len() as f32) > 0.7
+                            (overlap as f32 / proposed_words.len() as f32) > 0.85
                         });
 
                         if dominated {
                             skipped += 1;
                             tracing::debug!(
                                 content = proposal.content.as_str(),
-                                "Deep Sleep: skipping duplicate memory"
+                                "Deep Sleep: skipping as near-duplicate"
                             );
                             continue;
                         }
@@ -516,7 +523,10 @@ async fn step3_extract_new_memories(
             );
         }
         Err(e) => {
-            tracing::warn!(error = %e, "Deep Sleep Step 3: failed to extract new memories");
+            tracing::warn!(
+                error = %e,
+                "Deep Sleep Step 3: failed to extract new memories (parse or LLM error)"
+            );
         }
     }
 
@@ -540,13 +550,15 @@ async fn call_llm_extract(
     }
 
     let system_prompt = "You are a memory extraction assistant. You are given a digest of recent \
-conversations and the current set of long-term memories. Identify NEW facts, preferences, or \
-knowledge from the digest that are NOT already covered by existing memories.\n\n\
-Focus on: user preferences, technical setup, important people/projects, decisions made, \
-things explicitly asked to remember.\n\n\
-Do NOT duplicate existing memories. Respond ONLY with a JSON array, no markdown fences:\n\
-[{\"content\": \"...\", \"category\": \"...\", \"importance\": 7}]\n\
-Return empty array [] if nothing new to store.";
+conversations and the current set of long-term memories.\n\n\
+Identify NEW facts, preferences, or knowledge from the digest that are NOT already covered by \
+existing memories. Focus on: user preferences, technical setup, important people/projects, events or places where the user has been, \
+decisions made or things the user asked to remember.\n\n\
+If this is a generic conversation then maybe it's not relevant to create new memories ( like generic knowledge question), but if the converastion is about event or place then its' relevant to store memory. 
+When the digest contains notable information, prefer suggesting 1-5 new memory candidates. \
+Return empty array [] only when there is truly nothing new or the digest is just small talk.\n\n\
+Do NOT duplicate existing memories. Respond ONLY with a JSON array, no markdown fences or preamble:\n\
+[{\"content\": \"...\", \"category\": \"optional\", \"importance\": 1-10}]\n";
 
     let user_message = format!(
         "## Recent Conversation Digest\n{}\n\n## Current Memories\n{}",
@@ -568,7 +580,19 @@ Return empty array [] if nothing new to store.";
         .await
         .context("Deep Sleep Step 3: LLM extract call failed")?;
 
-    parse_json_array::<NewMemory>(&response.content)
+    let parsed = parse_json_array::<NewMemory>(&response.content);
+    if let Ok(ref arr) = parsed {
+        if arr.is_empty() {
+            let preview = response.content.trim();
+            let preview_len = preview.len().min(300);
+            tracing::debug!(
+                response_len = response.content.len(),
+                response_preview = %preview.chars().take(preview_len).collect::<String>(),
+                "Deep Sleep Step 3: LLM returned empty or no parseable array"
+            );
+        }
+    }
+    parsed
 }
 
 // ── Helpers ──
