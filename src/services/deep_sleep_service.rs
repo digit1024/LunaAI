@@ -237,7 +237,12 @@ fn build_conversation_text(
         if !content.is_empty() {
             // Truncate very long messages to keep context manageable
             let truncated = if content.len() > 500 {
-                format!("{}...", &content[..500])
+                // Must truncate at char boundary (UTF-8: 'ś' = 2 bytes, emoji = 4 bytes)
+                let mut end = 500.min(content.len());
+                while end > 0 && !content.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}...", &content[..end])
             } else {
                 content.to_string()
             };
