@@ -326,7 +326,14 @@ async fn step2_evaluate_memories(
                         "update" => {
                             if let Some(new_content) = &eval.content {
                                 let importance = eval.importance.unwrap_or(5);
-                                if let Ok(true) = guard.update_memory(eval.id, new_content, None, importance) {
+                                // Preserve existing category when LLM doesn't change it
+                                let category = batch
+                                    .iter()
+                                    .find(|m| m.id == eval.id)
+                                    .and_then(|m| m.category.as_deref());
+                                if let Ok(true) =
+                                    guard.update_memory(eval.id, new_content, category, importance)
+                                {
                                     updated += 1;
                                     tracing::info!(
                                         id = eval.id,

@@ -29,14 +29,16 @@ fn extract_keywords(text: &str) -> Vec<String> {
 }
 
 /// Search memories relevant to the user message, filter out already-used IDs,
-/// and return a formatted system message string plus the set of newly used IDs.
+/// and return a formatted system message string plus the list of newly used memory IDs.
+/// Caller should persist the returned IDs via storage.record_memory_recalls() and use
+/// storage.get_recalled_memory_ids() to seed used_ids after restart.
 ///
 /// Returns `None` if no new relevant memories are found.
 pub fn retrieve_memory_context(
     storage: &Storage,
     user_message: &str,
     used_ids: &mut HashSet<i64>,
-) -> Option<String> {
+) -> Option<(String, Vec<i64>)> {
     let keywords = extract_keywords(user_message);
     if keywords.is_empty() {
         tracing::debug!("Memory RAG: no keywords extracted from user message");
@@ -90,9 +92,9 @@ pub fn retrieve_memory_context(
 
     lines.push("[End of memories - use these only when relevant to the user's question]".to_string());
 
-    // Record newly used IDs
-    for entry in &new_entries {
-        used_ids.insert(entry.id);
+    let new_ids: Vec<i64> = new_entries.iter().map(|e| e.id).collect();
+    for &id in &new_ids {
+        used_ids.insert(id);
     }
 
     tracing::info!(
@@ -101,7 +103,7 @@ pub fn retrieve_memory_context(
         "Memory RAG: injecting memories into context"
     );
 
-    Some(lines.join("\n"))
+    Some((lines.join("\n"), new_ids))
 }
 
 /// Truncate content to `max_chars`, appending "..." if truncated.

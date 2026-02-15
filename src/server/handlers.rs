@@ -392,7 +392,13 @@ impl ServerHandler {
             let storage_guard = self.ctx.storage.lock().await;
             let mut dedup_guard = self.ctx.memory_dedup.lock().await;
             let used_ids = dedup_guard.entry(conversation_uuid).or_default();
-            if let Some(memory_msg) = crate::services::memory_rag::retrieve_memory_context(
+            // Seed from DB on first use (e.g. after restart) so we don't re-inject same memories
+            if used_ids.is_empty() {
+                if let Ok(recalled) = storage_guard.get_recalled_memory_ids(&conversation_uuid.to_string()) {
+                    used_ids.extend(recalled);
+                }
+            }
+            if let Some((memory_msg, new_ids)) = crate::services::memory_rag::retrieve_memory_context(
                 &storage_guard,
                 &content,
                 used_ids,
@@ -403,6 +409,10 @@ impl ServerHandler {
                     .position(|m| !matches!(m.role, Role::System))
                     .unwrap_or(llm_messages.len());
                 llm_messages.insert(insert_pos, LlmMessage::new(Role::System, memory_msg));
+                // Persist recalled memories for this conversation
+                if let Err(e) = storage_guard.record_memory_recalls(&conversation_uuid.to_string(), &new_ids) {
+                    tracing::warn!(error = %e, "Failed to record memory recalls");
+                }
             }
         }
 

@@ -315,6 +315,22 @@ impl SqliteStorage {
             [],
         )?;
 
+        // Which memories were recalled (injected) in which conversation
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS conversation_memory_recalls (
+                conversation_id TEXT NOT NULL,
+                memory_id INTEGER NOT NULL,
+                recalled_at INTEGER NOT NULL,
+                PRIMARY KEY (conversation_id, memory_id),
+                FOREIGN KEY (memory_id) REFERENCES memory(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        let _ = self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recalls_memory_id ON conversation_memory_recalls(memory_id)",
+            [],
+        );
+
         // FTS5 virtual table for memory full-text search
         self.conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
@@ -1030,6 +1046,30 @@ impl SqliteStorage {
             [],
             |row| row.get(0),
         )
+    }
+
+    /// Record that the given memories were recalled (injected) in this conversation.
+    pub fn record_memory_recalls(&self, conversation_id: &str, memory_ids: &[i64]) -> SqliteResult<()> {
+        if memory_ids.is_empty() {
+            return Ok(());
+        }
+        let now = Utc::now().timestamp();
+        let mut stmt = self.conn.prepare(
+            "INSERT OR IGNORE INTO conversation_memory_recalls (conversation_id, memory_id, recalled_at) VALUES (?1, ?2, ?3)",
+        )?;
+        for &mid in memory_ids {
+            stmt.execute(params![conversation_id, mid, now])?;
+        }
+        Ok(())
+    }
+
+    /// Get memory IDs that were previously recalled in this conversation (for dedup across restarts).
+    pub fn get_recalled_memory_ids(&self, conversation_id: &str) -> SqliteResult<Vec<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT memory_id FROM conversation_memory_recalls WHERE conversation_id = ?1 ORDER BY recalled_at ASC",
+        )?;
+        let rows = stmt.query_map(params![conversation_id], |row| row.get(0))?;
+        rows.collect()
     }
 
     /// Insert a scheduled job

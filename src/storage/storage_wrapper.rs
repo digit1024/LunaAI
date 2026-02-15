@@ -432,6 +432,16 @@ impl Storage {
         self.sqlite.get_max_message_id()
     }
 
+    /// Record memories recalled (injected) in this conversation
+    pub fn record_memory_recalls(&self, conversation_id: &str, memory_ids: &[i64]) -> SqliteResult<()> {
+        self.sqlite.record_memory_recalls(conversation_id, memory_ids)
+    }
+
+    /// Get memory IDs previously recalled in this conversation
+    pub fn get_recalled_memory_ids(&self, conversation_id: &str) -> SqliteResult<Vec<i64>> {
+        self.sqlite.get_recalled_memory_ids(conversation_id)
+    }
+
     /// Insert a scheduled job
     pub fn insert_scheduled_job(&self, job: &ScheduledJob) -> SqliteResult<()> {
         self.sqlite.insert_scheduled_job(job)
