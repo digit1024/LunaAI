@@ -36,7 +36,7 @@ This skill enables modification of Luna's configuration, management of the servi
 ### The Three Laws of Self-Modification
 
 1. **ALWAYS CREATE BACKUPS** before modifying any config file
-2. **NEVER MODIFY SOURCE CODE** in `/home/digit1024/proj/LunaAI/src/` - Config only!
+2. **NEVER MODIFY SOURCE CODE** in `$HOME/proj/LunaAI/src/` - Config only!
 3. **CONFIRM DESTRUCTIVE ACTIONS** - Ask user before restart, deletion, or major changes
 
 ### Pre-Modification Checklist
@@ -48,17 +48,17 @@ Before changing ANY configuration:
 systemctl --user status luna.service
 
 # 2. Create backup of file being modified
-cp /home/digit1024/.local/share/cosmic_llm/config.toml \
-   /home/digit1024/.local/share/cosmic_llm/config.toml.backup.$(date +%Y%m%d_%H%M%S)
+cp $HOME/.local/share/cosmic_llm/config.toml \
+   $HOME/.local/share/cosmic_llm/config.toml.backup.$(date +%Y%m%d_%H%M%S)
 
 # 3. Verify backup was created
-ls -la /home/digit1024/.local/share/cosmic_llm/*.backup.*
+ls -la $HOME/.local/share/cosmic_llm/*.backup.*
 ```
 
 ### Forbidden Operations
 
 ❌ **NEVER DO THESE:**
-- Modify Rust source code in `/home/digit1024/proj/LunaAI/src/`
+- Modify Rust source code in `$HOME/proj/LunaAI/src/`
 - Delete the database without explicit confirmation
 - Share API keys in plain text
 - Run `systemctl --user restart luna.service` without scheduling a wake-up if needed
@@ -78,7 +78,7 @@ ls -la /home/digit1024/.local/share/cosmic_llm/*.backup.*
 
 ### Primary Config: `config.toml`
 
-**Location:** `/home/digit1024/.local/share/cosmic_llm/config.toml`
+**Location:** `$HOME/.local/share/cosmic_llm/config.toml`
 
 **Purpose:** Main configuration file containing:
 - LLM profiles (DeepSeek, GLM, Gemini, etc.)
@@ -103,7 +103,7 @@ enabled_mcp = []      # MCP servers for this profile
 hidden = false
 
 [prompts]
-system_prompt_file = "/home/digit1024/.local/share/cosmic_llm/system_prompt.md"
+system_prompt_file = "$HOME/.local/share/cosmic_llm/system_prompt.md"
 
 [server]
 enabled = true
@@ -113,12 +113,12 @@ port = 8080
 
 ### MCP Config: `mcp_config.json`
 
-**Location:** `/home/digit1024/.local/share/cosmic_llm/mcp_config.json`
+**Location:** `$HOME/.local/share/cosmic_llm/mcp_config.json`
 
 **Purpose:** MCP (Model Context Protocol) server definitions
 
 **Available MCP Servers:**
-- `filesystem` - File operations (root: /home/digit1024)
+- `filesystem` - File operations (root: $HOME)
 - `shell` - Shell command execution
 - `time` - Time/date utilities
 - `mail` - Email operations
@@ -133,8 +133,8 @@ port = 8080
 {
   "mcpServers": {
     "filesystem": {
-      "command": "/home/digit1024/go/bin/mcp-filesystem-server",
-      "args": ["/home/digit1024"],
+      "command": "$HOME/go/bin/mcp-filesystem-server",
+      "args": ["$HOME"],
       "env": {}
     }
   }
@@ -143,13 +143,13 @@ port = 8080
 
 ### System Prompt: `system_prompt.md`
 
-**Location:** `/home/digit1024/.local/share/cosmic_llm/system_prompt.md`
+**Location:** `$HOME/.local/share/cosmic_llm/system_prompt.md`
 
 **Purpose:** Core system instructions that define my personality, behavior, and operational constraints.
 
 ### Profile Prompts: `profiles/*.md`
 
-**Location:** `/home/digit1024/.local/share/cosmic_llm/profiles/`
+**Location:** `$HOME/.local/share/cosmic_llm/profiles/`
 
 **Available Profiles:**
 - `code.md` - Programming assistant mode
@@ -161,7 +161,7 @@ port = 8080
 
 ### Skills: `skills/*/SKILL.md`
 
-**Location:** `/home/digit1024/.local/share/cosmic_llm/skills/`
+**Location:** `$HOME/.local/share/cosmic_llm/skills/`
 
 **Purpose:** Skill definitions that activate specialized tool sets and behaviors.
 
@@ -171,7 +171,7 @@ port = 8080
 
 ### Conversation Database
 
-**Location:** `/home/digit1024/.local/share/cosmic_llm/conversations.db`
+**Location:** `$HOME/.local/share/cosmic_llm/conversations.db`
 
 **Type:** SQLite3
 
@@ -192,15 +192,15 @@ port = 8080
 
 ```bash
 # List recent conversations
-sqlite3 /home/digit1024/.local/share/cosmic_llm/conversations.db \
+sqlite3 $HOME/.local/share/cosmic_llm/conversations.db \
   "SELECT id, title, created_at FROM conversations ORDER BY updated_at DESC LIMIT 10;"
 
 # Count total conversations
-sqlite3 /home/digit1024/.local/share/cosmic_llm/conversations.db \
+sqlite3 $HOME/.local/share/cosmic_llm/conversations.db \
   "SELECT COUNT(*) FROM conversations;"
 
 # Database size
-ls -lh /home/digit1024/.local/share/cosmic_llm/conversations.db
+ls -lh $HOME/.local/share/cosmic_llm/conversations.db
 ```
 
 ---
@@ -268,8 +268,8 @@ systemctl --user enable luna.service
 
 1. **Backup config:**
 ```bash
-cp /home/digit1024/.local/share/cosmic_llm/config.toml \
-   /home/digit1024/.local/share/cosmic_llm/config.toml.backup.$(date +%Y%m%d_%H%M%S)
+cp $HOME/.local/share/cosmic_llm/config.toml \
+   $HOME/.local/share/cosmic_llm/config.toml.backup.$(date +%Y%m%d_%H%M%S)
 ```
 
 2. **Edit config.toml** to add profile section:
@@ -295,8 +295,8 @@ default = "NewProfileName"
 
 1. **Backup:**
 ```bash
-cp /home/digit1024/.local/share/cosmic_llm/mcp_config.json \
-   /home/digit1024/.local/share/cosmic_llm/mcp_config.json.backup.$(date +%Y%m%d_%H%M%S)
+cp $HOME/.local/share/cosmic_llm/mcp_config.json \
+   $HOME/.local/share/cosmic_llm/mcp_config.json.backup.$(date +%Y%m%d_%H%M%S)
 ```
 
 2. **Edit mcp_config.json**
@@ -314,7 +314,7 @@ enabled_mcp = ["filesystem", "shell", "time", "mail"]  # Add or remove servers
 
 ### Update System Prompt
 
-Edit: `/home/digit1024/.local/share/cosmic_llm/system_prompt.md`
+Edit: `$HOME/.local/share/cosmic_llm/system_prompt.md`
 
 **No restart required** - changes take effect on next message.
 
@@ -329,22 +329,22 @@ Edit: `/home/digit1024/.local/share/cosmic_llm/system_prompt.md`
 journalctl --user -u luna.service -n 100 | grep -i error
 
 # Validate TOML syntax
-python3 -c "import tomllib; tomllib.load(open('/home/digit1024/.local/share/cosmic_llm/config.toml', 'rb'))"
+python3 -c "import tomllib; tomllib.load(open('$HOME/.local/share/cosmic_llm/config.toml', 'rb'))"
 
 # Validate JSON syntax
-python3 -c "import json; json.load(open('/home/digit1024/.local/share/cosmic_llm/mcp_config.json'))"
+python3 -c "import json; json.load(open('$HOME/.local/share/cosmic_llm/mcp_config.json'))"
 ```
 
 ### Database Issues
 
 ```bash
 # Check database integrity
-sqlite3 /home/digit1024/.local/share/cosmic_llm/conversations.db "PRAGMA integrity_check;"
+sqlite3 $HOME/.local/share/cosmic_llm/conversations.db "PRAGMA integrity_check;"
 
 # If corrupted, restore from backup (if available)
 # Or create new database (WILL LOSE HISTORY):
-mv /home/digit1024/.local/share/cosmic_llm/conversations.db \
-   /home/digit1024/.local/share/cosmic_llm/conversations.db.corrupted.$(date +%Y%m%d)
+mv $HOME/.local/share/cosmic_llm/conversations.db \
+   $HOME/.local/share/cosmic_llm/conversations.db.corrupted.$(date +%Y%m%d)
 # Service will create new database on restart
 ```
 
@@ -353,23 +353,23 @@ mv /home/digit1024/.local/share/cosmic_llm/conversations.db \
 **Nuclear option** - Reset to defaults:
 ```bash
 # Backup everything first
-cd /home/digit1024/.local/share/cosmic_llm
+cd $HOME/.local/share/cosmic_llm
 tar czf config_backup_$(date +%Y%m%d_%H%M%S).tar.gz config.toml mcp_config.json system_prompt.md profiles/
 
 # Copy sample configs from repo
-cp /home/digit1024/proj/LunaAI/docs/sample_config.toml ./config.toml
-cp /home/digit1024/proj/LunaAI/docs/sample_mcp_config.json ./mcp_config.json
-cp /home/digit1024/proj/LunaAI/docs/sample_system_prompt.md ./system_prompt.md
+cp $HOME/proj/LunaAI/docs/sample_config.toml ./config.toml
+cp $HOME/proj/LunaAI/docs/sample_mcp_config.json ./mcp_config.json
+cp $HOME/proj/LunaAI/docs/sample_system_prompt.md ./system_prompt.md
 ```
 
 ### High Memory Usage
 
 ```bash
 # Check database size
-ls -lh /home/digit1024/.local/share/cosmic_llm/conversations.db
+ls -lh $HOME/.local/share/cosmic_llm/conversations.db
 
 # Vacuum database to reclaim space
-sqlite3 /home/digit1024/.local/share/cosmic_llm/conversations.db "VACUUM;"
+sqlite3 $HOME/.local/share/cosmic_llm/conversations.db "VACUUM;"
 ```
 
 ---
@@ -379,20 +379,20 @@ sqlite3 /home/digit1024/.local/share/cosmic_llm/conversations.db "VACUUM;"
 ### Create Full Backup
 
 ```bash
-BACKUP_DIR="/home/digit1024/.local/share/cosmic_llm/backups/$(date +%Y%m%d_%H%M%S)"
+BACKUP_DIR="$HOME/.local/share/cosmic_llm/backups/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$BACKUP_DIR"
 
 # Backup configs
-cp /home/digit1024/.local/share/cosmic_llm/config.toml "$BACKUP_DIR/"
-cp /home/digit1024/.local/share/cosmic_llm/mcp_config.json "$BACKUP_DIR/"
-cp /home/digit1024/.local/share/cosmic_llm/system_prompt.md "$BACKUP_DIR/"
+cp $HOME/.local/share/cosmic_llm/config.toml "$BACKUP_DIR/"
+cp $HOME/.local/share/cosmic_llm/mcp_config.json "$BACKUP_DIR/"
+cp $HOME/.local/share/cosmic_llm/system_prompt.md "$BACKUP_DIR/"
 
 # Backup database (stop service first for consistent backup)
-cp /home/digit1024/.local/share/cosmic_llm/conversations.db "$BACKUP_DIR/"
+cp $HOME/.local/share/cosmic_llm/conversations.db "$BACKUP_DIR/"
 
 # Backup profiles and skills
-cp -r /home/digit1024/.local/share/cosmic_llm/profiles "$BACKUP_DIR/"
-cp -r /home/digit1024/.local/share/cosmic_llm/skills "$BACKUP_DIR/"
+cp -r $HOME/.local/share/cosmic_llm/profiles "$BACKUP_DIR/"
+cp -r $HOME/.local/share/cosmic_llm/skills "$BACKUP_DIR/"
 
 echo "Backup created at: $BACKUP_DIR"
 ```
@@ -401,7 +401,7 @@ echo "Backup created at: $BACKUP_DIR"
 
 ```bash
 # Restore specific file
-cp /path/to/backup/config.toml /home/digit1024/.local/share/cosmic_llm/config.toml
+cp /path/to/backup/config.toml $HOME/.local/share/cosmic_llm/config.toml
 
 # Restart service after restore
 systemctl --user restart luna.service
@@ -413,16 +413,16 @@ systemctl --user restart luna.service
 
 | Component | Path |
 |-----------|------|
-| Main Config | `/home/digit1024/.local/share/cosmic_llm/config.toml` |
-| MCP Config | `/home/digit1024/.local/share/cosmic_llm/mcp_config.json` |
-| System Prompt | `/home/digit1024/.local/share/cosmic_llm/system_prompt.md` |
-| User Prompt | `/home/digit1024/.local/share/cosmic_llm/user_prompt.md` |
-| Database | `/home/digit1024/.local/share/cosmic_llm/conversations.db` |
-| Profiles | `/home/digit1024/.local/share/cosmic_llm/profiles/` |
-| Skills | `/home/digit1024/.local/share/cosmic_llm/skills/` |
-| Source Code | `/home/digit1024/proj/LunaAI/` |
-| Binary | `/home/digit1024/proj/LunaAI/target/release/cosmic_llm` |
-| Service Unit | `/home/digit1024/.config/systemd/user/luna.service` |
+| Main Config | `$HOME/.local/share/cosmic_llm/config.toml` |
+| MCP Config | `$HOME/.local/share/cosmic_llm/mcp_config.json` |
+| System Prompt | `$HOME/.local/share/cosmic_llm/system_prompt.md` |
+| User Prompt | `$HOME/.local/share/cosmic_llm/user_prompt.md` |
+| Database | `$HOME/.local/share/cosmic_llm/conversations.db` |
+| Profiles | `$HOME/.local/share/cosmic_llm/profiles/` |
+| Skills | `$HOME/.local/share/cosmic_llm/skills/` |
+| Source Code | `$HOME/proj/LunaAI/` |
+| Binary | `$HOME/proj/LunaAI/target/release/cosmic_llm` |
+| Service Unit | `$HOME/.config/systemd/user/luna.service` |
 
 ---
 
@@ -434,7 +434,7 @@ If everything breaks:
 2. **View logs:** `journalctl --user -u luna.service -n 100`
 3. **Restore from backup** (if available)
 4. **Manual restart:** `systemctl --user restart luna.service`
-5. **Nuclear reset:** Restore sample configs from `/home/digit1024/proj/LunaAI/docs/`
+5. **Nuclear reset:** Restore sample configs from `$HOME/proj/LunaAI/docs/`
 
 ---
 

@@ -1,4 +1,0 @@
-id:1
-event:error
-:HTTP_STATUS/400
-data:{"code":"InvalidParameter","message":"<400> InternalError.Algo.InvalidParameter: Voice 'Katerina' is not supported.","request_id":"00c6a236-1d08-9bae-a802-b3071946896b"}

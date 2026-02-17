@@ -20,19 +20,7 @@ WhatsApp-like layout requested in the product brief.
    flutter run
    ```
 
-## Launcher Icon
 
-- The canonical icon lives at `res/icon.svg` so desktop and mobile stay in sync.
-- A 1024px PNG is generated from that SVG at `mobile_app/assets/app_icon.png`
-  (already committed) for the `flutter_launcher_icons` tool.
-- After editing the SVG, regenerate the PNG and platform assets:
-  ```bash
-  cd /home/digit1024/proj/LunaAI
-  convert -background none res/icon.svg -resize 1024x1024 mobile_app/assets/app_icon.png
-  cd mobile_app
-  flutter pub get
-  dart run flutter_launcher_icons
-  ```
 
 ## Key Features
 
