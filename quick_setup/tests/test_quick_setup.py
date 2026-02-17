@@ -59,14 +59,14 @@ class TestPaths:
 
 
 class TestProfileCreator:
-    def test_build_profile(self):
-        from quick_setup.profile_creator import build_profile
-        p = build_profile(
-            name="test",
+    def test_build_model_preset(self):
+        from quick_setup.profile_creator import build_model_preset
+        p = build_model_preset(
+            preset_name="test_preset",
             backend="openai",
-            api_key="sk-x",
             model="gpt-4",
-            endpoint="https://api.openai.com/v1",
+            endpoint="https://api.openai.com/v1/chat/completions",
+            api_key="sk-x",
             temperature=0.3,
             max_tokens=4000,
         )
@@ -75,14 +75,22 @@ class TestProfileCreator:
         assert p["temperature"] == 0.3
         assert "context_window_size" not in p
 
+    def test_build_profile(self):
+        from quick_setup.profile_creator import build_profile
+        p = build_profile(
+            model_preset_name="my_preset",
+            prompts=["profiles/me.md"],
+            tools_policy="default",
+        )
+        assert p["model_preset"] == "my_preset"
+        assert p["prompts"] == ["profiles/me.md"]
+        assert p["tools_policy"] == "default"
+        assert "backend" not in p
+
     def test_build_profile_with_context_window(self):
         from quick_setup.profile_creator import build_profile
         p = build_profile(
-            name="test",
-            backend="openai",
-            api_key="sk-x",
-            model="gpt-4",
-            endpoint="https://api.openai.com/v1",
+            model_preset_name="p",
             context_window_size=128000,
         )
         assert p["context_window_size"] == 128000
@@ -96,20 +104,36 @@ class TestProfileCreator:
         assert "profiles" in data
 
     def test_add_or_update_profile(self, tmp_config_dir):
-        from quick_setup.profile_creator import load_config, add_or_update_profile, build_profile
-        path = tmp_config_dir / "config.toml"
-        profile = build_profile(
-            name="p1",
-            backend="openai",
-            api_key="k",
-            model="gpt-4",
-            endpoint="https://api.openai.com/v1",
+        from quick_setup.profile_creator import (
+            load_config,
+            add_or_update_profile,
+            build_profile,
+            build_model_preset,
         )
-        add_or_update_profile("p1", profile, set_default=True, config_path=path)
+        path = tmp_config_dir / "config.toml"
+        preset = build_model_preset(
+            preset_name="p1",
+            backend="openai",
+            model="gpt-4",
+            endpoint="https://api.openai.com/v1/chat/completions",
+            api_key="k",
+        )
+        profile = build_profile(model_preset_name="p1", prompts=[], tools_policy="default")
+        add_or_update_profile(
+            "p1",
+            profile,
+            set_default=True,
+            config_path=path,
+            preset_name="p1",
+            preset=preset,
+        )
         data = load_config(path)
         assert data["default"] == "p1"
         assert "p1" in data["profiles"]
-        assert data["profiles"]["p1"]["backend"] == "openai"
+        assert data["profiles"]["p1"]["model_preset"] == "p1"
+        assert "p1" in data["model_presets"]
+        assert data["model_presets"]["p1"]["backend"] == "openai"
+        assert "default" in data["tools_policies"]
 
 
 class TestMcpConfig:

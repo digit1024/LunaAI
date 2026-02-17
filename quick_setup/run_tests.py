@@ -7,7 +7,13 @@ sys.path.insert(0, ".")
 def run():
     print("Starting tests...", flush=True)
     from quick_setup.paths import home, cosmic_llm_dir, config_toml_path
-    from quick_setup.profile_creator import build_profile, load_config, save_config, add_or_update_profile
+    from quick_setup.profile_creator import (
+        build_model_preset,
+        build_profile,
+        load_config,
+        save_config,
+        add_or_update_profile,
+    )
     from quick_setup.prompts import get_personas, get_persona_path
     from quick_setup.deps import find_command, commands_required_for_mcp_catalog, ensure_commands
     from quick_setup.mcp_config import load_mcp_catalog, build_servers_from_catalog, build_luna_memory_server
@@ -23,10 +29,18 @@ def run():
     except Exception as e:
         fail.append(("paths", str(e)))
 
-    # Profile
+    # Profile (config refinement: preset + profile)
     try:
-        p = build_profile(name="t", backend="openai", api_key="k", model="gpt-4", endpoint="https://api.openai.com/v1")
-        assert p["backend"] == "openai"
+        preset = build_model_preset(
+            preset_name="t",
+            backend="openai",
+            model="gpt-4",
+            endpoint="https://api.openai.com/v1/chat/completions",
+            api_key="k",
+        )
+        assert preset["backend"] == "openai"
+        p = build_profile(model_preset_name="t", prompts=[], tools_policy="default")
+        assert p["model_preset"] == "t"
         ok.append("profile_creator.build_profile")
     except Exception as e:
         fail.append(("profile_creator", str(e)))
@@ -100,20 +114,13 @@ def run():
     except Exception as e:
         fail.append(("main_helpers", str(e)))
 
-    # build_profile with profile_prompt_file=None (persona missing case)
+    # build_profile with empty prompts (persona missing case)
     try:
-        p = build_profile(
-            name="t",
-            backend="openai",
-            api_key="k",
-            model="gpt-4",
-            endpoint="https://api.openai.com/v1",
-            profile_prompt_file=None,
-        )
-        assert "profile_prompt_file" not in p or p.get("profile_prompt_file") is None
-        ok.append("profile_prompt_file_optional")
+        p = build_profile(model_preset_name="t", prompts=[], tools_policy="default")
+        assert p.get("prompts") == []
+        ok.append("profile_prompts_optional")
     except Exception as e:
-        fail.append(("profile_prompt_file_optional", str(e)))
+        fail.append(("profile_prompts_optional", str(e)))
 
     print("PASS:", len(ok), ok, flush=True)
     if fail:

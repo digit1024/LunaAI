@@ -33,6 +33,12 @@ async fn launch(options: ServerOptions) -> Result<()> {
         AppConfig::default()
     });
     let config = Arc::new(raw_config);
+    if config.resolve_default_profile().is_none() {
+        tracing::warn!(
+            default = %config.default,
+            "Default profile does not resolve (missing profile or model_preset). WebSocket connections will fail until config is fixed. See docs/sample_config.toml."
+        );
+    }
     let prompt_manager = PromptManager::load_from_config(&config.prompts).unwrap_or_else(|err| {
         tracing::warn!("Failed to load prompts: {}", err);
         PromptManager::load_from_config(&crate::prompts::PromptConfig::default())
@@ -62,7 +68,7 @@ async fn launch(options: ServerOptions) -> Result<()> {
     let subscriptions = Arc::new(conversation_subscriptions::ConversationSubscriptions::new());
     let schedule_service = Arc::new(ScheduleService::new(storage.clone()));
     let mcp_config = load_mcp_config(&config);
-    initialize_mcp_registry(&mcp_registry, &mcp_config, &config).await;
+    let default_allowed_tool_names = initialize_mcp_registry(&mcp_registry, &mcp_config, &config).await;
 
     let ctx = Arc::new(ServerContext {
         config: config.clone(),
@@ -73,6 +79,7 @@ async fn launch(options: ServerOptions) -> Result<()> {
         subscriptions,
         schedule_service,
         memory_dedup: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        default_allowed_tool_names,
     });
 
     // Spawn background title generation thread only if profile is configured
@@ -137,79 +144,79 @@ fn convert_mcp_config(config: &crate::config::MCPConfig) -> agentic_loop::mcp_co
     serde_json::from_value(json).unwrap_or_else(|_| agentic_loop::mcp_config::MCPConfig::new())
 }
 
+/// Initialize MCP registry from config, then apply default profile's tools policy.
+/// Returns the allowed tool names set for the default profile (for SessionState).
 async fn initialize_mcp_registry(
     registry: &Arc<RwLock<MCPServerRegistry>>,
     config: &crate::config::MCPConfig,
     app_config: &AppConfig,
-) {
-    let default_tools = app_config
-        .get_default_profile()
-        .map(|profile| profile.enabled_mcp.clone())
-        .unwrap_or_default();
-
-    // Convert to agentic-loop config type
+) -> std::collections::HashSet<String> {
+    // Convert to agentic-loop config type and connect servers
     let agentic_config = convert_mcp_config(config);
-
-    let mut guard = registry.write().await;
-    if let Err(err) = guard.initialize_from_config(&agentic_config).await {
-        tracing::warn!("MCP registry init failed: {}", err);
-    } else {
-        // Enable tools based on profile configuration
-        // If default_tools is empty, enable_all_tools() is called internally
-        // If default_tools has invalid server names, warnings are logged but we continue
-        guard.enable_tools_for_multiple_servers(default_tools.clone()).await;
-        
-        // If no tools were enabled (e.g., due to invalid server names), enable all tools as fallback
-        if guard.tools_white_list.is_empty() && !guard.servers.is_empty() {
-            tracing::warn!("No tools enabled from profile configuration, enabling all tools from connected servers as fallback");
-            guard.enable_all_tools().await;
+    {
+        let mut guard = registry.write().await;
+        if let Err(err) = guard.initialize_from_config(&agentic_config).await {
+            tracing::warn!("MCP registry init failed: {}", err);
         }
     }
+
+    // Apply default profile's tools policy (empty enabled_mcp / enabled_tools = deny all; no fallback)
+    let default_allowed = match app_config.resolve_default_profile() {
+        Some(resolved) => {
+            match crate::tools_policy::apply_tools_policy(registry, app_config, resolved.profile()).await {
+                Ok(applied) => applied.allowed_tool_names,
+                Err(e) => {
+                    tracing::warn!("Tools policy apply failed: {}; no tools allowed", e);
+                    std::collections::HashSet::new()
+                }
+            }
+        }
+        None => std::collections::HashSet::new(),
+    };
 
     // Log all connected servers and their tools
-    tracing::info!("=== MCP Servers Initialization Summary ===");
-    let connected_count = guard.servers.len();
-    let failed_count = guard.failed_servers.len();
-    
-    if connected_count > 0 {
-        tracing::info!(count = connected_count, "Connected MCP servers:");
-        for (server_name, server_connection) in guard.servers.iter() {
-            let connection_guard = server_connection.read().await;
-            let tools = connection_guard.tools();
-            let tool_names: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
-            let enabled_count = tool_names.iter()
-                .filter(|name| guard.tools_white_list.contains(name))
-                .count();
-            drop(connection_guard); // Explicitly drop to release the read lock
-            tracing::info!(
-                server = %server_name,
-                tool_count = tool_names.len(),
-                enabled_count = enabled_count,
-                tools = %tool_names.join(", ")
-            );
+    {
+        let guard = registry.read().await;
+        let connected_count = guard.servers.len();
+        let failed_count = guard.failed_servers.len();
+        if connected_count > 0 {
+            tracing::info!(count = connected_count, "Connected MCP servers:");
+            for (server_name, server_connection) in guard.servers.iter() {
+                let connection_guard = server_connection.read().await;
+                let tools = connection_guard.tools();
+                let tool_names: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
+                let enabled_count = tool_names.iter()
+                    .filter(|name| guard.tools_white_list.contains(name))
+                    .count();
+                drop(connection_guard);
+                tracing::info!(
+                    server = %server_name,
+                    tool_count = tool_names.len(),
+                    enabled_count = enabled_count,
+                    tools = %tool_names.join(", ")
+                );
+            }
+        } else {
+            tracing::warn!("No MCP servers connected");
         }
-    } else {
-        tracing::warn!("No MCP servers connected");
-    }
-
-    // Log failed/disconnected servers as errors
-    if failed_count > 0 {
-        tracing::error!(count = failed_count, "Failed to connect to MCP servers:");
-        for (server_name, error_msg) in guard.failed_servers.iter() {
-            tracing::error!(
-                server = %server_name,
-                error = %error_msg,
-                "Failed to connect to MCP server"
-            );
+        if failed_count > 0 {
+            tracing::error!(count = failed_count, "Failed to connect to MCP servers:");
+            for (server_name, error_msg) in guard.failed_servers.iter() {
+                tracing::error!(
+                    server = %server_name,
+                    error = %error_msg,
+                    "Failed to connect to MCP server"
+                );
+            }
         }
+        tracing::info!(
+            connected = connected_count,
+            failed = failed_count,
+            total = connected_count + failed_count,
+            "MCP server initialization complete"
+        );
     }
-    
-    tracing::info!(
-        connected = connected_count,
-        failed = failed_count,
-        total = connected_count + failed_count,
-        "MCP server initialization complete"
-    );
+    default_allowed
 }
 
 const SCHEDULER_INTERVAL_SECS: u64 = 45;
@@ -295,18 +302,18 @@ fn spawn_deep_sleep_loop(ctx: Arc<ServerContext>) {
                 }
             };
 
-            let profile = match ctx.config.get_profile(&profile_name) {
-                Some(p) => p.clone(),
+            let resolved = match ctx.config.resolve_profile(&profile_name) {
+                Some(r) => r,
                 None => {
                     tracing::warn!(
                         profile = %profile_name,
-                        "Deep Sleep: profile not found, skipping"
+                        "Deep Sleep: profile or preset not found, skipping"
                     );
                     continue;
                 }
             };
 
-            let llm_client = crate::llm::build_llm_client(&profile);
+            let llm_client = crate::llm::build_llm_client(resolved.preset());
 
             if let Err(e) = crate::services::deep_sleep_service::run_deep_sleep_cycle(
                 ctx.storage.clone(),
@@ -358,12 +365,12 @@ fn spawn_title_generation_thread(
                 }
             };
 
-            let profile = match config.get_profile(profile_name) {
-                Some(p) => p.clone(),
+            let resolved = match config.resolve_profile(profile_name) {
+                Some(r) => r.clone(),
                 None => {
                     tracing::warn!(
                         profile_name = %profile_name,
-                        "Title generation profile not found, stopping thread"
+                        "Title generation profile or preset not found, stopping thread"
                     );
                     break;
                 }
@@ -372,7 +379,7 @@ fn spawn_title_generation_thread(
                 // Generate title for each conversation
             for conversation_id in conversation_ids {
                 let conversation_id_str = conversation_id.to_string();
-                let profile_clone = profile.clone();
+                let preset = resolved.preset().clone();
                 let summary_chars = title_config.summary_chars;
                 let system_prompt = title_config.title_generation_system_prompt.clone();
                 
@@ -420,7 +427,7 @@ fn spawn_title_generation_thread(
                     use crate::storage::title_generation::generate_title_from_messages;
                     generate_title_from_messages(
                         messages,
-                        &profile_clone,
+                        &preset,
                         summary_chars,
                         &system_prompt,
                     ).await

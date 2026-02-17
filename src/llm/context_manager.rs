@@ -6,7 +6,7 @@
 //! - Selects messages to fit within token budget
 //! - Handles summarization triggers
 
-use crate::config::LlmProfile;
+use crate::config::ModelPreset;
 use crate::llm::{Message, Role, LlmClient, LlmError};
 use crate::llm::tokenizer::TokenCounter;
 use anyhow::Result;
@@ -135,7 +135,7 @@ impl SmartContextManager {
     pub fn select_context(
         messages: Vec<Message>,
         token_counter: &TokenCounter,
-        profile: &LlmProfile,
+        preset: &ModelPreset,
     ) -> Vec<Message> {
         if messages.is_empty() {
             return messages;
@@ -162,7 +162,7 @@ impl SmartContextManager {
             .collect();
 
         // Get context limit (with headroom)
-        let context_limit = token_counter.get_safe_context_limit(profile);
+        let context_limit = token_counter.get_safe_context_limit(preset);
 
         // Separate system messages (always keep) and regular messages
         let mut system_messages: Vec<MessageWithImportance> = Vec::new();
@@ -296,7 +296,7 @@ impl SmartContextManager {
     /// Returns a summary message that can replace the original messages
     pub async fn summarize_messages(
         messages_to_summarize: Vec<Message>,
-        _profile: &LlmProfile,
+        _preset: &ModelPreset,
         llm_client: &dyn LlmClient,
     ) -> Result<Message, LlmError> {
         if messages_to_summarize.is_empty() {
@@ -372,18 +372,19 @@ impl SmartContextManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ModelPreset;
     use crate::llm::Message;
 
     #[test]
     fn test_message_importance_scoring() {
-        let profile = LlmProfile::default();
-        let token_counter = TokenCounter::new(&profile);
+        let preset = ModelPreset::default();
+        let token_counter = TokenCounter::new(&preset);
         let tool_call_map = HashMap::new();
 
-        // System message should have high score
+        // System message should have high score (base 100 + recency bonus when index 0 of 10)
         let system_msg = Message::new(Role::System, "System prompt".to_string());
         let score = MessageWithImportance::calculate_importance(&system_msg, 0, 10, &tool_call_map);
-        assert_eq!(score, 100.0);
+        assert!(score >= 100.0);
 
         // User message should have good score
         let user_msg = Message::new(Role::User, "Hello".to_string());

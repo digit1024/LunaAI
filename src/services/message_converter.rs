@@ -162,8 +162,7 @@ impl MessageConverter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::ToolCall as LlmToolCall;
-    use crate::storage::sqlite_storage_simple::ToolCall as StorageToolCall;
+    use crate::llm::ToolCall;
 
     #[test]
     fn test_orphaned_tool_result_filtering() {
@@ -173,7 +172,7 @@ mod tests {
                 conversation_id: "test".to_string(),
                 role: "assistant".to_string(),
                 content: "I'll call a tool".to_string(),
-                tool_calls: Some(vec![StorageToolCall {
+                tool_calls: Some(vec![ToolCall {
                     id: "call_1".to_string(),
                     name: "test_tool".to_string(),
                     parameters: serde_json::json!({}),

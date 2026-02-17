@@ -165,6 +165,44 @@ impl AgenticLoop {
         self
     }
 
+    /// Build the list of available tools (MCP enabled + internal tools filtered by run_context policy).
+    async fn build_available_tools(
+        &self,
+        run_context: &Option<RunContext>,
+    ) -> Result<Vec<crate::llm::ToolDefinition>> {
+        let allow_internal = |name: &str| -> bool {
+            run_context
+                .as_ref()
+                .map(|r| r.allowed_tool_names.contains(name))
+                .unwrap_or(true)
+        };
+        let registry = self.mcp_registry.read().await;
+        let tools = registry.get_enabled_tools().await.context("Failed to get enabled tools")?;
+        let mut defs = tools_to_definitions(&tools);
+        if allow_internal("schedule_task") {
+            defs.push(schedule_task_tool_definition());
+        }
+        if allow_internal("cancel_scheduled_task") {
+            defs.push(cancel_scheduled_task_tool_definition());
+        }
+        if self.storage.is_some() {
+            if allow_internal("store_memory") {
+                defs.push(store_memory_tool_definition());
+            }
+            if allow_internal("search_memory") {
+                defs.push(search_memory_tool_definition());
+            }
+            if allow_internal("search_memory_by_category") {
+                defs.push(search_memory_by_category_tool_definition());
+            }
+            if allow_internal("delete_memory") {
+                defs.push(delete_memory_tool_definition());
+            }
+        }
+        tracing::debug!(tool_count = defs.len(), "Enabled tools");
+        Ok(defs)
+    }
+
     pub async fn process_message(
         &mut self,
         mut messages: Vec<Message>,
@@ -172,22 +210,7 @@ impl AgenticLoop {
         run_context: Option<RunContext>,
     ) -> Result<String> {
         loop {
-            let available_tools: Vec<crate::llm::ToolDefinition> = {
-                let registry = self.mcp_registry.read().await;
-                let tools = registry.get_enabled_tools().await
-                    .context("Failed to get enabled tools")?;
-                let mut defs = tools_to_definitions(&tools);
-                defs.push(schedule_task_tool_definition());
-                defs.push(cancel_scheduled_task_tool_definition());
-                if self.storage.is_some() {
-                    defs.push(store_memory_tool_definition());
-                    defs.push(search_memory_tool_definition());
-                    defs.push(search_memory_by_category_tool_definition());
-                    defs.push(delete_memory_tool_definition());
-                }
-                tracing::debug!(tool_count = defs.len(), "Enabled tools");
-                defs
-            };
+            let available_tools = self.build_available_tools(&run_context).await?;
 
             let mut stream = match self
                 .llm_client
@@ -593,21 +616,7 @@ impl AgenticLoop {
         run_context: Option<RunContext>,
     ) -> Result<String> {
         loop {
-            let available_tools = {
-                let registry = self.mcp_registry.read().await;
-                let tools = registry.get_enabled_tools().await
-                    .context("Failed to get enabled tools")?;
-                let mut defs = tools_to_definitions(&tools);
-                defs.push(schedule_task_tool_definition());
-                defs.push(cancel_scheduled_task_tool_definition());
-                if self.storage.is_some() {
-                    defs.push(store_memory_tool_definition());
-                    defs.push(search_memory_tool_definition());
-                    defs.push(search_memory_by_category_tool_definition());
-                    defs.push(delete_memory_tool_definition());
-                }
-                defs
-            };
+            let available_tools = self.build_available_tools(&run_context).await?;
 
             let response = match self
                 .llm_client

@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::LlmProfile;
+use crate::config::ModelPreset;
 use futures::Stream;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -13,7 +13,8 @@ use tracing;
 struct AnthropicRequest {
     model: String,
     messages: Vec<AnthropicMessage>,
-    max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,14 +91,14 @@ struct AnthropicToolDefinition {
 
 pub struct AnthropicClient {
     client: Client,
-    profile: LlmProfile,
+    preset: ModelPreset,
 }
 
 impl AnthropicClient {
-    pub fn new(profile: LlmProfile) -> Self {
+    pub fn new(preset: ModelPreset) -> Self {
         Self {
             client: Client::new(),
-            profile,
+            preset,
         }
     }
 }
@@ -179,10 +180,10 @@ impl LlmClient for AnthropicClient {
             .collect();
 
         let request = AnthropicRequest {
-            model: self.profile.model.clone(),
+            model: self.preset.model.clone(),
             messages: anthropic_messages,
-            max_tokens: max_tokens.or(self.profile.max_tokens).unwrap_or(1000),
-            temperature: temperature.or(self.profile.temperature),
+            max_tokens: max_tokens.or(self.preset.max_tokens),
+            temperature: temperature.or(self.preset.temperature),
             system: system_prompt,
             tools: None,
             tool_choice: None,
@@ -191,8 +192,8 @@ impl LlmClient for AnthropicClient {
 
         let response = self
             .client
-            .post(&self.profile.endpoint)
-            .header("x-api-key", &self.profile.api_key)
+            .post(&self.preset.endpoint)
+            .header("x-api-key", &self.preset.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
             .json(&request)
@@ -402,10 +403,10 @@ impl LlmClient for AnthropicClient {
         };
 
         let request = AnthropicRequest {
-            model: self.profile.model.clone(),
+            model: self.preset.model.clone(),
             messages: anthropic_messages,
-            max_tokens: max_tokens.or(self.profile.max_tokens).unwrap_or(1000),
-            temperature: temperature.or(self.profile.temperature),
+            max_tokens: max_tokens.or(self.preset.max_tokens),
+            temperature: temperature.or(self.preset.temperature),
             system: system_prompt,
             tools,
             tool_choice: if has_tools {
@@ -418,8 +419,8 @@ impl LlmClient for AnthropicClient {
 
         let response = self
             .client
-            .post(&self.profile.endpoint)
-            .header("x-api-key", &self.profile.api_key)
+            .post(&self.preset.endpoint)
+            .header("x-api-key", &self.preset.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
             .json(&request)

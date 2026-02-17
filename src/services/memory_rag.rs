@@ -9,21 +9,25 @@ use crate::storage::Storage;
 use std::collections::HashSet;
 use tracing;
 
-/// Minimum word length to include in the FTS5 query (skip "a", "is", "the", etc.)
+/// Minimum word length to include in the FTS5 query (skip "a", "is", etc.)
 const MIN_KEYWORD_LEN: usize = 3;
+
+/// Common stopwords to exclude from keyword search (length >= MIN_KEYWORD_LEN but low signal)
+static STOPWORDS: &[&str] = &["the", "and", "for", "are", "but", "not", "you", "all", "can", "had", "her", "was", "one", "our", "out", "has", "him", "his", "its", "may", "new", "now", "old", "see", "way", "who", "did", "get", "got", "let", "put", "say", "she", "too", "use"];
 
 /// Maximum number of memories to retrieve per query
 const MAX_MEMORIES: usize = 10;
 
 /// Extract search keywords from user message text.
 ///
-/// Splits on whitespace/punctuation, lowercases, and filters out short words.
+/// Splits on whitespace/punctuation, lowercases, filters out short words and stopwords.
 /// Returns a deduplicated list suitable for FTS5 OR queries.
 fn extract_keywords(text: &str) -> Vec<String> {
     let mut seen = HashSet::new();
+    let stop: HashSet<&str> = STOPWORDS.iter().copied().collect();
     text.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
         .map(|w| w.trim().to_lowercase())
-        .filter(|w| w.len() >= MIN_KEYWORD_LEN)
+        .filter(|w| w.len() >= MIN_KEYWORD_LEN && !stop.contains(w.as_str()))
         .filter(|w| seen.insert(w.clone()))
         .collect()
 }

@@ -6,6 +6,7 @@ mod prompts;
 mod server;
 mod services;
 mod storage;
+mod tools_policy;
 mod types;
 
 use clap::Parser;
@@ -76,15 +77,15 @@ async fn run_deep_sleep_manual(config_path: Option<PathBuf>) {
         }
     };
 
-    let profile = match app_config.get_profile(&profile_name) {
-        Some(p) => p.clone(),
+    let resolved = match app_config.resolve_profile(&profile_name) {
+        Some(r) => r,
         None => {
-            tracing::error!(profile = %profile_name, "Deep sleep profile not found in config");
+            tracing::error!(profile = %profile_name, "Deep sleep profile or preset not found in config");
             std::process::exit(1);
         }
     };
 
-    let llm_client = llm::build_llm_client(&profile);
+    let llm_client = llm::build_llm_client(resolved.preset());
 
     // Open storage using same path as the server
     let sqlite_settings = storage::sqlite_storage_simple::SqliteSettings::from(&app_config.server);

@@ -221,12 +221,12 @@ pub mod ollama;
 pub mod openai;
 pub mod tokenizer;
 
-pub fn build_llm_client(profile: &LlmProfile) -> Arc<dyn LlmClient> {
-    match profile.backend.as_str() {
-        "anthropic" => Arc::new(crate::llm::anthropic::AnthropicClient::new(profile.clone())),
-        "deepseek" | "openai" => Arc::new(crate::llm::openai::OpenAIClient::new(profile.clone())),
-        "ollama" => Arc::new(crate::llm::ollama::OllamaClient::new(profile.clone())),
-        "gemini" => Arc::new(crate::llm::gemini::GeminiClient::new(profile.clone())),
-        _ => Arc::new(crate::llm::openai::OpenAIClient::new(profile.clone())),
+pub fn build_llm_client(preset: &crate::config::ModelPreset) -> Arc<dyn LlmClient> {
+    match preset.backend.as_str() {
+        "anthropic" => Arc::new(crate::llm::anthropic::AnthropicClient::new(preset.clone())),
+        "openai" => Arc::new(crate::llm::openai::OpenAIClient::new(preset.clone())),
+        "ollama" => Arc::new(crate::llm::ollama::OllamaClient::new(preset.clone())),
+        "gemini" => Arc::new(crate::llm::gemini::GeminiClient::new(preset.clone())),
+        _ => Arc::new(crate::llm::openai::OpenAIClient::new(preset.clone())),
     }
 }

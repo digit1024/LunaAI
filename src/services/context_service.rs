@@ -7,7 +7,7 @@
 //! - Summarization
 //! - Prompt injection
 
-use crate::config::LlmProfile;
+use crate::config::{LlmProfile, ResolvedProfile};
 use crate::llm::{Message as LlmMessage, Role};
 use crate::llm::tokenizer::TokenCounter;
 use crate::prompts::PromptManager;
@@ -20,35 +20,29 @@ pub struct ContextService;
 impl ContextService {
     /// Prepare context for LLM API call
     ///
-    /// This unifies context preparation logic that's currently duplicated in:
-    /// - `app.rs` (desktop)
-    /// - `server/handlers.rs` (server)
-    ///
     /// # Arguments
     /// - `messages`: Conversation messages
-    /// - `profile`: LLM profile with context limits
+    /// - `resolved`: Resolved profile (profile + preset)
     /// - `prompt_manager`: Prompt manager for system prompts
-    ///
-    /// # Returns
-    /// Prepared messages ready for API call (with prompts injected, truncation applied)
     pub fn prepare_context(
         &self,
         messages: Vec<LlmMessage>,
-        profile: &LlmProfile,
+        resolved: &ResolvedProfile,
         prompt_manager: &PromptManager,
     ) -> Result<Vec<LlmMessage>> {
-        // Inject system prompts first
+        let preset = resolved.preset();
+        let profile = resolved.profile();
+
         let final_messages = Self::inject_prompts(messages, prompt_manager, profile)?;
 
-        // Apply context management (token counting and smart selection)
-        let token_counter = TokenCounter::new(profile);
+        let token_counter = TokenCounter::new(preset);
         let total_tokens: usize = final_messages
             .iter()
             .map(|msg| token_counter.count_message_tokens(msg))
             .sum();
 
-        let context_limit = token_counter.get_context_limit(profile);
-        let summarize_threshold_tokens = token_counter.get_summarize_threshold_tokens(profile);
+        let context_limit = token_counter.get_context_limit(preset);
+        let summarize_threshold_tokens = token_counter.get_summarize_threshold_tokens(preset, profile);
 
         debug!(
             total_tokens = total_tokens,
@@ -57,19 +51,16 @@ impl ContextService {
             "Context preparation"
         );
 
-        // Apply truncation if needed
-        let final_messages = if total_tokens > token_counter.get_safe_context_limit(profile) {
+        let final_messages = if total_tokens > token_counter.get_safe_context_limit(preset) {
             debug!(
                 total_tokens,
-                safe_limit = token_counter.get_safe_context_limit(profile),
+                safe_limit = token_counter.get_safe_context_limit(preset),
                 "Context exceeds safe limit, applying smart truncation"
             );
-            
-            // Use SmartContextManager to select important messages
             crate::llm::context_manager::SmartContextManager::select_context(
                 final_messages,
                 &token_counter,
-                profile,
+                preset,
             )
         } else {
             final_messages
@@ -107,7 +98,7 @@ impl ContextService {
         conv_id: uuid::Uuid,
         storage: &crate::storage::Storage,
         llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
-        profile: &crate::config::LlmProfile,
+        resolved: &ResolvedProfile,
     ) -> Result<String> {
         use anyhow::Context;
 
@@ -171,7 +162,7 @@ impl ContextService {
         tracing::debug!("Generating summary");
         let summary_msg = crate::llm::context_manager::SmartContextManager::summarize_messages(
             llm_msgs_to_summarize,
-            profile,
+            resolved.preset(),
             llm_client.as_ref(),
         )
         .await
@@ -207,7 +198,7 @@ impl ContextService {
     /// - `conv_id`: Conversation ID
     /// - `storage`: Storage instance
     /// - `llm_client`: LLM client for summarization
-    /// - `profile`: LLM profile with context limits
+    /// - `resolved`: Resolved profile (profile + preset) for context limits and LLM
     ///
     /// # Returns
     /// Ok(()) if summarization was triggered or not needed, Err if it failed
@@ -217,14 +208,14 @@ impl ContextService {
         conv_id: uuid::Uuid,
         storage: std::sync::Arc<tokio::sync::Mutex<crate::storage::Storage>>,
         llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
-        profile: &crate::config::LlmProfile,
+        resolved: &ResolvedProfile,
     ) -> Result<()> {
         Self::check_and_trigger_summarization_impl(
             llm_messages,
             conv_id,
             storage,
             llm_client,
-            profile,
+            resolved,
         ).await
     }
 
@@ -234,7 +225,7 @@ impl ContextService {
         conv_id: uuid::Uuid,
         storage: &crate::storage::Storage,
         llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
-        profile: &crate::config::LlmProfile,
+        resolved: &ResolvedProfile,
     ) -> Result<()> {
         // For desktop, we can use the storage directly since we're not in a tokio::spawn context
         Self::check_and_trigger_summarization_impl_desktop(
@@ -242,7 +233,7 @@ impl ContextService {
             conv_id,
             storage,
             llm_client,
-            profile,
+            resolved,
         ).await
     }
 
@@ -252,19 +243,21 @@ impl ContextService {
         conv_id: uuid::Uuid,
         storage: std::sync::Arc<tokio::sync::Mutex<crate::storage::Storage>>,
         llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
-        profile: &crate::config::LlmProfile,
+        resolved: &ResolvedProfile,
     ) -> Result<()> {
         use anyhow::Context;
         use crate::llm::tokenizer::TokenCounter;
 
-        let token_counter = TokenCounter::new(profile);
+        let preset = resolved.preset();
+        let profile = resolved.profile();
+        let token_counter = TokenCounter::new(preset);
         let total_tokens: usize = llm_messages
             .iter()
             .map(|msg| token_counter.count_message_tokens(msg))
             .sum();
 
-        let context_limit = token_counter.get_context_limit(profile);
-        let summarize_threshold_tokens = token_counter.get_summarize_threshold_tokens(profile);
+        let context_limit = token_counter.get_context_limit(preset);
+        let summarize_threshold_tokens = token_counter.get_summarize_threshold_tokens(preset, profile);
 
         tracing::debug!(
             total_tokens,
@@ -354,7 +347,7 @@ impl ContextService {
         tracing::debug!(conversation_id = %conv_id, "Generating summary");
         let summary_msg = crate::llm::context_manager::SmartContextManager::summarize_messages(
             llm_msgs_to_summarize,
-            profile,
+            preset,
             llm_client.as_ref(),
         )
         .await
@@ -389,19 +382,21 @@ impl ContextService {
         conv_id: uuid::Uuid,
         storage: &crate::storage::Storage,
         llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
-        profile: &crate::config::LlmProfile,
+        resolved: &ResolvedProfile,
     ) -> Result<()> {
         use anyhow::Context;
         use crate::llm::tokenizer::TokenCounter;
 
-        let token_counter = TokenCounter::new(profile);
+        let preset = resolved.preset();
+        let profile = resolved.profile();
+        let token_counter = TokenCounter::new(preset);
         let total_tokens: usize = llm_messages
             .iter()
             .map(|msg| token_counter.count_message_tokens(msg))
             .sum();
 
-        let context_limit = token_counter.get_context_limit(profile);
-        let summarize_threshold_tokens = token_counter.get_summarize_threshold_tokens(profile);
+        let context_limit = token_counter.get_context_limit(preset);
+        let summarize_threshold_tokens = token_counter.get_summarize_threshold_tokens(preset, profile);
 
         tracing::debug!(
             total_tokens,
@@ -488,7 +483,7 @@ impl ContextService {
         tracing::debug!(conversation_id = %conv_id, "Generating summary");
         let summary_msg = crate::llm::context_manager::SmartContextManager::summarize_messages(
             llm_msgs_to_summarize,
-            profile,
+            preset,
             llm_client.as_ref(),
         )
         .await
@@ -527,16 +522,13 @@ impl ContextService {
             final_messages.push(LlmMessage::new(Role::System, system.to_string()));
         }
 
-        // Add profile prompt if available
-        if let Some(profile_prompt) = profile
-            .profile_prompt_file
-            .as_ref()
-            .and_then(|path| {
-                let resolved = crate::config::AppConfig::resolve_config_path(path);
-                let owned = resolved.to_string_lossy().to_string();
-                prompt_manager.load_profile_prompt(&owned).ok()
-            }) {
-            final_messages.push(LlmMessage::new(Role::System, profile_prompt));
+        // Add profile prompts in order (after system prompt)
+        for path in &profile.prompts {
+            let resolved = crate::config::AppConfig::resolve_config_path(path);
+            let owned = resolved.to_string_lossy().to_string();
+            if let Ok(profile_prompt) = prompt_manager.load_profile_prompt(&owned) {
+                final_messages.push(LlmMessage::new(Role::System, profile_prompt));
+            }
         }
 
         final_messages.append(&mut history);

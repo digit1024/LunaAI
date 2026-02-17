@@ -6,6 +6,8 @@ use uuid::Uuid;
 pub struct RunContext {
     pub conversation_id: Option<Uuid>,
     pub profile_name: String,
+    /// Allowed tool names from tools policy; internal tools are only added if their name is in this set.
+    pub allowed_tool_names: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

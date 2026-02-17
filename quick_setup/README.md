@@ -7,7 +7,7 @@
 0. **Dependencies** – Checks for `uvx` and `npx` (needed for MCP). Installs **uv** (provides uvx) via official script if missing; tries to install Node/npx via apt, or prints install instructions.
 1. **Provider & model** – Choose provider (OpenAI, Claude, Gemini, DeepSeek, OpenRouter), pick a model (with a suggested default: good balance of speed and cost), enter API key.
 2. **Personality** – Pick one of 3 sample system prompts (Luna, Vera, Jude) and install it.
-3. **Profile** – Asks temperature (default 0.3), max tokens (default 4000), profile name (suggested: `{persona}_{model}`), writes `[profiles.<name>]` to `config.toml`.
+3. **Profile** – Asks temperature (default 0.3), max tokens (default 4000), profile name (suggested: `{persona}_{model}`), writes `[model_presets.<name>]` and `[profiles.<name>]` to `config.toml` (config refinement shape).
 4. **Server** – Asks for server API (host, port, api_key) and writes `[server]` to `config.toml`. Writes **Thin UI** config to `~/.config/luna_thin_ui/server_config.toml` so you can **connect right away** with `luna-thin`. When server host is `0.0.0.0`, Thin UI is set to `localhost` (same-machine only); for remote access, edit `server_config.toml` and set `host` to the server’s IP or hostname.
 4b. **Skills** – Installs the **self_config** skill from `quick_setup/self_config/` into `~/.local/share/cosmic_llm/skills/self_config/` so the **skills** MCP server can use it (Luna self-administration).
 5. **MCP** – Pick which MCP servers to add from a **catalog** (no-setup only: shell, filesystem, fetch, skills). Optionally add Luna memory server if you have the binary. Writes `mcp_config.json`.
@@ -42,7 +42,7 @@ luna-quick-setup
 ## Project layout
 
 - `quick_setup/main.py` – CLI flow (questions, orchestration).
-- `quick_setup/profile_creator.py` – Build profile TOML and merge into config.
+- `quick_setup/profile_creator.py` – Build model preset and profile TOML, merge into config.
 - `quick_setup/server_config.py` – Server section + thin_ui `server_config.toml`.
 - `quick_setup/mcp_config.py` – Load MCP catalog, build config from selected servers, optional Luna memory; save `mcp_config.json`.
 - `quick_setup/prompts.py` – Persona choice and system prompt install.

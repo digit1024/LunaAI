@@ -92,14 +92,23 @@ ls -la $HOME/.local/share/cosmic_llm/*.backup.*
 ```toml
 default = "deepseek"  # Default LLM profile
 
-[profiles.deepseek]   # Profile configuration
+[model_presets.deepseek]
 backend = "openai"
-api_key = "..."
 model = "deepseek-chat"
 endpoint = "https://api.deepseek.com/chat/completions"
+api_key = "..."
 temperature = 0.3
 max_tokens = 4000
-enabled_mcp = []      # MCP servers for this profile
+
+[tools_policies.default]
+enabled_mcp = []
+enabled_tools = ["*"]
+disabled_tools = []
+
+[profiles.deepseek]
+model_preset = "deepseek"
+prompts = []
+tools_policy = "default"
 hidden = false
 
 [prompts]

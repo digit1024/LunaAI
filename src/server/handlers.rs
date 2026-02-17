@@ -40,46 +40,71 @@ pub struct ServerContext {
     pub schedule_service: Arc<ScheduleService>,
     /// Tracks which memory IDs have been injected per conversation (dedup for Memory RAG)
     pub memory_dedup: Mutex<HashMap<Uuid, HashSet<i64>>>,
+    /// Allowed tool names for the default profile (from tools policy); used when creating new sessions.
+    pub default_allowed_tool_names: HashSet<String>,
 }
 
 pub struct SessionState {
     pub profile_name: String,
     pub llm_client: Arc<dyn crate::llm::LlmClient>,
     pub active_conversation_id: Option<Uuid>,
+    /// Allowed tool names for this profile (from tools policy); internal tools are only added if in this set.
+    pub allowed_tool_names: HashSet<String>,
     inflight: Vec<JoinHandle<()>>,
 }
 
 impl SessionState {
-    pub fn new(config: &AppConfig) -> Result<Self> {
-        let profile = config
-            .get_default_profile()
-            .unwrap_or(&crate::config::LlmProfile::default())
-            .clone();
+    pub fn new(config: &AppConfig, default_allowed_tool_names: &HashSet<String>) -> Result<Self> {
+        let default_name = &config.default;
+        let resolved = config.resolve_default_profile().ok_or_else(|| {
+            let hint = if config.profiles.get(default_name).is_none() {
+                format!(
+                    "Profile '{default_name}' is not defined in [profiles]. Add [profiles.{default_name}] with model_preset and tools_policy (see docs/sample_config.toml)."
+                )
+            } else {
+                let preset_name = config.profiles.get(default_name).map(|p| p.model_preset.clone()).unwrap_or_default();
+                format!(
+                    "Profile '{default_name}' references model_preset '{preset_name}' which is not defined in [model_presets]. Add [model_presets.{preset_name}] (see docs/sample_config.toml)."
+                )
+            };
+            anyhow::anyhow!("No default profile or preset configured. {}", hint)
+        })?;
         Ok(Self {
             profile_name: config.default.clone(),
-            llm_client: llm::build_llm_client(&profile),
+            llm_client: llm::build_llm_client(resolved.preset()),
             active_conversation_id: None,
+            allowed_tool_names: default_allowed_tool_names.clone(),
             inflight: Vec::new(),
         })
     }
 
-    pub fn update_profile(&mut self, profile_name: &str, config: &AppConfig) -> Result<()> {
-        if let Some(profile) = config.get_profile(profile_name).cloned() {
-            self.profile_name = profile_name.to_string();
-            self.llm_client = llm::build_llm_client(&profile);
-            Ok(())
-        } else {
-            anyhow::bail!("Profile '{}' not found", profile_name)
-        }
+    pub async fn update_profile(
+        &mut self,
+        profile_name: &str,
+        config: &AppConfig,
+        mcp_registry: &Arc<RwLock<MCPServerRegistry>>,
+    ) -> Result<()> {
+        let resolved = config
+            .resolve_profile(profile_name)
+            .context("Profile or its model preset not found")?;
+        self.profile_name = profile_name.to_string();
+        self.llm_client = llm::build_llm_client(resolved.preset());
+        let applied = crate::tools_policy::apply_tools_policy(
+            mcp_registry,
+            config,
+            resolved.profile(),
+        )
+        .await
+        .context("Apply tools policy for profile")?;
+        self.allowed_tool_names = applied.allowed_tool_names;
+        Ok(())
     }
 
-    pub fn active_profile<'a>(
-        &'a self,
-        config: &'a AppConfig,
-    ) -> Result<&'a crate::config::LlmProfile> {
+    /// Resolve current profile name to profile + preset. Use for building messages and token counts.
+    pub fn active_resolved(&self, config: &AppConfig) -> Result<crate::config::ResolvedProfile> {
         config
-            .get_profile(&self.profile_name)
-            .or_else(|| config.get_default_profile())
+            .resolve_profile(&self.profile_name)
+            .or_else(|| config.resolve_default_profile())
             .context("No active profile configured")
     }
 
@@ -103,7 +128,7 @@ impl ServerHandler {
         outbound: UnboundedSender<ServerEvent>,
     ) -> Result<Self> {
         Ok(Self {
-            session: SessionState::new(&ctx.config)?,
+            session: SessionState::new(&ctx.config, &ctx.default_allowed_tool_names)?,
             ctx,
             connection_id,
             outbound,
@@ -182,7 +207,7 @@ impl ServerHandler {
             if let Some(conv_profile) = &conv.profile_name {
                 if conv_profile != &self.session.profile_name {
                     // Restore the conversation's profile
-                    self.session.update_profile(conv_profile, &self.ctx.config)?;
+                    self.session.update_profile(conv_profile, &self.ctx.config, &self.ctx.mcp_registry).await?;
                     let _ = self.outbound.send(ServerEvent::ProfileChanged {
                         profile: conv_profile.clone(),
                     });
@@ -266,7 +291,7 @@ impl ServerHandler {
     }
 
     async fn handle_change_profile(&mut self, profile: String) -> Result<()> {
-        self.session.update_profile(&profile, &self.ctx.config)?;
+        self.session.update_profile(&profile, &self.ctx.config, &self.ctx.mcp_registry).await?;
         let _ = self.outbound.send(ServerEvent::ProfileChanged { profile: profile.clone() });
         
         // Update active conversation's profile in database if there is one
@@ -358,12 +383,12 @@ impl ServerHandler {
             )
             .await;
 
-        let profile = self.session.active_profile(&self.ctx.config)?.clone();
+        let resolved = self.session.active_resolved(&self.ctx.config)?.clone();
         let mut llm_messages = self.build_llm_messages(conversation_uuid).await?;
         let prompt_manager = self.ctx.prompt_manager.clone();
         llm_messages.push(LlmMessage::new(Role::User, content.clone()));
 
-        let agent_messages = ContextService::inject_prompts(llm_messages, &prompt_manager, &profile)?;
+        let agent_messages = ContextService::inject_prompts(llm_messages, &prompt_manager, resolved.profile())?;
         
         // Check if summarization is needed and trigger it using ContextService
         {
@@ -375,7 +400,7 @@ impl ServerHandler {
                 conversation_uuid,
                 storage,
                 &llm_client,
-                &profile,
+                &resolved,
             ).await {
                 tracing::warn!(error = %e, "Failed to check/trigger summarization, continuing anyway");
             }
@@ -385,7 +410,7 @@ impl ServerHandler {
         let mut llm_messages = self.build_llm_messages(conversation_uuid).await?;
         
         // Re-inject prompts after reload
-        llm_messages = ContextService::inject_prompts(llm_messages, &self.ctx.prompt_manager, &profile)?;
+        llm_messages = ContextService::inject_prompts(llm_messages, &self.ctx.prompt_manager, resolved.profile())?;
 
         // Memory RAG: search and inject relevant memories
         {
@@ -417,12 +442,13 @@ impl ServerHandler {
         }
 
         // Recalculate tokens after summarization (if it happened)
-        let token_counter = TokenCounter::new(&profile);
+        let preset = resolved.preset();
+        let token_counter = TokenCounter::new(preset);
         let total_tokens: usize = llm_messages.iter()
             .map(|msg| token_counter.count_message_tokens(msg))
             .sum();
         
-        let context_limit = token_counter.get_context_limit(&profile);
+        let context_limit = token_counter.get_context_limit(preset);
         
         // Log final token usage
         let usage_percent = (total_tokens as f32 / context_limit as f32 * 100.0) as u32;
@@ -434,17 +460,17 @@ impl ServerHandler {
         );
         
         // Apply smart context selection if still over safe limit
-        let mut agent_messages = if total_tokens > token_counter.get_safe_context_limit(&profile) {
+        let mut agent_messages = if total_tokens > token_counter.get_safe_context_limit(preset) {
             tracing::info!(
                 total_tokens,
-                safe_limit = token_counter.get_safe_context_limit(&profile),
+                safe_limit = token_counter.get_safe_context_limit(preset),
                 "Context still exceeds safe limit after summarization, applying smart truncation"
             );
             
             crate::llm::context_manager::SmartContextManager::select_context(
                 llm_messages,
                 &token_counter,
-                &profile,
+                preset,
             )
         } else {
             llm_messages
@@ -454,8 +480,8 @@ impl ServerHandler {
         // (Summarization now handled by ContextService::check_and_trigger_summarization above)
         
         // Apply additional safety checks if needed
-        let safe_limit = token_counter.get_safe_context_limit(&profile);
-        let hard_limit = token_counter.get_context_limit(&profile);
+        let safe_limit = token_counter.get_safe_context_limit(preset);
+        let hard_limit = token_counter.get_context_limit(preset);
         
         // Always ensure we don't exceed the hard limit (API will reject if we do)
         if total_tokens > hard_limit {
@@ -465,7 +491,7 @@ impl ServerHandler {
                 "CRITICAL: Context exceeds hard limit, forcing truncation"
             );
             let original_count = agent_messages.len();
-            agent_messages = SmartContextManager::select_context(agent_messages, &token_counter, &profile);
+            agent_messages = SmartContextManager::select_context(agent_messages, &token_counter, preset);
             let selected_count = agent_messages.len();
             let selected_tokens: usize = agent_messages.iter()
                 .map(|msg| token_counter.count_message_tokens(msg))
@@ -495,7 +521,7 @@ impl ServerHandler {
                 safe_limit
             );
             let original_count = agent_messages.len();
-            agent_messages = SmartContextManager::select_context(agent_messages, &token_counter, &profile);
+            agent_messages = SmartContextManager::select_context(agent_messages, &token_counter, preset);
             let selected_count = agent_messages.len();
             let selected_tokens: usize = agent_messages.iter()
                 .map(|msg| token_counter.count_message_tokens(msg))
@@ -564,6 +590,7 @@ impl ServerHandler {
             agent_messages,
             self.session.profile_name.clone(),
             self.session.llm_client.clone(),
+            self.session.allowed_tool_names.clone(),
         );
         self.session.track_task(handle);
         Ok(())
@@ -680,6 +707,7 @@ pub fn spawn_agent_task(
     agent_messages: Vec<LlmMessage>,
     profile_name: String,
     llm_client: Arc<dyn crate::llm::LlmClient>,
+    allowed_tool_names: HashSet<String>,
 ) -> JoinHandle<()> {
     let subscriptions = ctx.subscriptions.clone();
     let mcp_registry = ctx.mcp_registry.clone();
@@ -689,6 +717,7 @@ pub fn spawn_agent_task(
     let run_context = RunContext {
         conversation_id: Some(conversation_id),
         profile_name: profile_name.clone(),
+        allowed_tool_names,
     };
 
     tokio::spawn(async move {
@@ -765,13 +794,12 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
         .profile_name
         .as_deref()
         .unwrap_or_else(|| ctx.config.default.as_str());
-    let profile = ctx
+    let resolved = ctx
         .config
-        .get_profile(profile_name)
-        .or_else(|| ctx.config.get_default_profile())
-        .cloned()
-        .ok_or_else(|| anyhow!("No profile found for scheduled job"))?;
-    let llm_client = llm::build_llm_client(&profile);
+        .resolve_profile(profile_name)
+        .or_else(|| ctx.config.resolve_default_profile())
+        .ok_or_else(|| anyhow!("No profile or preset found for scheduled job"))?;
+    let llm_client = llm::build_llm_client(resolved.preset());
 
     let (conversation_id, agent_messages) = if let Some(conv_id_str) = &job.conversation_id {
         let conv_uuid = Uuid::parse_str(conv_id_str).context("invalid conversation_id in job")?;
@@ -806,7 +834,7 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
             ),
         ));
         let agent_messages =
-            ContextService::inject_prompts(llm_messages, &ctx.prompt_manager, &profile)?;
+            ContextService::inject_prompts(llm_messages, &ctx.prompt_manager, resolved.profile())?;
         (conv_uuid, agent_messages)
     } else {
         let title = job
@@ -833,8 +861,32 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
         };
         let llm_messages = MessageConverter::db_to_llm(&db_messages, true);
         let agent_messages =
-            ContextService::inject_prompts(llm_messages, &ctx.prompt_manager, &profile)?;
+            ContextService::inject_prompts(llm_messages, &ctx.prompt_manager, resolved.profile())?;
         (conv_id, agent_messages)
+    };
+
+    let allowed_tool_names = match crate::tools_policy::compute_allowed_tool_names(
+        &ctx.mcp_registry,
+        &ctx.config,
+        resolved.profile(),
+    )
+    .await
+    {
+        Ok(set) => set,
+        Err(e) => {
+            tracing::error!(
+                job_id = %job.id,
+                profile = %profile_name,
+                error = %e,
+                "Tools policy computation failed for scheduled job; marking job failed"
+            );
+            let now = chrono::Utc::now().timestamp();
+            let storage = ctx.storage.lock().await;
+            storage
+                .set_scheduled_job_completed(&job.id, now, true, Some(&e.to_string()))
+                .context("failed to mark job failed")?;
+            return Ok(());
+        }
     };
 
     let handle = spawn_agent_task(
@@ -843,6 +895,7 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
         agent_messages,
         profile_name.to_string(),
         llm_client,
+        allowed_tool_names,
     );
     let _ = handle.await;
 

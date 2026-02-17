@@ -90,6 +90,9 @@ mime_guess = "2.0"
 # Async utilities for file streaming
 tokio-util = { version = "0.7", features = ["codec", "io"] }
 
+# Glob pattern matching for tools policy (enabled_mcp, enabled_tools, disabled_tools)
+globset = "0.4"
+
 # Agentic loop library (MCP support)
 agentic-loop = { path = "agentic-loop" }
 
@@ -103,7 +106,6 @@ tokio-test = "0.4"
 default = ["openai", "anthropic"]
 openai = []
 anthropic = []
-deepseek = []
 
 [workspace]
 members = [".", "luna_thin_ui", "agentic-loop"]

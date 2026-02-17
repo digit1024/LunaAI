@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::LlmProfile;
+use crate::config::ModelPreset;
 use futures::{Stream, StreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -13,10 +13,14 @@ use tracing;
 struct OpenAIRequest {
     model: String,
     messages: Vec<OpenAIMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OpenAITool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<String>,
 }
 
@@ -127,14 +131,14 @@ struct OpenAIDelta {
 
 pub struct OpenAIClient {
     client: Client,
-    profile: LlmProfile,
+    preset: ModelPreset,
 }
 
 impl OpenAIClient {
-    pub fn new(profile: LlmProfile) -> Self {
+    pub fn new(preset: ModelPreset) -> Self {
         Self {
             client: Client::new(),
-            profile,
+            preset,
         }
     }
 
@@ -309,10 +313,10 @@ impl LlmClient for OpenAIClient {
         let openai_messages = Self::map_messages(messages);
 
         let request = OpenAIRequest {
-            model: self.profile.model.clone(),
+            model: self.preset.model.clone(),
             messages: openai_messages,
-            temperature: temperature.or(self.profile.temperature),
-            max_tokens: max_tokens.or(self.profile.max_tokens),
+            temperature: temperature.or(self.preset.temperature),
+            max_tokens: max_tokens.or(self.preset.max_tokens),
             stream: true,
             tools: None,
             tool_choice: None,
@@ -324,8 +328,8 @@ impl LlmClient for OpenAIClient {
 
         let response = self
             .client
-            .post(&self.profile.endpoint)
-            .header("Authorization", format!("Bearer {}", self.profile.api_key))
+            .post(&self.preset.endpoint)
+            .header("Authorization", format!("Bearer {}", self.preset.api_key))
             .header("Content-Type", "application/json")
             .json(&request)
             .send()
@@ -417,17 +421,13 @@ impl LlmClient for OpenAIClient {
         };
 
         let request = OpenAIRequest {
-            model: self.profile.model.clone(),
+            model: self.preset.model.clone(),
             messages: openai_messages,
-            temperature: temperature.or(self.profile.temperature),
-            max_tokens: max_tokens.or(self.profile.max_tokens),
+            temperature: temperature.or(self.preset.temperature),
+            max_tokens: max_tokens.or(self.preset.max_tokens),
             stream: false,
             tools,
-            tool_choice: if has_tools {
-                Some("auto".to_string())
-            } else {
-                None
-            },
+            tool_choice: self.preset.tool_choice.as_ref().and_then(|v| v.as_str().map(String::from)).or_else(|| if has_tools { Some("auto".to_string()) } else { None }),
         };
 
         if let Ok(payload) = serde_json::to_string(&request) {
@@ -436,8 +436,8 @@ impl LlmClient for OpenAIClient {
 
         let response = self
             .client
-            .post(&self.profile.endpoint)
-            .header("Authorization", format!("Bearer {}", self.profile.api_key))
+            .post(&self.preset.endpoint)
+            .header("Authorization", format!("Bearer {}", self.preset.api_key))
             .header("Content-Type", "application/json")
             .json(&request)
             .send()
@@ -524,17 +524,13 @@ impl LlmClient for OpenAIClient {
         };
 
         let request = OpenAIRequest {
-            model: self.profile.model.clone(),
+            model: self.preset.model.clone(),
             messages: openai_messages,
-            temperature: temperature.or(self.profile.temperature),
-            max_tokens: max_tokens.or(self.profile.max_tokens),
+            temperature: temperature.or(self.preset.temperature),
+            max_tokens: max_tokens.or(self.preset.max_tokens),
             stream: true,
             tools,
-            tool_choice: if has_tools {
-                Some("auto".to_string())
-            } else {
-                None
-            },
+            tool_choice: self.preset.tool_choice.as_ref().and_then(|v| v.as_str().map(String::from)).or_else(|| if has_tools { Some("auto".to_string()) } else { None }),
         };
 
         if let Ok(payload) = serde_json::to_string(&request) {
@@ -543,8 +539,8 @@ impl LlmClient for OpenAIClient {
 
         let response = self
             .client
-            .post(&self.profile.endpoint)
-            .header("Authorization", format!("Bearer {}", self.profile.api_key))
+            .post(&self.preset.endpoint)
+            .header("Authorization", format!("Bearer {}", self.preset.api_key))
             .header("Content-Type", "application/json")
             .json(&request)
             .send()

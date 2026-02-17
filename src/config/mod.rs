@@ -1,41 +1,102 @@
 use anyhow::Context;
 use config::{Config, ConfigError, File};
-use serde::{
-    de::{self, Deserializer, SeqAccess, Visitor},
-    Deserialize, Serialize,
-};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+// ── Model preset (identity + optional request params; no defaults sent to API) ──
+
 #[derive(Debug, Deserialize, Clone, Serialize)]
-pub struct LlmProfile {
-    #[serde(default = "default_backend")]
-    pub backend: String, // "openai", "anthropic", "deepseek", "ollama", "gemini"
-    pub api_key: String,
-    pub model: String,
-    pub endpoint: String,
-    pub temperature: Option<f32>,
-    pub max_tokens: Option<u32>,
-    #[serde(default)]
-    pub profile_prompt_file: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_enabled_mcp")]
-    pub enabled_mcp: Vec<String>,
-    #[serde(default)]
-    pub hidden: bool,
-    /// Maximum context window size in tokens
-    /// If not set, will be auto-detected based on model
-    #[serde(default)]
-    pub context_window_size: Option<usize>,
-    /// Summarization threshold (0.0 - 1.0)
-    /// When context usage reaches this percentage of context_window_size,
-    /// summarization of older messages will be triggered
-    /// Default: 0.7 (70% of context window)
-    #[serde(default = "default_summarize_threshold")]
-    pub summarize_threshold: f32,
+pub struct ReasoningConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
-fn default_backend() -> String {
-    "openai".to_string()
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct ModelPreset {
+    pub backend: String,
+    pub model: String,
+    /// Full URL we POST to (chat completions). No path appended.
+    pub endpoint: String,
+    pub api_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i64>,
+    /// Stop sequences: string or array of strings
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningConfig>,
+}
+
+impl Default for ModelPreset {
+    fn default() -> Self {
+        Self {
+            backend: "openai".to_string(),
+            model: "gpt-3.5-turbo".to_string(),
+            endpoint: "https://api.openai.com/v1/chat/completions".to_string(),
+            api_key: String::new(),
+            max_tokens: None,
+            context_window_size: None,
+            temperature: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            stop: None,
+            response_format: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            reasoning: None,
+        }
+    }
+}
+
+// ── Tools policy (glob patterns; empty = deny all) ──
+
+#[derive(Debug, Deserialize, Clone, Serialize, Default)]
+pub struct ToolsPolicy {
+    #[serde(default)]
+    pub enabled_mcp: Vec<String>,
+    #[serde(default)]
+    pub enabled_tools: Vec<String>,
+    #[serde(default)]
+    pub disabled_tools: Vec<String>,
+}
+
+// ── Profile: references preset + policy + prompts ──
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct LlmProfile {
+    pub model_preset: String,
+    #[serde(default)]
+    pub prompts: Vec<String>,
+    pub tools_policy: String,
+    #[serde(default)]
+    pub hidden: bool,
+    #[serde(default)]
+    pub context_window_size: Option<usize>,
+    #[serde(default = "default_summarize_threshold")]
+    pub summarize_threshold: f32,
 }
 
 fn default_summarize_threshold() -> f32 {
@@ -45,18 +106,29 @@ fn default_summarize_threshold() -> f32 {
 impl Default for LlmProfile {
     fn default() -> Self {
         Self {
-            backend: "openai".to_string(),
-            api_key: "".to_string(),
-            model: "gpt-3.5-turbo".to_string(),
-            endpoint: "https://api.openai.com/v1".to_string(),
-            temperature: Some(0.7),
-            max_tokens: Some(1000),
-            profile_prompt_file: None,
-            enabled_mcp: Vec::new(),
+            model_preset: "openai".to_string(),
+            prompts: Vec::new(),
+            tools_policy: "default".to_string(),
             hidden: false,
             context_window_size: None,
             summarize_threshold: default_summarize_threshold(),
         }
+    }
+}
+
+/// Resolved profile: profile + its model preset. Use for building LLM client and requests.
+#[derive(Debug, Clone)]
+pub struct ResolvedProfile {
+    pub profile: LlmProfile,
+    pub preset: ModelPreset,
+}
+
+impl ResolvedProfile {
+    pub fn preset(&self) -> &ModelPreset {
+        &self.preset
+    }
+    pub fn profile(&self) -> &LlmProfile {
+        &self.profile
     }
 }
 
@@ -246,6 +318,10 @@ pub struct AppConfig {
     pub default: String,
     pub profiles: HashMap<String, LlmProfile>,
     #[serde(default)]
+    pub model_presets: HashMap<String, ModelPreset>,
+    #[serde(default)]
+    pub tools_policies: HashMap<String, ToolsPolicy>,
+    #[serde(default)]
     pub prompts: crate::prompts::PromptConfig,
     #[serde(default)]
     pub mcp: MCPConfig,
@@ -260,11 +336,36 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         let mut profiles = HashMap::new();
-        // Add default OpenAI profile
         profiles.insert("openai".to_string(), LlmProfile::default());
+        let mut model_presets = HashMap::new();
+        model_presets.insert(
+            "openai".to_string(),
+            ModelPreset {
+                backend: "openai".to_string(),
+                model: "gpt-3.5-turbo".to_string(),
+                endpoint: "https://api.openai.com/v1/chat/completions".to_string(),
+                api_key: String::new(),
+                max_tokens: None,
+                context_window_size: None,
+                temperature: None,
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
+                seed: None,
+                stop: None,
+                response_format: None,
+                tool_choice: None,
+                parallel_tool_calls: None,
+                reasoning: None,
+            },
+        );
+        let mut tools_policies = HashMap::new();
+        tools_policies.insert("default".to_string(), ToolsPolicy::default());
         Self {
             default: "openai".to_string(),
             profiles,
+            model_presets,
+            tools_policies,
             prompts: crate::prompts::PromptConfig::default(),
             mcp: MCPConfig::default(),
             server: ServerConfig::default(),
@@ -330,6 +431,18 @@ impl AppConfig {
         self.profiles.get(name)
     }
 
+    /// Resolve profile by name to profile + model preset. Use for building LLM client.
+    pub fn resolve_profile(&self, name: &str) -> Option<ResolvedProfile> {
+        let profile = self.profiles.get(name)?.clone();
+        let preset = self.model_presets.get(&profile.model_preset)?.clone();
+        Some(ResolvedProfile { profile, preset })
+    }
+
+    /// Resolve default profile to profile + model preset.
+    pub fn resolve_default_profile(&self) -> Option<ResolvedProfile> {
+        self.resolve_profile(&self.default)
+    }
+
     #[allow(dead_code)] // Public API method
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         use std::fs;
@@ -370,60 +483,6 @@ impl AppConfig {
             Self::config_dir().join(candidate)
         }
     }
-}
-
-fn deserialize_enabled_mcp<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    struct StringOrVecVisitor;
-
-    impl<'de> Visitor<'de> for StringOrVecVisitor {
-        type Value = Vec<String>;
-
-        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("a comma-separated string or a list of MCP server names")
-        }
-
-        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(parse_mcp_csv(value))
-        }
-
-        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(parse_mcp_csv(&value))
-        }
-
-        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-        where
-            A: SeqAccess<'de>,
-        {
-            let mut values = Vec::new();
-            while let Some(value) = seq.next_element::<String>()? {
-                let trimmed = value.trim();
-                if !trimmed.is_empty() {
-                    values.push(trimmed.to_string());
-                }
-            }
-            Ok(values)
-        }
-    }
-
-    deserializer.deserialize_any(StringOrVecVisitor)
-}
-
-fn parse_mcp_csv(value: &str) -> Vec<String> {
-    value
-        .split(',')
-        .map(|entry| entry.trim())
-        .filter(|entry| !entry.is_empty())
-        .map(|entry| entry.to_string())
-        .collect()
 }
 
 impl MCPConfig {

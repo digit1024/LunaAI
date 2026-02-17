@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 from . import paths
 from .profile_creator import (
     add_or_update_profile,
+    build_model_preset,
     build_profile,
     load_config,
 )
@@ -292,33 +293,44 @@ def run() -> None:
     max_tokens = _ask_max_tokens()
     profile_name = _ask_profile_name(_suggest_profile_name(persona_id, model_id))
 
-    # Install system prompt (global) from persona; only set profile_prompt_file if we created the file
-    profile_prompt_file: str | None = None
+    # Install system prompt (global) from persona; set prompts if we created the file
+    prompts: list[str] = []
     persona_path = get_persona_path(persona_id, sample_root)
     if persona_path.exists():
         install_system_prompt(persona_path.read_text(encoding="utf-8"))
         install_persona_as_profile_prompt(persona_id, profile_name, sample_root)
-        profile_prompt_file = f"profiles/{profile_name}.md"
+        prompts = [f"profiles/{profile_name}.md"]
     else:
         print("  Warning: Persona file not found (sample_data/personas); profile will have no per-profile prompt.")
 
-    # 3) Create profile
-    profile = build_profile(
-        name=profile_name,
+    # 3) Create model preset + profile (config refinement shape)
+    preset_name = profile_name
+    preset = build_model_preset(
+        preset_name=preset_name,
         backend=backend,
-        api_key=api_key,
         model=model_id,
-        endpoint=endpoint,
+        endpoint=endpoint.strip() or "https://api.openai.com/v1/chat/completions",
+        api_key=api_key,
         temperature=temperature,
         max_tokens=max_tokens,
         context_window_size=context_window,
-        summarize_threshold=0.7,
-        profile_prompt_file=profile_prompt_file,
-        enabled_mcp=[],  # user can add in config later
-        hidden=False,
     )
-    add_or_update_profile(profile_name, profile, set_default=True)
-    print(f"\n  Profile '{profile_name}' written to config.toml.")
+    profile = build_profile(
+        model_preset_name=preset_name,
+        prompts=prompts,
+        tools_policy="default",
+        hidden=False,
+        summarize_threshold=0.7,
+        context_window_size=context_window,
+    )
+    add_or_update_profile(
+        profile_name,
+        profile,
+        set_default=True,
+        preset_name=preset_name,
+        preset=preset,
+    )
+    print(f"\n  Profile '{profile_name}' and model preset '{preset_name}' written to config.toml.")
 
     # 4) Server
     host, port, server_api_key = _ask_server()

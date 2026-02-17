@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::LlmProfile;
+use crate::config::ModelPreset;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
@@ -81,14 +81,14 @@ struct OllamaDelta {
 
 pub struct OllamaClient {
     client: Client,
-    profile: LlmProfile,
+    preset: ModelPreset,
 }
 
 impl OllamaClient {
-    pub fn new(profile: LlmProfile) -> Self {
+    pub fn new(preset: ModelPreset) -> Self {
         Self {
             client: Client::new(),
-            profile,
+            preset,
         }
     }
 }
@@ -146,23 +146,23 @@ impl LlmClient for OllamaClient {
             .collect();
 
         let request = OllamaRequest {
-            model: self.profile.model.clone(),
+            model: self.preset.model.clone(),
             messages: ollama_messages,
-            temperature: temperature.or(self.profile.temperature),
-            max_tokens: max_tokens.or(self.profile.max_tokens),
+            temperature: temperature.or(self.preset.temperature),
+            max_tokens: max_tokens.or(self.preset.max_tokens),
             stream: true,
             tools: None,
         };
 
         let mut request_builder = self
             .client
-            .post(&self.profile.endpoint)
+            .post(&self.preset.endpoint)
             .header("Content-Type", "application/json");
 
         // Only add authorization header if API key is provided
-        if !self.profile.api_key.is_empty() {
+        if !self.preset.api_key.is_empty() {
             request_builder =
-                request_builder.header("Authorization", format!("Bearer {}", self.profile.api_key));
+                request_builder.header("Authorization", format!("Bearer {}", self.preset.api_key));
         }
 
         let response = request_builder.json(&request).send().await?;
@@ -306,23 +306,23 @@ impl LlmClient for OllamaClient {
         };
 
         let request = OllamaRequest {
-            model: self.profile.model.clone(),
+            model: self.preset.model.clone(),
             messages: ollama_messages,
-            temperature: temperature.or(self.profile.temperature),
-            max_tokens: max_tokens.or(self.profile.max_tokens),
+            temperature: temperature.or(self.preset.temperature),
+            max_tokens: max_tokens.or(self.preset.max_tokens),
             stream: false,
             tools,
         };
 
         let mut request_builder = self
             .client
-            .post(&self.profile.endpoint)
+            .post(&self.preset.endpoint)
             .header("Content-Type", "application/json");
 
         // Only add authorization header if API key is provided
-        if !self.profile.api_key.is_empty() {
+        if !self.preset.api_key.is_empty() {
             request_builder =
-                request_builder.header("Authorization", format!("Bearer {}", self.profile.api_key));
+                request_builder.header("Authorization", format!("Bearer {}", self.preset.api_key));
         }
 
         let response = request_builder.json(&request).send().await?;

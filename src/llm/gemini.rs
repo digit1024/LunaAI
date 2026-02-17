@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::LlmProfile;
+use crate::config::ModelPreset;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
@@ -83,22 +83,22 @@ struct GeminiCandidate {
 
 pub struct GeminiClient {
     client: Client,
-    profile: LlmProfile,
+    preset: ModelPreset,
 }
 
 impl GeminiClient {
-    pub fn new(profile: LlmProfile) -> Self {
+    pub fn new(preset: ModelPreset) -> Self {
         Self {
             client: Client::new(),
-            profile,
+            preset,
         }
     }
 
     /// Build the Gemini API endpoint URL for a given method
     /// Handles endpoints that already include the path or just the base URL
     fn build_endpoint(&self, method: &str) -> String {
-        let base = self.profile.endpoint.trim_end_matches('/');
-        let model = &self.profile.model;
+        let base = self.preset.endpoint.trim_end_matches('/');
+        let model = &self.preset.model;
 
         // Check if endpoint already includes the models path
         if base.ends_with("/v1beta/models") || base.ends_with("/v1beta/models/") {
@@ -271,8 +271,8 @@ impl LlmClient for GeminiClient {
         let contents = self.convert_messages_to_gemini(messages);
 
         let generation_config = GeminiGenerationConfig {
-            temperature: temperature.or(self.profile.temperature),
-            max_output_tokens: max_tokens.or(self.profile.max_tokens),
+            temperature: temperature.or(self.preset.temperature),
+            max_output_tokens: max_tokens.or(self.preset.max_tokens),
         };
 
         let request = GeminiRequest {
@@ -288,7 +288,7 @@ impl LlmClient for GeminiClient {
             .client
             .post(&endpoint)
             .header("Content-Type", "application/json")
-            .header("x-goog-api-key", &self.profile.api_key)
+            .header("x-goog-api-key", &self.preset.api_key)
             .json(&request)
             .send()
             .await?;
@@ -366,8 +366,8 @@ impl LlmClient for GeminiClient {
         let contents = self.convert_messages_to_gemini(messages);
 
         let generation_config = GeminiGenerationConfig {
-            temperature: temperature.or(self.profile.temperature),
-            max_output_tokens: max_tokens.or(self.profile.max_tokens),
+            temperature: temperature.or(self.preset.temperature),
+            max_output_tokens: max_tokens.or(self.preset.max_tokens),
         };
 
         let tools = if available_tools.is_empty() {
@@ -407,7 +407,7 @@ impl LlmClient for GeminiClient {
             .client
             .post(&endpoint)
             .header("Content-Type", "application/json")
-            .header("x-goog-api-key", &self.profile.api_key)
+            .header("x-goog-api-key", &self.preset.api_key)
             .json(&request)
             .send()
             .await?;

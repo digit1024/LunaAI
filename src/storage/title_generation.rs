@@ -1,4 +1,4 @@
-use crate::config::LlmProfile;
+use crate::config::ModelPreset;
 use crate::llm::{build_llm_client, Message as LlmMessage, Role};
 use crate::storage::sqlite_storage_simple::Message as SqliteMessage;
 use anyhow::{Context, Result};
@@ -8,7 +8,7 @@ const MAX_TITLE_LENGTH: usize = 100;
 /// Generate a title from messages (internal function that doesn't need storage)
 pub async fn generate_title_from_messages(
     messages: Vec<SqliteMessage>,
-    profile: &LlmProfile,
+    preset: &ModelPreset,
     summary_chars: u32,
     system_prompt: &str,
 ) -> Result<String> {
@@ -63,7 +63,7 @@ pub async fn generate_title_from_messages(
     }
 
     // Create LLM client
-    let llm_client = build_llm_client(profile);
+    let llm_client = build_llm_client(preset);
 
     // Build messages: System prompt + User message (transcript)
     let mut llm_messages = Vec::new();
