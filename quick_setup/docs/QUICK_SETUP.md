@@ -8,7 +8,7 @@ One-shot, **opinionated** setup so a user can quickly start using Luna AI: confi
 
 | Target | Content |
 |--------|--------|
-| `~/.local/share/cosmic_llm/config.toml` | `default`, `[profiles.<name>]`, `[server]` |
+| `~/.local/share/cosmic_llm/config.toml` | `default`, `[model_presets.<name>]`, `[tools_policies.default]`, `[profiles.<name>]`, `[server]` |
 | `~/.local/share/cosmic_llm/system_prompt.md` | Global system prompt (from chosen persona) |
 | `~/.local/share/cosmic_llm/profiles/<name>.md` | Per-profile prompt (same persona content) |
 | `~/.config/luna_thin_ui/server_config.toml` | `host`, `port`, `api_key` for thin UI |
@@ -23,7 +23,7 @@ One-shot, **opinionated** setup so a user can quickly start using Luna AI: confi
 5. **Temperature** – Default 0.3.
 6. **Max tokens** – Default 4000.
 7. **Profile name** – Suggested: `{persona}_{model}` (e.g. `luna_gpt-4o-mini`).
-8. **Profile creation** – Writes `[profiles.<name>]` with backend, api_key, model, endpoint, temperature, max_tokens, context_window_size, summarize_threshold, profile_prompt_file, hidden.
+8. **Profile creation** – Writes `[model_presets.<name>]` (backend, model, endpoint, api_key, temperature, max_tokens) and `[profiles.<name>]` with model_preset, prompts, tools_policy, summarize_threshold, hidden. Ensures `[tools_policies.default]` exists.
 9. **Server API** – Host (default 0.0.0.0), port (8080), server API key. Writes `[server]` and thin_ui `server_config.toml`.
 10. **MCP** – Ask to add default servers; if yes, derive paths and write `mcp_config.json`.
 
@@ -39,19 +39,29 @@ One-shot, **opinionated** setup so a user can quickly start using Luna AI: confi
 - **vera.md** – Vera, professional concise.
 - **jude.md** – Jude, wicked twisted funny.
 
-## Profile TOML shape
+## Config shape (config refinement)
+
+Profiles reference a **model preset** and a **tools policy**; presets hold backend, model, endpoint, api_key, and optional request params.
 
 ```toml
-[profiles.<name>]
-backend = "..."
+[model_presets.<preset_name>]
+backend = "openai"
+model = "gpt-4"
+endpoint = "https://api.openai.com/v1/chat/completions"
 api_key = "..."
-model = "..."
-endpoint = "..."
 temperature = 0.3
 max_tokens = 4000
-context_window_size = 128000   # when known from catalog
+
+[tools_policies.default]
+enabled_mcp = []
+enabled_tools = ["*"]
+disabled_tools = []
+
+[profiles.<name>]
+model_preset = "<preset_name>"
+prompts = ["profiles/<name>.md"]
+tools_policy = "default"
 summarize_threshold = 0.7
-profile_prompt_file = "profiles/<name>.md"
 hidden = false
 ```
 
@@ -86,7 +96,7 @@ Paths (binary for memory, DB, skills dir) are derived from `~/.local/share/cosmi
 ## Architecture (modular)
 
 - **paths** – All cosmic_llm and luna_thin_ui paths in one place.
-- **profile_creator** – Build profile dict, load/save config.toml, add_or_update_profile.
+- **profile_creator** – Build model preset and profile dicts, load/save config.toml, add_or_update_profile (writes [model_presets], [tools_policies.default], [profiles]).
 - **server_config** – Merge [server] into config.toml; write thin_ui server_config.toml.
 - **mcp_config** – default_mcp_servers(), load/save mcp_config.json, merge_default_mcp_servers().
 - **prompts** – Persona list, install_system_prompt, install_persona_as_profile_prompt.
@@ -97,7 +107,7 @@ So: UI flow and “what to ask” live in `main`; “how to build and write conf
 ## What’s missing from a configuration perspective (self-review)
 
 - **title_summary** – Not in quick setup. User may want `title_generation_profile` and related options later; could be a follow-up step or doc.
-- **enabled_mcp** – We don’t set per-profile `enabled_mcp`; profile gets empty list. User can edit config to add e.g. `enabled_mcp = "cosmic-llm-memory,fetch"`.
+- **tools_policy** – Quick setup uses `tools_policy = "default"` with `enabled_mcp = []`, `enabled_tools = ["*"]`. User can edit config to add MCP server names to `enabled_mcp` or create another policy.
 - **prompts section** – We don’t write `[prompts] system_prompt_file` in config.toml; Luna still finds `system_prompt.md` in the config dir by convention. If Luna ever requires it in config, we should add it.
 - **Brave API key** – We add brave-search with empty key; user must edit `mcp_config.json` or we could add one more question.
 - **Optional MCP toggles** – We don’t ask “which of these MCP servers to enable”; we add all and user can remove from JSON. Acceptable for “quick” setup.

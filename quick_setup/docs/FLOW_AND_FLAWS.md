@@ -21,12 +21,10 @@ flowchart TD
     ASK_TEMP --> ASK_PNAME[Ask: Profile name]
     ASK_PNAME --> INSTALL_PROMPT[Install system prompt + profile prompt from persona]
     INSTALL_PROMPT --> PERSONA_EXISTS{persona_path.exists?}
-    PERSONA_EXISTS -->|No| F2[⚠ F2: Still set profile_prompt_file to profiles/name.md]
+    PERSONA_EXISTS -->|No| WRITE_PROFILE
     PERSONA_EXISTS -->|Yes| WRITE_PROMPTS[Write system_prompt.md + profiles/name.md]
-    F2 --> WRITE_PROFILE
-    WRITE_PROMPTS --> WRITE_PROFILE[add_or_update_profile: write config.toml]
-    WRITE_PROFILE --> F3[(⚠ F3: Profile may reference missing file)]
-    F3 --> ASK_SERVER[Ask: Server host, port, api_key]
+    WRITE_PROMPTS --> WRITE_PROFILE[add_or_update_profile: model_preset + profile + tools_policies.default]
+    WRITE_PROFILE --> ASK_SERVER[Ask: Server host, port, api_key]
     ASK_SERVER --> F4[(⚠ F4: Port not validated 1-65535)]
     F4 --> MERGE_SERVER[merge_server_into_config]
     MERGE_SERVER --> WRITE_THIN[write_thin_ui_server_config]
@@ -49,8 +47,8 @@ flowchart TD
 | Id | Severity | Description | Where |
 |----|----------|-------------|--------|
 | **F1** | Medium | **Empty API key** – No check or warning. Profile is written with `api_key = ""`; Luna will fail at runtime for providers that require a key. | After `_ask_api_key`, before writing profile |
-| **F2** | High | **Profile prompt file set but not created** – If `persona_path.exists()` is false (e.g. `sample_data/` missing or wrong `_sample_data_root()`), we never call `install_system_prompt` or `install_persona_as_profile_prompt`, but we still set `profile_prompt_file = "profiles/{profile_name}.md"` and write the profile. Profile points to a file that doesn’t exist. | main.py L222–226, L239 |
-| **F3** | High | **Profile can reference missing file** – Same as F2: config is written with `profile_prompt_file` even when that file was never created. Luna may warn or fail when loading the profile. | profile_creator + main |
+| **F2** | — | *(Fixed)* We only set `prompts = ["profiles/…"]` when persona file exists; otherwise profile has `prompts = []`. | main.py |
+| **F3** | — | *(Fixed)* Profile no longer references a missing file; prompts array is only set when we wrote the file. | profile_creator + main |
 | **F4** | Low | **Port not validated** – `port` is not clamped to 1–65535. User could enter 0 or 99999; invalid value is written to config. | _ask_server, merge_server_into_config |
 | **F5** | Low / Design | **Thin UI host always localhost when bind is 0.0.0.0** – For remote access, thin_ui would need the real hostname/IP; we always pass `localhost` when server host is `0.0.0.0`. Same-machine only. | main.py L251 |
 | **F6** | Medium | **Missing MCP catalog is silent** – If `catalog/mcp_servers.json` is missing or has no `servers`, `_ask_mcp_servers_from_catalog` returns `([], False, None)` and we print "Skipped MCP servers." User is not told that the catalog was missing or empty. | _ask_mcp_servers_from_catalog, run() |
@@ -78,10 +76,10 @@ flowchart TD
     │
     ├── persona_path.exists()? ──► YES: write system_prompt.md + profiles/<name>.md
     │
-    └── NO ──► (F2/F3) still set profile_prompt_file = "profiles/<name>.md"
+    └── NO ──► prompts = [] (no file reference)
     │
     ▼
-  Write profile to config.toml (add_or_update_profile)
+  Write model_preset + profile + tools_policies.default to config.toml (add_or_update_profile)
     │
     ▼
   Ask: Server host, port, api_key  ──► (F4: port not validated)
