@@ -50,6 +50,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Set<String> _processedMessageIds = {}; // Track messages that have been processed for sound/TTS
   SpeechService? _speechService;
   String? _currentTranscribedText;
+  Timer? _sttErrorRetryTimer; // Debounce STT error retries to avoid double start (error_busy)
 
   @override
   void initState() {
@@ -84,17 +85,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           if (previous != true) _startTypingFeedback();
         } else if (previous == true) {
           _stopTypingFeedback(playCompletion: true);
-          // Turn complete: resume STT in dialog mode only when we won't play TTS (empty last message).
-          // If the last assistant message has content, TTS will run and onComplete will resume.
+          // Turn complete: resume STT in dialog mode ONLY if no TTS will play (empty last message)
+          // If TTS will play, resume listening will happen in TTS onComplete callback
           final state = ref.read(appControllerProvider);
-          if (state.isDialogModeActive &&
-              state.dialogModeState != DialogModeState.speaking) {
-            final messages = state.chatMessages;
-            final lastAssistant = messages.isEmpty
+          if (state.isDialogModeActive) {
+            // Check if last assistant message has content (TTS will play)
+            final lastAssistant = state.chatMessages.isEmpty
                 ? null
-                : messages.lastWhere(
-                    (m) =>
-                        m.bubbleType == BubbleType.assistant && !m.isStreaming,
+                : state.chatMessages.lastWhere(
+                    (m) => m.bubbleType == BubbleType.assistant && !m.isStreaming,
                     orElse: () => ChatMessage(
                       id: '',
                       role: 'assistant',
@@ -103,11 +102,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       bubbleType: BubbleType.assistant,
                     ),
                   );
-            final isRealMessage = lastAssistant != null && lastAssistant.id.isNotEmpty;
-            final hasContent = isRealMessage &&
-                stripEmojisAndMarkdown(lastAssistant.content).trim().isNotEmpty;
-            if (!hasContent) {
+            final cleanText = lastAssistant != null
+                ? stripEmojisAndMarkdown(lastAssistant.content)
+                : '';
+            
+            // Only resume if last message is empty (no TTS will play)
+            if (lastAssistant == null || 
+                lastAssistant.content.isEmpty || 
+                cleanText.trim().isEmpty) {
+              debugPrint('ChatScreen: Streaming ended, no TTS (empty message), resuming listening');
               _resumeListening();
+            } else {
+              debugPrint('ChatScreen: Streaming ended, TTS will play, waiting for TTS completion');
             }
           }
         }
@@ -166,6 +172,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   @override
   void dispose() {
+    _sttErrorRetryTimer?.cancel();
+    _sttErrorRetryTimer = null;
     _streamingSubscription.close();
     _toolCompletionSubscription.close();
     _ttsSubscription.close();
@@ -295,22 +303,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
     _processedMessageIds.add('${lastAssistantId}_tts');
 
-    // Empty: don't start TTS; STT will resume when streaming goes false (streaming listener)
+    // Empty: don't start TTS; STT will resume when streaming goes false (handled in streaming listener)
     final cleanText = stripEmojisAndMarkdown(lastAssistant!.content);
     if (lastAssistant.content.isEmpty || cleanText.trim().isEmpty) {
       return;
     }
 
-    _playTtsForMessage(
-      lastAssistant,
-      shouldResumeListening: state.isDialogModeActive,
-    );
+    _playTtsForMessage(lastAssistant);
   }
 
-  Future<void> _playTtsForMessage(
-    ChatMessage message, {
-    bool shouldResumeListening = false,
-  }) async {
+  Future<void> _playTtsForMessage(ChatMessage message) async {
     if (message.content.isEmpty) return;
     
     final state = ref.read(appControllerProvider);
@@ -324,17 +326,35 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     await ttsProvider.stop();
     
     if (state.isDialogModeActive) {
-      // In dialog mode, set state to speaking
+      // In dialog mode, set state to speaking. Resume listening after TTS completes.
       final controller = ref.read(appControllerProvider.notifier);
       controller.setDialogModeState(DialogModeState.speaking);
-      
-      // Only resume listening after TTS when the turn is complete (streaming false)
-      await ttsProvider.speak(cleanText, onComplete: shouldResumeListening ? () {
+      final messageIdForResume = message.id;
+
+      // Resume listening only when (1) TTS completed, (2) not streaming, (3) this message is still the last assistant.
+      // Prevents resuming when we stopped an earlier message to play the next (onComplete fires for stopped playback).
+      await ttsProvider.speak(cleanText, onComplete: () {
         final currentState = ref.read(appControllerProvider);
-        if (currentState.isDialogModeActive && !currentState.streaming) {
-          _resumeListening();
+        if (!currentState.isDialogModeActive || currentState.streaming) return;
+        final lastAssistant = currentState.chatMessages.isEmpty
+            ? null
+            : currentState.chatMessages.lastWhere(
+                (m) => m.bubbleType == BubbleType.assistant && !m.isStreaming,
+                orElse: () => ChatMessage(
+                  id: '',
+                  role: 'assistant',
+                  content: '',
+                  timestamp: DateTime.now(),
+                  bubbleType: BubbleType.assistant,
+                ),
+              );
+        if (lastAssistant?.id != messageIdForResume) {
+          debugPrint('ChatScreen: TTS completed for earlier message, not resuming (last=${lastAssistant?.id})');
+          return;
         }
-      } : null);
+        debugPrint('ChatScreen: TTS completed for last message, resuming listening');
+        _resumeListening();
+      });
     } else {
       await ttsProvider.speak(cleanText);
     }
@@ -373,13 +393,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       });
       
       // If user starts speaking during TTS, stop TTS and resume listening
-      final currentState = ref.read(appControllerProvider);
-      if (currentState.dialogModeState == DialogModeState.speaking && text.trim().isNotEmpty) {
-        debugPrint('ChatScreen: User speaking during TTS, stopping TTS');
-        final ttsProvider = ref.read(ttsProviderResolver);
-        ttsProvider.stop();
-        controller.setDialogModeState(DialogModeState.listening);
-      }
+      // final currentState = ref.read(appControllerProvider);
+      // if (currentState.dialogModeState == DialogModeState.speaking && text.trim().isNotEmpty) {
+      //   debugPrint('ChatScreen: User speaking during TTS, stopping TTS');
+      //   final ttsProvider = ref.read(ttsProviderResolver);
+      //   ttsProvider.stop();
+      //   controller.setDialogModeState(DialogModeState.listening);
+      // }
     };
     
     speechService.onPauseDetected = () {
@@ -392,6 +412,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         debugPrint('ChatScreen: Calling _sendVoiceMessage');
         _sendVoiceMessage(textToSend.trim());
         _currentTranscribedText = null;
+        
       } else {
         debugPrint('ChatScreen: No text to send');
       }
@@ -399,19 +420,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     
     speechService.onError = (error) {
       debugPrint('ChatScreen: Speech error: $error');
-      // Try to restart listening on error
-      if (ref.read(appControllerProvider).isDialogModeActive) {
-        debugPrint('ChatScreen: Attempting to restart listening after error');
-        Future.delayed(const Duration(milliseconds: 500), () {
-          if (ref.read(appControllerProvider).isDialogModeActive) {
-            final currentSttPrefs = ref.read(sttPreferencesProvider);
-            speechService.startListening(
-              currentSttPrefs.language,
-              pauseDuration: currentSttPrefs.pauseDuration,
-            );
-          }
-        });
-      }
+      _sttErrorRetryTimer?.cancel();
+      _sttErrorRetryTimer = null;
+      if (!ref.read(appControllerProvider).isDialogModeActive) return;
+      debugPrint('ChatScreen: Scheduling single restart after error (500ms)');
+      _sttErrorRetryTimer = Timer(const Duration(milliseconds: 500), () {
+        _sttErrorRetryTimer = null;
+        if (!ref.read(appControllerProvider).isDialogModeActive) return;
+        final currentSttPrefs = ref.read(sttPreferencesProvider);
+        speechService.startListening(
+          currentSttPrefs.language,
+          pauseDuration: currentSttPrefs.pauseDuration,
+        );
+      });
     };
     
     speechService.onUnexpectedStop = () {
@@ -445,12 +466,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   Future<void> _stopDialogMode() async {
     debugPrint('ChatScreen: _stopDialogMode called');
-    
+    _sttErrorRetryTimer?.cancel();
+    _sttErrorRetryTimer = null;
+
     // Disable wakelock (mobile only)
     if (isMobile) {
       await WakelockPlus.disable();
     }
-    
+
     // Stop speech recognition and clear callbacks
     await _speechService?.cancel();
     _speechService?.clearCallbacks();
@@ -633,6 +656,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           },
           onVoiceMode: () {
             controller.startDialogMode();
+            
           },
           onAttachFile: () async {
             final result = await FilePicker.platform.pickFiles(

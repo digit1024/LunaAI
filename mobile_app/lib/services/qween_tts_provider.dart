@@ -91,10 +91,26 @@ class QweenTtsProvider implements TtsProvider {
   }) async {
     _streamStarted = false;
     _allChunksFed = false;
+    int chunkPcmBytes = 0;
+    DateTime? playbackStartTime;
 
     _client = QweenTtsClient(apiKey: apiKey, voice: voice);
 
     final playbackDone = Completer<void>();
+    bool playbackCompleted = false;
+
+    // Helper to complete playback and call onComplete if needed
+    void completePlayback() {
+      if (!playbackCompleted && !_stopped) {
+        playbackCompleted = true;
+        if (!playbackDone.isCompleted) {
+          playbackDone.complete();
+        }
+        if (isLast) {
+          _callOnComplete();
+        }
+      }
+    }
 
     try {
       var gotAudio = false;
@@ -106,23 +122,31 @@ class QweenTtsProvider implements TtsProvider {
         }
 
         if (!_streamStarted) {
+          playbackStartTime = DateTime.now();
           await _player!.startPlayerFromStream(
             codec: Codec.pcm16,
             numChannels: 1,
             sampleRate: kQweenTtsSampleRate,
             interleaved: true,
             bufferSize: 8192,
+            // flutter_sound startPlayerFromStream only has onBufferUnderflow (no whenFinished)
             onBufferUnderflow: () {
-              if (_allChunksFed && !_stopped) {
+              if (!_allChunksFed || _stopped || playbackCompleted) return;
+              // Intermediate chunks: only complete playbackDone so we can proceed to next chunk (no signal to app)
+              if (!isLast) {
+                playbackCompleted = true;
                 if (!playbackDone.isCompleted) playbackDone.complete();
-                if (isLast) _callOnComplete();
+                return;
               }
+              // Last chunk: complete playback and send onComplete signal to app
+              completePlayback();
             },
           );
           _streamStarted = true;
         }
 
         await _player!.feedUint8FromStream(Uint8List.fromList(pcmChunk));
+        chunkPcmBytes += pcmChunk.length;
         gotAudio = true;
       }
 
@@ -143,8 +167,29 @@ class QweenTtsProvider implements TtsProvider {
         return;
       }
 
+      // Mark that all chunks have been fed to the player
       _allChunksFed = true;
-      await playbackDone.future;
+
+      // For intermediate chunks: wait for onBufferUnderflow (should fire when buffer drains)
+      // For last chunk: onBufferUnderflow often never fires on Android (flutter_sound #1058),
+      // so calculate duration from PCM bytes and delay that long to let it finish.
+      if (isLast) {
+        final totalDurationMs = _calculateTotalDurationMillis(chunkPcmBytes);
+        final elapsedMs = playbackStartTime != null
+            ? DateTime.now().difference(playbackStartTime).inMilliseconds
+            : 0;
+        
+        // Remaining time is total duration minus what's played, with a safety buffer.
+        final remainingMs = (totalDurationMs - elapsedMs).clamp(0, 999999) + 250;
+        debugPrint('Qween TTS: total=${totalDurationMs}ms, elapsed=${elapsedMs}ms, delay=${remainingMs}ms');
+
+        await Future<void>.delayed(Duration(milliseconds: remainingMs));
+        completePlayback();
+        await playbackDone.future; // Will resolve immediately
+      } else {
+        // Intermediate chunk: wait for onBufferUnderflow to fire (playback actually done)
+        await playbackDone.future;
+      }
     } finally {
       _client?.dispose();
       _client = null;
@@ -160,6 +205,21 @@ class QweenTtsProvider implements TtsProvider {
     required bool isLast,
   }) async {
     _client = QweenTtsClient(apiKey: apiKey, voice: voice);
+
+    bool playbackCompleted = false;
+
+    // Helper to complete playback and call onComplete if needed
+    void completePlayback() {
+      if (!playbackCompleted && !_stopped) {
+        playbackCompleted = true;
+        if (!playbackDone.isCompleted) {
+          playbackDone.complete();
+        }
+        if (isLast) {
+          _callOnComplete();
+        }
+      }
+    }
 
     try {
       final url = await _client!.synthesizeUrl(text);
@@ -181,6 +241,7 @@ class QweenTtsProvider implements TtsProvider {
           : wavBytes;
 
       _allChunksFed = false;
+      final playbackStartTime = DateTime.now();
       await _player!.startPlayerFromStream(
         codec: Codec.pcm16,
         numChannels: 1,
@@ -188,17 +249,36 @@ class QweenTtsProvider implements TtsProvider {
         interleaved: true,
         bufferSize: 8192,
         onBufferUnderflow: () {
-          if (_allChunksFed && !_stopped) {
+          if (!_allChunksFed || _stopped || playbackCompleted) return;
+          // Intermediate: only complete playbackDone (no signal to app)
+          if (!isLast) {
+            playbackCompleted = true;
             if (!playbackDone.isCompleted) playbackDone.complete();
-            if (isLast) _callOnComplete();
+            return;
           }
+          completePlayback();
         },
       );
       _streamStarted = true;
 
       await _player!.feedUint8FromStream(pcmData);
       _allChunksFed = true;
-      await playbackDone.future;
+      
+      // For intermediate chunks: wait for onBufferUnderflow (should fire when buffer drains)
+      // For last chunk: use calculated duration to wait for playback to finish
+      if (isLast) {
+        final totalDurationMs = _calculateTotalDurationMillis(pcmData.length);
+        final elapsedMs = DateTime.now().difference(playbackStartTime).inMilliseconds;
+        final remainingMs = (totalDurationMs - elapsedMs).clamp(0, 999999) + 250;
+        debugPrint('Qween TTS URL: total=${totalDurationMs}ms, elapsed=${elapsedMs}ms, delay=${remainingMs}ms');
+
+        await Future<void>.delayed(Duration(milliseconds: remainingMs));
+        completePlayback();
+        await playbackDone.future;
+      } else {
+        // Intermediate chunk: wait for onBufferUnderflow to fire
+        await playbackDone.future;
+      }
     } catch (e) {
       debugPrint('Qween TTS URL fallback error: $e');
       playbackDone.complete();
@@ -207,6 +287,17 @@ class QweenTtsProvider implements TtsProvider {
       _client?.dispose();
       _client = null;
     }
+  }
+
+  /// Calculates the total duration of PCM data in milliseconds.
+  /// PCM is 16-bit (2 bytes/sample), 1 channel, 24kHz.
+  int _calculateTotalDurationMillis(int pcmBytes) {
+    if (pcmBytes <= 0) return 0;
+    // 16-bit PCM = 2 bytes per sample
+    final samples = pcmBytes / 2;
+    // duration (seconds) = samples / sample_rate
+    final durationSec = samples / kQweenTtsSampleRate;
+    return (durationSec * 1000).toInt();
   }
 
   Future<void> _ensurePlayerOpen() async {

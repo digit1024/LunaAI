@@ -66,6 +66,7 @@ class SpeechService {
     final available = await _speech.initialize(
       onError: (error) {
         debugPrint('SpeechService: Error - ${error.errorMsg}');
+        _isListening = false; // Sync state: platform is no longer listening
         onError?.call(error.errorMsg);
       },
       onStatus: (status) {
@@ -153,6 +154,8 @@ class SpeechService {
     if (_isListening) {
       debugPrint('SpeechService: Already listening, stopping first');
       await stopListening();
+      // Give the platform time to release before starting again (avoids error_busy on Android)
+      await Future<void>.delayed(const Duration(milliseconds: 250));
     }
 
     // Clear previous text when starting a new listening session
@@ -169,7 +172,9 @@ class SpeechService {
     
     debugPrint('SpeechService: Using pauseDuration=${_pauseDuration.inMilliseconds}ms');
     
-    final result = await _speech.listen(
+    // Note: speech_to_text listen() returns Future (null) — does not return the platform bool.
+    // We must not pass that through; treat null as failure.
+    final platformResult = await _speech.listen(
       onResult: (result) {
         _currentText = result.recognizedWords;
         _hasPendingText = _currentText.trim().isNotEmpty;
@@ -216,8 +221,10 @@ class SpeechService {
       ),
     );
 
-    debugPrint('SpeechService: speech.listen() returned $result');
-    return result;
+    debugPrint('SpeechService: speech.listen() returned $platformResult');
+    // speech_to_text listen() returns Future with no value (null). If we reach here without
+    // throwing, the platform started; treat null as success. Only explicit false = failure.
+    return platformResult != false;
   }
 
   /// Stop listening
