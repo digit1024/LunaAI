@@ -580,55 +580,94 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           onHistory: controller.openConversations,
           onSetup: controller.openSetup,
         ),
-        body: Column(
-        children: [
-          _TopBar(
-            title: heading,
-            connection: state.connection,
-            streaming: state.streaming,
-            onSettings: controller.openSetup,
-          ),
-        Expanded(
-          child: Stack(
-            children: [
-              Positioned.fill(
-                child: ListView.builder(
-                  controller: _scrollController,
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 12),
-                  itemCount: state.chatMessages.length +
-                      (state.streaming ? 1 : 0),
-                  itemBuilder: (context, index) {
-                    if (index < state.chatMessages.length) {
-                      final message = state.chatMessages[index];
-                      final prevMessage = index > 0
-                          ? state.chatMessages[index - 1]
-                          : null;
-                      final nextMessage = index < state.chatMessages.length - 1
-                          ? state.chatMessages[index + 1]
-                          : null;
-                      
-                      return ChatBubble(
-                        message: message,
-                        prevMessage: prevMessage,
-                        nextMessage: nextMessage,
-                        onRetry: message.bubbleType == BubbleType.user
-                            ? () => controller.retryMessage(message.id)
-                            : null,
-                      );
+        body: Stack(
+          children: [
+            // Base layout: top bar + list + composer
+            Column(
+              children: [
+                _TopBar(
+                  title: heading,
+                  connection: state.connection,
+                  streaming: state.streaming,
+                  onSettings: controller.openSetup,
+                ),
+                Expanded(
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: ListView.builder(
+                          controller: _scrollController,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 12),
+                          itemCount: state.chatMessages.length +
+                              (state.streaming ? 1 : 0),
+                          itemBuilder: (context, index) {
+                            if (index < state.chatMessages.length) {
+                              final message = state.chatMessages[index];
+                              final prevMessage = index > 0
+                                  ? state.chatMessages[index - 1]
+                                  : null;
+                              final nextMessage = index < state.chatMessages.length - 1
+                                  ? state.chatMessages[index + 1]
+                                  : null;
+                              return ChatBubble(
+                                message: message,
+                                prevMessage: prevMessage,
+                                nextMessage: nextMessage,
+                                onRetry: message.bubbleType == BubbleType.user
+                                    ? () => controller.retryMessage(message.id)
+                                    : null,
+                              );
+                            }
+                            return const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 6),
+                              child: TypingBubble(),
+                            );
+                          },
+                        ),
+                      ),
+                      if (state.chatMessages.isEmpty && !state.streaming)
+                        const IgnorePointer(child: _EmptyChat()),
+                    ],
+                  ),
+                ),
+                _Composer(
+                  controller: _controller,
+                  focusNode: _focusNode,
+                  attachedFiles: state.attachedFiles,
+                  onSend: () {
+                    final text = _controller.text;
+                    if (text.trim().isNotEmpty) {
+                      _focusNode.unfocus();
+                      _sentPlayer.stop();
+                      unawaited(_sentPlayer.play(AssetSource('audio/sent.mp3')));
+                      controller.sendPrompt(text);
+                      _controller.clear();
                     }
-                    return const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 6),
-                      child: TypingBubble(),
+                  },
+                  onVoiceMode: () {
+                    controller.startDialogMode();
+                  },
+                  onAttachFile: () async {
+                    final result = await FilePicker.platform.pickFiles(
+                      type: FileType.any,
+                      allowMultiple: false,
                     );
+                    if (result != null && result.files.single.path != null) {
+                      final file = File(result.files.single.path!);
+                      await controller.attachFile(file);
+                    }
+                  },
+                  onRemoveFile: (fileId) {
+                    controller.removeAttachedFile(fileId);
                   },
                 ),
-              ),
-              if (state.chatMessages.isEmpty && !state.streaming)
-                const IgnorePointer(child: _EmptyChat()),
-              // Voice mode overlay
-              if (state.isDialogModeActive)
-                VoiceModeOverlay(
+              ],
+            ),
+            // Full-screen voice mode overlay (covers top bar + list + composer)
+            if (state.isDialogModeActive)
+              Positioned.fill(
+                child: VoiceModeOverlay(
                   state: state.dialogModeState,
                   onClose: () {
                     controller.stopDialogMode();
@@ -637,43 +676,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     _stopTtsAndResumeListing();
                   },
                 ),
-            ],
-          ),
+              ),
+          ],
         ),
-        _Composer(
-          controller: _controller,
-          focusNode: _focusNode,
-          attachedFiles: state.attachedFiles,
-          onSend: () {
-            final text = _controller.text;
-            if (text.trim().isNotEmpty) {
-              _focusNode.unfocus();
-              _sentPlayer.stop();
-              unawaited(_sentPlayer.play(AssetSource('audio/sent.mp3')));
-              controller.sendPrompt(text);
-              _controller.clear();
-            }
-          },
-          onVoiceMode: () {
-            controller.startDialogMode();
-            
-          },
-          onAttachFile: () async {
-            final result = await FilePicker.platform.pickFiles(
-              type: FileType.any,
-              allowMultiple: false,
-            );
-            if (result != null && result.files.single.path != null) {
-              final file = File(result.files.single.path!);
-              await controller.attachFile(file);
-            }
-          },
-          onRemoveFile: (fileId) {
-            controller.removeAttachedFile(fileId);
-          },
-        ),
-      ],
-    ),
       ),
     );
   }
