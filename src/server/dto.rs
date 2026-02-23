@@ -73,6 +73,7 @@ pub enum ServerEvent {
     },
     MessageAccepted {
         conversation_id: String,
+        message_id: String,
     },
     StreamingStarted {
         conversation_id: String,
@@ -89,7 +90,7 @@ pub enum ServerEvent {
     AssistantComplete {
         conversation_id: String,
         content: String,
-        reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
+        reasoning_content: Option<String>,
     },
     ToolPlanned {
         conversation_id: String,

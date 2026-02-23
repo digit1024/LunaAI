@@ -11,8 +11,27 @@ use crate::config::{LlmProfile, ResolvedProfile};
 use crate::llm::{Message as LlmMessage, Role};
 use crate::llm::tokenizer::TokenCounter;
 use crate::prompts::PromptManager;
+use crate::storage::sqlite_storage_simple::Message as StorageMessage;
 use anyhow::Result;
 use tracing::debug;
+
+/// Returns the range of `db_messages` (ordered by created_at ASC) to summarize:
+/// - All messages **after** the last summary message (includes user, assistant, and **tool** messages).
+/// - If there is no previous summary, returns the range for **all** messages (first summarization).
+/// - Returns `None` if there is nothing to summarize (e.g. only summary message(s) or empty).
+///
+/// No "keep recent" — we summarize everything since the last summary so tool calls are never excluded.
+fn range_to_summarize(db_messages: &[StorageMessage]) -> Option<std::ops::Range<usize>> {
+    let start = db_messages
+        .iter()
+        .rposition(|m| m.is_summary)
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    if start >= db_messages.len() {
+        return None;
+    }
+    Some(start..db_messages.len())
+}
 
 /// Context service (stateless)
 pub struct ContextService;
@@ -104,51 +123,25 @@ impl ContextService {
 
         tracing::debug!(conversation_id = %conv_id, "Manual summarization triggered");
         
-        // Load messages from DB for summarization
+        // Load messages from DB (ordered by created_at ASC)
         let db_messages = storage
             .load_conversation_messages(&conv_id.to_string())
             .context("Failed to load messages from database")?;
-        
-        // Filter to regular messages (exclude summaries, tools, and already summarized messages)
-        let regular_messages: Vec<_> = db_messages.iter()
-            .filter(|msg| !msg.is_summary && !msg.is_summarized && msg.role != "tool")
-            .collect();
-        
-        if regular_messages.is_empty() {
-            tracing::warn!(conversation_id = %conv_id, "No messages available to summarize");
-            return Err(anyhow::anyhow!("No messages available to summarize").context("Summarization failed"));
-        }
-        
-        let keep_recent_count = 10;
-        let messages_to_summarize_count = regular_messages.len().saturating_sub(keep_recent_count);
-        
-        if messages_to_summarize_count == 0 {
-            tracing::debug!(
-                conversation_id = %conv_id,
-                keep_recent_count,
-                "All messages are recent, nothing to summarize"
-            );
-            return Err(anyhow::anyhow!("All messages are recent, nothing to summarize").context("Summarization skipped"));
-        }
-        
+
+        // All messages after last summary (or all if first summarization). Includes tool calls.
+        let range = match range_to_summarize(&db_messages) {
+            Some(r) => r,
+            None => {
+                tracing::warn!(conversation_id = %conv_id, "No messages to summarize (empty or only summary)");
+                return Err(anyhow::anyhow!("No messages to summarize").context("Summarization skipped"));
+            }
+        };
+        let msgs_to_summarize: Vec<_> = db_messages[range].to_vec();
         tracing::debug!(
             conversation_id = %conv_id,
-            messages_to_summarize = messages_to_summarize_count,
-            keep_recent_count,
-            "Will summarize messages"
+            messages_to_summarize = msgs_to_summarize.len(),
+            "Will summarize all messages after last summary"
         );
-        
-        // Get IDs to summarize
-        let ids_to_summarize: Vec<i64> = regular_messages[..messages_to_summarize_count]
-            .iter()
-            .map(|msg| msg.id)
-            .collect();
-        
-        // Get full messages to summarize
-        let msgs_to_summarize: Vec<_> = db_messages.iter()
-            .filter(|msg| ids_to_summarize.contains(&msg.id))
-            .cloned()
-            .collect();
         
         // Convert to LlmMessage for summarization using MessageConverter (single source of truth)
         use crate::services::MessageConverter;
@@ -278,7 +271,7 @@ impl ContextService {
             "Summarization threshold exceeded, triggering automatic summarization"
         );
 
-        // Load messages from DB for summarization
+        // Load messages from DB (ordered by created_at ASC)
         let db_messages = {
             let storage_guard = storage.lock().await;
             storage_guard
@@ -286,53 +279,23 @@ impl ContextService {
                 .context("failed to load conversation for summarization")?
         };
 
-        // Filter to regular messages (exclude summaries, tools, and already summarized messages)
-        let regular_messages: Vec<_> = db_messages
-            .iter()
-            .filter(|msg| !msg.is_summary && !msg.is_summarized && msg.role != "tool")
-            .collect();
-
-        // Keep fewer recent messages when context is small so that after summarization we stay
-        // below the threshold (summary + recent messages). Otherwise we'd hit the threshold
-        // every message and trigger truncation toasts every time.
-        const SUMMARY_TOKEN_ESTIMATE: usize = 2000;
-        const AVG_TOKENS_PER_MESSAGE: usize = 400;
-        let keep_recent_count = (summarize_threshold_tokens.saturating_sub(SUMMARY_TOKEN_ESTIMATE))
-            .saturating_div(AVG_TOKENS_PER_MESSAGE)
-            .clamp(3, 10);
-        let messages_to_summarize_count = regular_messages.len().saturating_sub(keep_recent_count);
-
-        if messages_to_summarize_count == 0 {
-            tracing::debug!(
-                conversation_id = %conv_id,
-                "All messages are recent, nothing to summarize"
-            );
-            return Ok(());
-        }
-
+        // All messages after last summary (or all if first time). Includes tool calls. No "keep recent".
+        let range = match range_to_summarize(&db_messages) {
+            Some(r) => r,
+            None => {
+                tracing::debug!(
+                    conversation_id = %conv_id,
+                    "No messages to summarize (empty or only summary)"
+                );
+                return Ok(());
+            }
+        };
+        let msgs_to_summarize: Vec<_> = db_messages[range].to_vec();
         tracing::debug!(
             conversation_id = %conv_id,
-            messages_to_summarize = messages_to_summarize_count,
-            keep_recent_count,
-            "Will summarize messages"
+            messages_to_summarize = msgs_to_summarize.len(),
+            "Will summarize all messages after last summary"
         );
-
-        // IDs of user/assistant messages we will summarize (oldest N)
-        let ids_to_summarize: std::collections::HashSet<i64> = regular_messages
-            [..messages_to_summarize_count]
-            .iter()
-            .map(|msg| msg.id)
-            .collect();
-
-        // Include all messages from the start up to and including the last summarized message,
-        // so tool calls and results in that range are included in the summary (chronological order).
-        let last_index = db_messages
-            .iter()
-            .rposition(|m| ids_to_summarize.contains(&m.id))
-            .ok_or_else(|| {
-                anyhow::anyhow!("No message in db_messages matched ids_to_summarize (should not happen)")
-            })?;
-        let msgs_to_summarize: Vec<_> = db_messages[0..=last_index].to_vec();
 
         // Convert to LlmMessage for summarization using MessageConverter
         use crate::services::MessageConverter;
@@ -417,58 +380,28 @@ impl ContextService {
             "Summarization threshold exceeded, triggering automatic summarization"
         );
 
-        // Load messages from DB for summarization
+        // Load messages from DB (ordered by created_at ASC)
         let db_messages = storage
             .load_conversation_messages(&conv_id.to_string())
             .context("failed to load conversation for summarization")?;
 
-        // Filter to regular messages (exclude summaries, tools, and already summarized messages)
-        let regular_messages: Vec<_> = db_messages
-            .iter()
-            .filter(|msg| !msg.is_summary && !msg.is_summarized && msg.role != "tool")
-            .collect();
-
-        // Keep fewer recent messages when context is small so that after summarization we stay
-        // below the threshold (summary + recent messages). Otherwise we'd hit the threshold
-        // every message and trigger truncation toasts every time.
-        const SUMMARY_TOKEN_ESTIMATE: usize = 2000;
-        const AVG_TOKENS_PER_MESSAGE: usize = 400;
-        let keep_recent_count = (summarize_threshold_tokens.saturating_sub(SUMMARY_TOKEN_ESTIMATE))
-            .saturating_div(AVG_TOKENS_PER_MESSAGE)
-            .clamp(3, 10);
-        let messages_to_summarize_count = regular_messages.len().saturating_sub(keep_recent_count);
-
-        if messages_to_summarize_count == 0 {
-            tracing::debug!(
-                conversation_id = %conv_id,
-                "All messages are recent, nothing to summarize"
-            );
-            return Ok(());
-        }
-
+        // All messages after last summary (or all if first time). Includes tool calls. No "keep recent".
+        let range = match range_to_summarize(&db_messages) {
+            Some(r) => r,
+            None => {
+                tracing::debug!(
+                    conversation_id = %conv_id,
+                    "No messages to summarize (empty or only summary)"
+                );
+                return Ok(());
+            }
+        };
+        let msgs_to_summarize: Vec<_> = db_messages[range].to_vec();
         tracing::debug!(
             conversation_id = %conv_id,
-            messages_to_summarize = messages_to_summarize_count,
-            keep_recent_count,
-            "Will summarize messages"
+            messages_to_summarize = msgs_to_summarize.len(),
+            "Will summarize all messages after last summary"
         );
-
-        // IDs of user/assistant messages we will summarize (oldest N)
-        let ids_to_summarize: std::collections::HashSet<i64> = regular_messages
-            [..messages_to_summarize_count]
-            .iter()
-            .map(|msg| msg.id)
-            .collect();
-
-        // Include all messages from the start up to and including the last summarized message,
-        // so tool calls and results in that range are included in the summary (chronological order).
-        let last_index = db_messages
-            .iter()
-            .rposition(|m| ids_to_summarize.contains(&m.id))
-            .ok_or_else(|| {
-                anyhow::anyhow!("No message in db_messages matched ids_to_summarize (should not happen)")
-            })?;
-        let msgs_to_summarize: Vec<_> = db_messages[0..=last_index].to_vec();
 
         // Convert to LlmMessage for summarization using MessageConverter
         use crate::services::MessageConverter;

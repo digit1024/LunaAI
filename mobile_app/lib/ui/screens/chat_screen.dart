@@ -111,7 +111,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 lastAssistant.content.isEmpty || 
                 cleanText.trim().isEmpty) {
               debugPrint('ChatScreen: Streaming ended, no TTS (empty message), resuming listening');
-              _resumeListening();
+              // We woudl never hit this code. empty messgae is unacceptable
             } else {
               debugPrint('ChatScreen: Streaming ended, TTS will play, waiting for TTS completion');
             }
@@ -353,7 +353,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           return;
         }
         debugPrint('ChatScreen: TTS completed for last message, resuming listening');
-        _resumeListening();
+        if(!currentState.streaming)        _resumeListening();
       });
     } else {
       await ttsProvider.speak(cleanText);
@@ -665,9 +665,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               ],
             ),
             // Full-screen voice mode overlay (covers top bar + list + composer)
+            // RepaintBoundary isolates overlay into its own layer to avoid BLASTBufferQueue overflow on Android
             if (state.isDialogModeActive)
               Positioned.fill(
-                child: VoiceModeOverlay(
+                child: RepaintBoundary(
+                  child: VoiceModeOverlay(
                   state: state.dialogModeState,
                   onClose: () {
                     controller.stopDialogMode();
@@ -675,6 +677,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   onStopTts: () {
                     _stopTtsAndResumeListing();
                   },
+                ),
                 ),
               ),
           ],

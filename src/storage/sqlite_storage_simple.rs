@@ -381,14 +381,14 @@ impl SqliteStorage {
         Ok(id)
     }
 
-    /// Insert a new message
+    /// Insert a new message (returns rowid; use insert_message_with_metadata for full control)
     pub fn insert_message(
         &self,
         conversation_id: &str,
         role: &str,
         content: &str,
         embedding: Option<&[f32]>,
-    ) -> SqliteResult<()> {
+    ) -> SqliteResult<i64> {
         self.insert_message_with_metadata(
             conversation_id,
             role,
@@ -405,7 +405,7 @@ impl SqliteStorage {
         content: &str,
         embedding: Option<&[f32]>,
         metadata: &MessageMetadata<'_>,
-    ) -> SqliteResult<()> {
+    ) -> SqliteResult<i64> {
         let created_at = Utc::now().timestamp();
 
         // Convert embedding to bytes if provided
@@ -469,13 +469,15 @@ impl SqliteStorage {
             ],
         )?;
 
+        let rowid = self.conn.last_insert_rowid();
+
         // Update conversation's last_message timestamp
         self.conn.execute(
             "UPDATE conversations SET last_message = ?1 WHERE id = ?2",
             params![created_at, conversation_id],
         )?;
 
-        Ok(())
+        Ok(rowid)
     }
 
     /// Load all messages for a conversation

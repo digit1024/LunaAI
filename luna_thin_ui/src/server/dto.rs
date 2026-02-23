@@ -52,6 +52,10 @@ pub enum ServerEvent {
     Error {
         message: String,
     },
+    /// Informational message (e.g. summarization started/finished) – show as info banner or toast.
+    Info {
+        message: String,
+    },
     ConversationCreated {
         conversation_id: String,
     },
@@ -73,6 +77,7 @@ pub enum ServerEvent {
     },
     MessageAccepted {
         conversation_id: String,
+        message_id: String,
     },
     StreamingStarted {
         conversation_id: String,

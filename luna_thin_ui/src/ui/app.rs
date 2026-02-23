@@ -65,6 +65,7 @@ pub enum Message {
     ToggleToolDetails(String),
     ScrollToBottom,
     DismissError,
+    DismissInfo,
 
     // Menu
     ShowAbout,
@@ -371,6 +372,8 @@ pub struct LunaThinApp {
 
     // Error display
     pub inline_error: Option<String>,
+    /// Informational message (e.g. summarization started/finished) – show as info banner.
+    pub inline_info: Option<String>,
 
     // Settings input
     pub settings_host: String,
@@ -432,6 +435,7 @@ impl LunaThinApp {
             pending_auto_connect: false,
             pending_retry_input: None,
             inline_error: None,
+            inline_info: None,
         }
     }
 
@@ -827,6 +831,9 @@ impl LunaThinApp {
             }
             ServerEvent::Error { message } => {
                 self.inline_error = Some(message);
+            }
+            ServerEvent::Info { message } => {
+                self.inline_info = Some(message);
             }
             ServerEvent::ConversationCreated { conversation_id } => {
                 // Just set the conversation ID - don't clear messages!

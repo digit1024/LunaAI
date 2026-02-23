@@ -40,7 +40,10 @@ sealed class ServerEvent {
           json['default_profile'] as String,
         );
       case 'message_accepted':
-        return MessageAcceptedEvent(json['conversation_id'] as String);
+        return MessageAcceptedEvent(
+          json['conversation_id'] as String,
+          json['message_id'] as String,
+        );
       case 'streaming_started':
         return StreamingStartedEvent(json['conversation_id'] as String);
       case 'assistant_delta':
@@ -150,7 +153,8 @@ class ProfilesListEvent extends ServerEvent {
 
 class MessageAcceptedEvent extends ServerEvent {
   final String conversationId;
-  const MessageAcceptedEvent(this.conversationId);
+  final String messageId;
+  const MessageAcceptedEvent(this.conversationId, this.messageId);
 }
 
 class StreamingStartedEvent extends ServerEvent {

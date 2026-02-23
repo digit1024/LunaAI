@@ -535,6 +535,14 @@ class AppController extends Notifier<AppState> {
       }
     } else if (event is ConversationCreatedEvent) {
       wsClient.send(ClientCommand.loadConversation(event.conversationId));
+    } else if (event is MessageAcceptedEvent) {
+      // Replace the last user message's temp id with the server-assigned message_id (fixes "retry from here")
+      final messages = [...state.chatMessages];
+      final lastUserIndex = messages.lastIndexWhere((m) => m.role == 'user');
+      if (lastUserIndex >= 0) {
+        messages[lastUserIndex] = messages[lastUserIndex].copyWith(id: event.messageId);
+        state = state.copyWith(chatMessages: messages);
+      }
     } else if (event is StreamingStartedEvent) {
       _currentAssistantBubbleId = null; // Reset for new streaming session
       wsClient.setStreaming(true); // Extend timeout and disable health checks during streaming

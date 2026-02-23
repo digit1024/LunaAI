@@ -57,6 +57,13 @@ pub fn chat_page(app: &LunaThinApp) -> Element<Message> {
             .push(crate::ui::widgets::error_banner(error, Message::DismissError));
     }
 
+    // Info banner if present (e.g. summarization started/finished)
+    if let Some(ref info) = app.inline_info {
+        layout = layout
+            .push(widget::Space::with_height(Length::Fixed(8.0)))
+            .push(crate::ui::widgets::info_banner(info, Message::DismissInfo));
+    }
+
     // Messages area - takes all remaining space
     layout = layout.push(
         widget::container(message_list::message_list(app))

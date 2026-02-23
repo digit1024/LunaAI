@@ -199,13 +199,13 @@ impl Storage {
         self.sqlite.update_profile(&id_str, profile_name)
     }
 
-    /// Add a message to a conversation
+    /// Add a message to a conversation. Returns the new message's ID (as Uuid, same format as in get_conversation).
     pub fn add_message_to_conversation(
         &self,
         conversation_id: &Uuid,
         role: String,
         content: String,
-    ) -> SqliteResult<()> {
+    ) -> SqliteResult<Uuid> {
         self.add_message_with_metadata(
             conversation_id,
             role,
@@ -215,6 +215,7 @@ impl Storage {
         )
     }
 
+    /// Add a message with metadata. Returns the new message's ID (as Uuid).
     pub fn add_message_with_metadata(
         &self,
         conversation_id: &Uuid,
@@ -222,10 +223,15 @@ impl Storage {
         content: String,
         embedding: Option<&[f32]>,
         metadata: MessageMetadata<'_>,
-    ) -> SqliteResult<()> {
+    ) -> SqliteResult<Uuid> {
         let id_str = conversation_id.to_string();
-        self.sqlite
-            .insert_message_with_metadata(&id_str, &role, &content, embedding, &metadata)
+        let rowid = self.sqlite
+            .insert_message_with_metadata(&id_str, &role, &content, embedding, &metadata)?;
+        // Same deterministic UUID format as in get_conversation / truncate
+        let hex_id = format!("{:012x}", rowid.min(0xffffffffffff));
+        let uuid_str = format!("00000000-0000-0000-0000-{}", hex_id);
+        Uuid::parse_str(&uuid_str)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(format!("Invalid UUID: {}", e)))
     }
 
     /// Add a turn to a conversation (not yet implemented in SQLite)

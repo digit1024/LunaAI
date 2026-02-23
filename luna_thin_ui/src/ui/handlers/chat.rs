@@ -132,6 +132,10 @@ pub fn handle_chat_messages(
             app.inline_error = None;
             None
         }
+        Message::DismissInfo => {
+            app.inline_info = None;
+            None
+        }
         _ => None, // Not a chat message
     }
 }

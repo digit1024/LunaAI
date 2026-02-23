@@ -364,13 +364,14 @@ impl ServerHandler {
             conv_id
         };
 
-        storage
+        let message_id = storage
             .add_message_to_conversation(&conversation_uuid, "user".to_string(), content.clone())
             .context("failed to persist user message")?;
         drop(storage);
 
         let _ = self.outbound.send(ServerEvent::MessageAccepted {
             conversation_id: conversation_uuid.to_string(),
+            message_id: message_id.to_string(),
         });
 
         // Subscribe this connection so it (and any other viewer) receives broadcast events
@@ -389,20 +390,53 @@ impl ServerHandler {
         llm_messages.push(LlmMessage::new(Role::User, content.clone()));
 
         let agent_messages = ContextService::inject_prompts(llm_messages, &prompt_manager, resolved.profile())?;
-        
-        // Check if summarization is needed and trigger it using ContextService
+
+        // Check if summarization is needed and notify UI (started / finished)
+        let preset = resolved.preset();
+        let token_counter = TokenCounter::new(preset);
+        let total_tokens: usize = agent_messages
+            .iter()
+            .map(|m| token_counter.count_message_tokens(m))
+            .sum();
+        let summarize_threshold = token_counter.get_summarize_threshold_tokens(preset, resolved.profile());
+        let will_summarize = total_tokens > summarize_threshold;
+
+        if will_summarize {
+            self.ctx
+                .subscriptions
+                .broadcast(
+                    conversation_uuid,
+                    ServerEvent::Info {
+                        message: "Summarizing conversation…".into(),
+                    },
+                )
+                .await;
+        }
+
         {
             let storage = self.ctx.storage.clone();
             let llm_client = self.session.llm_client.clone();
-            
+
             if let Err(e) = ContextService::check_and_trigger_summarization(
                 &agent_messages,
                 conversation_uuid,
                 storage,
                 &llm_client,
                 &resolved,
-            ).await {
+            )
+            .await
+            {
                 tracing::warn!(error = %e, "Failed to check/trigger summarization, continuing anyway");
+            } else if will_summarize {
+                self.ctx
+                    .subscriptions
+                    .broadcast(
+                        conversation_uuid,
+                        ServerEvent::Info {
+                            message: "Conversation summarized.".into(),
+                        },
+                    )
+                    .await;
             }
         }
         
