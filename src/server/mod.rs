@@ -49,7 +49,26 @@ async fn launch(options: ServerOptions) -> Result<()> {
                 }
             })
     });
-    let sqlite_settings = SqliteSettings::from(&config.server);
+    let mut sqlite_settings = SqliteSettings::from(&config.server);
+    if config.embedding.is_active() {
+        sqlite_settings.embedding_dimension = Some(config.embedding.dimensions);
+        tracing::info!(
+            dimensions = config.embedding.dimensions,
+            "Embedding enabled for memory vector search"
+        );
+    }
+    let embedding_provider = if config.embedding.is_active() {
+        match crate::embeddings::OpenAiEmbeddingProvider::from_config(&config.embedding) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to create embedding provider; memory recall disabled");
+                sqlite_settings.embedding_dimension = None;
+                None
+            }
+        }
+    } else {
+        None
+    };
     let storage =
         Storage::new_default_with_settings(sqlite_settings.clone()).unwrap_or_else(|err| {
             tracing::error!("SQLite init failed: {}. Using temp db.", err);
@@ -80,6 +99,7 @@ async fn launch(options: ServerOptions) -> Result<()> {
         schedule_service,
         memory_dedup: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         default_allowed_tool_names,
+        embedding_provider,
     });
 
     // Spawn background title generation thread only if profile is configured
@@ -319,6 +339,7 @@ fn spawn_deep_sleep_loop(ctx: Arc<ServerContext>) {
                 ctx.storage.clone(),
                 deep_sleep_cfg,
                 llm_client,
+                ctx.embedding_provider.clone(),
             )
             .await
             {

@@ -78,7 +78,9 @@ multer = "3.0"
 url = "2.5.4"
 
 # SQLite for storage
-rusqlite = { version = "0.38", features = ["bundled", "chrono", "uuid"] }
+rusqlite = { version = "0.38", features = ["bundled", "chrono", "uuid", "load_extension"] }
+# Vector search for long-term memory (sqlite-vec extension)
+sqlite-vec = "0.1.6"
 tokio-stream = "0.1"
 
 # Token counting

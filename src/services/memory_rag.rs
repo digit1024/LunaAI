@@ -1,61 +1,58 @@
 //! Memory RAG: Automatic retrieval of relevant long-term memories
 //!
-//! Searches the `memory` table via FTS5 using keywords extracted from
-//! the user's message, then formats matching entries as a system message
-//! for injection into the LLM context. Tracks which memory IDs have
-//! already been injected per conversation to avoid duplication.
+//! Searches the `memory` table via vector similarity (sqlite-vec) using embeddings
+//! of the user's message. Requires an embedding provider to be configured.
+//! Tracks which memory IDs have already been injected per conversation to avoid duplication.
 
+use crate::embeddings::EmbeddingProvider;
 use crate::storage::Storage;
 use std::collections::HashSet;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing;
-
-/// Minimum word length to include in the FTS5 query (skip "a", "is", etc.)
-const MIN_KEYWORD_LEN: usize = 3;
-
-/// Common stopwords to exclude from keyword search (length >= MIN_KEYWORD_LEN but low signal)
-static STOPWORDS: &[&str] = &["the", "and", "for", "are", "but", "not", "you", "all", "can", "had", "her", "was", "one", "our", "out", "has", "him", "his", "its", "may", "new", "now", "old", "see", "way", "who", "did", "get", "got", "let", "put", "say", "she", "too", "use"];
 
 /// Maximum number of memories to retrieve per query
 const MAX_MEMORIES: usize = 10;
 
-/// Extract search keywords from user message text.
-///
-/// Splits on whitespace/punctuation, lowercases, filters out short words and stopwords.
-/// Returns a deduplicated list suitable for FTS5 OR queries.
-fn extract_keywords(text: &str) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let stop: HashSet<&str> = STOPWORDS.iter().copied().collect();
-    text.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
-        .map(|w| w.trim().to_lowercase())
-        .filter(|w| w.len() >= MIN_KEYWORD_LEN && !stop.contains(w.as_str()))
-        .filter(|w| seen.insert(w.clone()))
-        .collect()
-}
-
-/// Search memories relevant to the user message, filter out already-used IDs,
+/// Search memories relevant to the user message via vector similarity, filter out already-used IDs,
 /// and return a formatted system message string plus the list of newly used memory IDs.
 /// Caller should persist the returned IDs via storage.record_memory_recalls() and use
 /// storage.get_recalled_memory_ids() to seed used_ids after restart.
 ///
-/// Returns `None` if no new relevant memories are found.
-pub fn retrieve_memory_context(
-    storage: &Storage,
+/// Returns `None` if embedding provider is not configured, no new relevant memories are found,
+/// or embedding/search fails.
+///
+/// Note: Takes Arc<Mutex<Storage>> so we can await embedding without holding the lock (Send requirement).
+pub async fn retrieve_memory_context(
+    storage: Arc<Mutex<Storage>>,
     user_message: &str,
     used_ids: &mut HashSet<i64>,
+    embedding_provider: Option<&dyn EmbeddingProvider>,
 ) -> Option<(String, Vec<i64>)> {
-    let keywords = extract_keywords(user_message);
-    if keywords.is_empty() {
-        tracing::debug!("Memory RAG: no keywords extracted from user message");
-        return None;
-    }
-
-    tracing::debug!(keyword_count = keywords.len(), "Memory RAG: searching memories");
-
-    let entries = match storage.search_memory(&keywords, MAX_MEMORIES) {
-        Ok(entries) => entries,
-        Err(e) => {
-            tracing::warn!(error = %e, "Memory RAG: FTS5 search failed");
+    let provider = match embedding_provider {
+        Some(p) => p,
+        None => {
+            tracing::debug!("Memory RAG: no embedding provider configured, skipping recall");
             return None;
+        }
+    };
+
+    let query_embedding = match provider.embed(user_message).await {
+        Ok(emb) => emb,
+        Err(e) => {
+            tracing::warn!(error = %e, "Memory RAG: embedding failed");
+            return None;
+        }
+    };
+
+    let entries = {
+        let guard = storage.lock().await;
+        match guard.search_memory_by_vector(&query_embedding, MAX_MEMORIES) {
+            Ok(entries) => entries,
+            Err(e) => {
+                tracing::warn!(error = %e, "Memory RAG: vector search failed");
+                return None;
+            }
         }
     };
 
@@ -123,25 +120,6 @@ fn truncate_content(content: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_extract_keywords_basic() {
-        let keywords = extract_keywords("How is the weather in Warsaw today?");
-        assert!(keywords.contains(&"how".to_string()));
-        assert!(keywords.contains(&"weather".to_string()));
-        assert!(keywords.contains(&"warsaw".to_string()));
-        assert!(keywords.contains(&"today".to_string()));
-        // "is", "the", "in" should be filtered (< 3 chars)
-        assert!(!keywords.contains(&"is".to_string()));
-        assert!(!keywords.contains(&"the".to_string()));
-        assert!(!keywords.contains(&"in".to_string()));
-    }
-
-    #[test]
-    fn test_extract_keywords_dedup() {
-        let keywords = extract_keywords("test test test different");
-        assert_eq!(keywords.iter().filter(|k| *k == "test").count(), 1);
-    }
 
     #[test]
     fn test_truncate_content() {

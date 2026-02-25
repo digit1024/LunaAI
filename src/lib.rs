@@ -1,5 +1,6 @@
 pub mod agentic;
 pub mod config;
+pub mod embeddings;
 pub mod llm;
 pub mod mcp;
 pub mod prompts;

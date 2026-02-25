@@ -1,13 +1,29 @@
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::embeddings::EmbeddingProvider;
+
 /// Context passed into the agent loop for internal tools (e.g. schedule_task).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RunContext {
     pub conversation_id: Option<Uuid>,
     pub profile_name: String,
     /// Allowed tool names from tools policy; internal tools are only added if their name is in this set.
     pub allowed_tool_names: std::collections::HashSet<String>,
+    /// Embedding provider for memory vector index. None when embedding is disabled.
+    pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+}
+
+impl std::fmt::Debug for RunContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunContext")
+            .field("conversation_id", &self.conversation_id)
+            .field("profile_name", &self.profile_name)
+            .field("allowed_tool_names", &self.allowed_tool_names)
+            .field("embedding_provider", &self.embedding_provider.as_ref().map(|_| "Some"))
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

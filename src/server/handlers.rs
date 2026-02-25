@@ -5,6 +5,7 @@ use crate::{
         RunContext,
     },
     config::{AppConfig, ServerConfig},
+    embeddings::EmbeddingProvider,
     llm::{self, Message as LlmMessage, Role},
     llm::tokenizer::TokenCounter,
     llm::context_manager::SmartContextManager,
@@ -42,6 +43,8 @@ pub struct ServerContext {
     pub memory_dedup: Mutex<HashMap<Uuid, HashSet<i64>>>,
     /// Allowed tool names for the default profile (from tools policy); used when creating new sessions.
     pub default_allowed_tool_names: HashSet<String>,
+    /// Embedding provider for memory vector search. None when embedding is disabled.
+    pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
 }
 
 pub struct SessionState {
@@ -446,22 +449,25 @@ impl ServerHandler {
         // Re-inject prompts after reload
         llm_messages = ContextService::inject_prompts(llm_messages, &self.ctx.prompt_manager, resolved.profile())?;
 
-        // Memory RAG: search and inject relevant memories
+        // Memory RAG: search and inject relevant memories (vector-only when embedding enabled)
         {
-            let storage_guard = self.ctx.storage.lock().await;
             let mut dedup_guard = self.ctx.memory_dedup.lock().await;
             let used_ids = dedup_guard.entry(conversation_uuid).or_default();
             // Seed from DB on first use (e.g. after restart) so we don't re-inject same memories
             if used_ids.is_empty() {
+                let storage_guard = self.ctx.storage.lock().await;
                 if let Ok(recalled) = storage_guard.get_recalled_memory_ids(&conversation_uuid.to_string()) {
                     used_ids.extend(recalled);
                 }
             }
-            if let Some((memory_msg, new_ids)) = crate::services::memory_rag::retrieve_memory_context(
-                &storage_guard,
+            let result = crate::services::memory_rag::retrieve_memory_context(
+                self.ctx.storage.clone(),
                 &content,
                 used_ids,
-            ) {
+                self.ctx.embedding_provider.as_deref(),
+            )
+            .await;
+            if let Some((memory_msg, new_ids)) = result {
                 // Insert after system prompts but before conversation history
                 let insert_pos = llm_messages
                     .iter()
@@ -469,6 +475,7 @@ impl ServerHandler {
                     .unwrap_or(llm_messages.len());
                 llm_messages.insert(insert_pos, LlmMessage::new(Role::System, memory_msg));
                 // Persist recalled memories for this conversation
+                let storage_guard = self.ctx.storage.lock().await;
                 if let Err(e) = storage_guard.record_memory_recalls(&conversation_uuid.to_string(), &new_ids) {
                     tracing::warn!(error = %e, "Failed to record memory recalls");
                 }
@@ -752,6 +759,7 @@ pub fn spawn_agent_task(
         conversation_id: Some(conversation_id),
         profile_name: profile_name.clone(),
         allowed_tool_names,
+        embedding_provider: ctx.embedding_provider.clone(),
     };
 
     tokio::spawn(async move {

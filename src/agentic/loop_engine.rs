@@ -342,7 +342,7 @@ impl AgenticLoop {
                     || tool_call.name == "search_memory_by_category"
                     || tool_call.name == "delete_memory"
                 {
-                    self.execute_memory_tool(&tool_call).await
+                    self.execute_memory_tool(&tool_call, run_context_clone.as_ref()).await
                 } else {
                     self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref()).await
                 };
@@ -364,7 +364,7 @@ impl AgenticLoop {
         }
     }
 
-    async fn execute_memory_tool(&self, tool_call: &ToolCall) -> ToolResult {
+    async fn execute_memory_tool(&self, tool_call: &ToolCall, run_context: Option<&RunContext>) -> ToolResult {
         let Some(storage) = &self.storage else {
             return ToolResult {
                 content: "Memory tools are not available (no storage)".to_string(),
@@ -383,10 +383,22 @@ impl AgenticLoop {
                 let category = params.get("category").and_then(|v| v.as_str());
                 let importance = params.get("importance").and_then(|v| v.as_i64()).map(|v| v as i32);
                 match guard.store_memory(&content, category, importance) {
-                    Ok(entry) => ToolResult {
-                        content: serde_json::to_string(&entry).unwrap_or_else(|_| format!("Stored memory (id: {})", entry.id)),
-                        is_error: false,
-                    },
+                    Ok(entry) => {
+                        // Insert into memory_vec when embedding provider is configured
+                        if let Some(ctx) = run_context {
+                            if let Some(provider) = &ctx.embedding_provider {
+                                if let Ok(embedding) = provider.embed(&content).await {
+                                    if let Err(e) = guard.insert_memory_vec_row(entry.id, &embedding) {
+                                        tracing::warn!(error = %e, "Failed to insert memory vector");
+                                    }
+                                }
+                            }
+                        }
+                        ToolResult {
+                            content: serde_json::to_string(&entry).unwrap_or_else(|_| format!("Stored memory (id: {})", entry.id)),
+                            is_error: false,
+                        }
+                    }
                     Err(e) => ToolResult { content: format!("Failed to store memory: {}", e), is_error: true },
                 }
             }
@@ -701,7 +713,7 @@ impl AgenticLoop {
                     || tool_call.name == "search_memory_by_category"
                     || tool_call.name == "delete_memory"
                 {
-                    self.execute_memory_tool(&tool_call).await
+                    self.execute_memory_tool(&tool_call, run_context.as_ref()).await
                 } else {
                     self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref()).await
                 };

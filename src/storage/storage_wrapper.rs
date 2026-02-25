@@ -418,6 +418,26 @@ impl Storage {
         self.sqlite.update_memory(memory_id, content, category, importance)
     }
 
+    /// Insert a row into memory_vec (vector index). Call after store_memory when embedding is enabled.
+    pub fn insert_memory_vec_row(&self, memory_id: i64, embedding: &[f32]) -> SqliteResult<()> {
+        self.sqlite.insert_memory_vec_row(memory_id, embedding)
+    }
+
+    /// Update a row in memory_vec. Call after update_memory when embedding is enabled.
+    pub fn update_memory_vec_row(&self, memory_id: i64, embedding: &[f32]) -> SqliteResult<()> {
+        self.sqlite.update_memory_vec_row(memory_id, embedding)
+    }
+
+    /// Search memories by vector similarity (KNN).
+    pub fn search_memory_by_vector(&self, embedding: &[f32], limit: usize) -> SqliteResult<Vec<super::sqlite_storage_simple::MemoryEntry>> {
+        self.sqlite.search_memory_by_vector(embedding, limit)
+    }
+
+    /// Delete all rows from memory_vec. Used when reorganizing the vector index.
+    pub fn delete_all_memory_vec_rows(&self) -> SqliteResult<()> {
+        self.sqlite.delete_all_memory_vec_rows()
+    }
+
     /// Get a deep sleep state value
     pub fn get_deep_sleep_state(&self, key: &str) -> SqliteResult<Option<String>> {
         self.sqlite.get_deep_sleep_state(key)

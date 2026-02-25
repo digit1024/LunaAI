@@ -271,6 +271,58 @@ impl Default for TitleSummaryConfig {
     }
 }
 
+// ── Embedding config (for long-term memory vector search) ──
+
+fn default_embedding_enabled() -> bool {
+    false
+}
+
+fn default_embedding_endpoint() -> String {
+    "https://api.openai.com/v1/embeddings".to_string()
+}
+
+fn default_embedding_model() -> String {
+    "text-embedding-3-small".to_string()
+}
+
+fn default_embedding_dimensions() -> usize {
+    1536
+}
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct EmbeddingConfig {
+    #[serde(default = "default_embedding_enabled")]
+    pub enabled: bool,
+    /// OpenAI-compatible embeddings API endpoint
+    #[serde(default = "default_embedding_endpoint")]
+    pub endpoint: String,
+    #[serde(default = "default_embedding_model")]
+    pub model: String,
+    #[serde(default = "default_embedding_dimensions")]
+    pub dimensions: usize,
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+impl Default for EmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_embedding_enabled(),
+            endpoint: default_embedding_endpoint(),
+            model: default_embedding_model(),
+            dimensions: default_embedding_dimensions(),
+            api_key: None,
+        }
+    }
+}
+
+impl EmbeddingConfig {
+    /// Returns true if embedding is configured and enabled for memory recall.
+    pub fn is_active(&self) -> bool {
+        self.enabled && !self.endpoint.is_empty() && self.dimensions > 0
+    }
+}
+
 // ── Deep Sleep config ──
 
 fn default_deep_sleep_enabled() -> bool { false }
@@ -331,6 +383,8 @@ pub struct AppConfig {
     pub title_summary: TitleSummaryConfig,
     #[serde(default)]
     pub deep_sleep: DeepSleepConfig,
+    #[serde(default)]
+    pub embedding: EmbeddingConfig,
 }
 
 impl Default for AppConfig {
@@ -371,6 +425,7 @@ impl Default for AppConfig {
             server: ServerConfig::default(),
             title_summary: TitleSummaryConfig::default(),
             deep_sleep: DeepSleepConfig::default(),
+            embedding: EmbeddingConfig::default(),
         }
     }
 }

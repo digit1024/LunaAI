@@ -8,6 +8,24 @@ use uuid::Uuid;
 
 use crate::{config::ServerConfig, llm::ToolCall};
 
+// Load sqlite-vec extension for memory vector search (must be called before opening any connection)
+fn load_sqlite_vec_extension() {
+    unsafe {
+        use rusqlite::auto_extension::register_auto_extension;
+        type RawExt = unsafe extern "C" fn(
+            *mut rusqlite::ffi::sqlite3,
+            *mut *mut std::ffi::c_char,
+            *const rusqlite::ffi::sqlite3_api_routines,
+        ) -> std::ffi::c_int;
+        let init_fn = std::mem::transmute::<*const (), RawExt>(
+            sqlite_vec::sqlite3_vec_init as *const (),
+        );
+        if let Err(e) = register_auto_extension(init_fn) {
+            tracing::warn!(error = %e, "Failed to load sqlite-vec extension; memory vector search disabled");
+        }
+    }
+}
+
 /// Represents a conversation in the database
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
@@ -83,6 +101,8 @@ pub struct ScheduledJob {
 /// SQLite-based storage implementation
 pub struct SqliteStorage {
     conn: Connection,
+    /// Dimension of memory embeddings; None means vec search is disabled.
+    embedding_dimension: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +110,8 @@ pub struct SqliteSettings {
     pub wal_enabled: bool,
     pub wal_autocheckpoint: u32,
     pub busy_timeout_ms: u64,
+    /// When Some, enables memory_vec table for vector search. Loads sqlite-vec extension.
+    pub embedding_dimension: Option<usize>,
 }
 
 impl Default for SqliteSettings {
@@ -98,6 +120,7 @@ impl Default for SqliteSettings {
             wal_enabled: true,
             wal_autocheckpoint: 200,
             busy_timeout_ms: 5_000,
+            embedding_dimension: None,
         }
     }
 }
@@ -108,6 +131,7 @@ impl From<&ServerConfig> for SqliteSettings {
             wal_enabled: cfg.wal_enabled,
             wal_autocheckpoint: cfg.wal_autocheckpoint,
             busy_timeout_ms: cfg.sqlite_busy_timeout_ms,
+            embedding_dimension: None,
         }
     }
 }
@@ -123,10 +147,16 @@ impl SqliteStorage {
         db_path: P,
         settings: &SqliteSettings,
     ) -> SqliteResult<Self> {
+        if settings.embedding_dimension.is_some() {
+            load_sqlite_vec_extension();
+        }
         let conn = Connection::open(db_path)?;
         Self::configure_connection(&conn, settings)?;
-        let storage = Self { conn };
-        storage.init_database()?;
+        let storage = Self {
+            conn,
+            embedding_dimension: settings.embedding_dimension,
+        };
+        storage.init_database(settings.embedding_dimension)?;
         Ok(storage)
     }
 
@@ -143,7 +173,7 @@ impl SqliteStorage {
     }
 
     /// Initialize the database schema
-    fn init_database(&self) -> SqliteResult<()> {
+    fn init_database(&self, embedding_dimension: Option<usize>) -> SqliteResult<()> {
         // Enable FTS5 extension (this is just a check, we don't need the results)
         let _: Vec<String> = self
             .conn
@@ -359,6 +389,19 @@ impl SqliteStorage {
 
         // Rebuild FTS index from content table (syncs pre-existing rows not covered by triggers)
         self.conn.execute("INSERT INTO memory_fts(memory_fts) VALUES('rebuild')", [])?;
+
+        // Create memory_vec virtual table for vector search when embedding is enabled
+        if let Some(dim) = embedding_dimension {
+            if dim > 0 {
+                let sql = format!(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS memory_vec USING vec0(embedding float[{}])",
+                    dim
+                );
+                if let Err(e) = self.conn.execute(&sql, []) {
+                    tracing::warn!(error = %e, dim, "Failed to create memory_vec table");
+                }
+            }
+        }
 
         Ok(())
     }
@@ -938,8 +981,82 @@ impl SqliteStorage {
 
     /// Delete a memory entry by ID. Returns true if a row was deleted.
     pub fn delete_memory(&self, memory_id: i64) -> SqliteResult<bool> {
+        if self.embedding_dimension.is_some() {
+            let _ = self.conn.execute("DELETE FROM memory_vec WHERE rowid = ?1", params![memory_id]);
+        }
         let changes = self.conn.execute("DELETE FROM memory WHERE id = ?1", params![memory_id])?;
         Ok(changes > 0)
+    }
+
+    /// Insert a row into memory_vec (vector index). Call after store_memory when embedding is enabled.
+    pub fn insert_memory_vec_row(&self, memory_id: i64, embedding: &[f32]) -> SqliteResult<()> {
+        if self.embedding_dimension.is_none() {
+            return Ok(());
+        }
+        let json = serde_json::to_string(embedding).map_err(|e| {
+            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
+        })?;
+        self.conn.execute(
+            "INSERT INTO memory_vec(rowid, embedding) VALUES (?1, ?2)",
+            params![memory_id, json],
+        )?;
+        Ok(())
+    }
+
+    /// Update a row in memory_vec. Call after update_memory when embedding is enabled.
+    pub fn update_memory_vec_row(&self, memory_id: i64, embedding: &[f32]) -> SqliteResult<()> {
+        if self.embedding_dimension.is_none() {
+            return Ok(());
+        }
+        let _ = self.conn.execute("DELETE FROM memory_vec WHERE rowid = ?1", params![memory_id]);
+        self.insert_memory_vec_row(memory_id, embedding)
+    }
+
+    /// Delete all rows from memory_vec. Used when reorganizing/rebuilding the vector index.
+    pub fn delete_all_memory_vec_rows(&self) -> SqliteResult<()> {
+        if self.embedding_dimension.is_none() {
+            return Ok(());
+        }
+        self.conn.execute("DELETE FROM memory_vec", [])?;
+        Ok(())
+    }
+
+    /// Search memories by vector similarity (KNN). Returns MemoryEntry sorted by distance.
+    pub fn search_memory_by_vector(&self, embedding: &[f32], limit: usize) -> SqliteResult<Vec<MemoryEntry>> {
+        if self.embedding_dimension.is_none() {
+            return Ok(Vec::new());
+        }
+        let json = serde_json::to_string(embedding).map_err(|e| {
+            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
+        })?;
+        let mut stmt = self.conn.prepare(
+            "SELECT rowid, distance FROM memory_vec WHERE embedding MATCH ?1 ORDER BY distance LIMIT ?2",
+        )?;
+        let rowids: Vec<i64> = stmt
+            .query_map(params![json, limit as i64], |row| Ok(row.get::<_, i64>(0)?))?
+            .collect::<Result<Vec<_>, _>>()?;
+        if rowids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = std::iter::repeat("?").take(rowids.len()).collect::<Vec<_>>().join(", ");
+        let sql = format!(
+            "SELECT id, content, category, importance, created_at, updated_at FROM memory WHERE id IN ({})",
+            placeholders
+        );
+        let mut stmt2 = self.conn.prepare(&sql)?;
+        let entries: Vec<MemoryEntry> = stmt2
+            .query_map(rusqlite::params_from_iter(rowids.iter().copied()), |row| {
+                Ok(MemoryEntry {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    category: row.get(2)?,
+                    importance: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(entries)
     }
 
     /// List all memory entries, ordered by importance then recency.
@@ -1258,6 +1375,7 @@ mod tests {
             wal_enabled: true,
             wal_autocheckpoint: 5,
             busy_timeout_ms: 1_000,
+            embedding_dimension: None,
         };
         let storage = SqliteStorage::new_with_settings(&db_path, &settings)?;
         let mode: String = storage

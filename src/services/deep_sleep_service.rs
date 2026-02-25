@@ -6,6 +6,7 @@
 //! 3. Extract NEW memories from the digest that aren't already stored
 
 use crate::config::DeepSleepConfig;
+use crate::embeddings::EmbeddingProvider;
 use crate::llm::{LlmClient, Message as LlmMessage, Role};
 use crate::storage::Storage;
 use anyhow::{Context, Result};
@@ -16,6 +17,58 @@ use tracing;
 
 const STATE_LAST_RUN_AT: &str = "last_run_at";
 const STATE_LAST_PROCESSED_MSG_ID: &str = "last_processed_message_id";
+
+/// Maximum memories to fetch when listing all (for reorganize)
+const REORGANIZE_MEMORY_LIMIT: usize = 100_000;
+
+/// Reorganize the memory_vec index: delete all vector rows, then re-embed and re-insert
+/// every memory from the `memory` table. Requires embedding to be configured.
+pub async fn reorganize_memory_vectors(
+    storage: Arc<Mutex<Storage>>,
+    embedding_provider: Arc<dyn EmbeddingProvider>,
+) -> Result<()> {
+    tracing::info!("Reorganize: starting memory vector rebuild");
+
+    let memories = {
+        let guard = storage.lock().await;
+        guard.delete_all_memory_vec_rows().context("Failed to delete memory_vec rows")?;
+        guard.list_memory(REORGANIZE_MEMORY_LIMIT).context("Failed to list memories")?
+    };
+
+    tracing::info!(count = memories.len(), "Reorganize: deleted old vectors, re-embedding memories");
+
+    let mut inserted = 0usize;
+    let mut failed = 0usize;
+
+    for entry in &memories {
+        match embedding_provider.embed(&entry.content).await {
+            Ok(embedding) => {
+                let guard = storage.lock().await;
+                if let Err(e) = guard.insert_memory_vec_row(entry.id, &embedding) {
+                    tracing::warn!(id = entry.id, error = %e, "Reorganize: failed to insert vector");
+                    failed += 1;
+                } else {
+                    inserted += 1;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(id = entry.id, error = %e, "Reorganize: embedding failed");
+                failed += 1;
+            }
+        }
+        // Small delay to avoid rate limits on embedding API
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    tracing::info!(
+        inserted,
+        failed,
+        total = memories.len(),
+        "Reorganize: memory vector rebuild complete"
+    );
+
+    Ok(())
+}
 
 // ── JSON response types for LLM outputs ──
 
@@ -42,6 +95,7 @@ pub async fn run_deep_sleep_cycle(
     storage: Arc<Mutex<Storage>>,
     config: &DeepSleepConfig,
     llm_client: Arc<dyn LlmClient>,
+    embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
 ) -> Result<()> {
     let start = std::time::Instant::now();
     tracing::info!("Deep Sleep: starting cycle");
@@ -98,10 +152,24 @@ pub async fn run_deep_sleep_cycle(
         );
 
         // ── STEP 2: Evaluate existing memories against this batch's digest ──
-        step2_evaluate_memories(&storage, config, &llm_client, &session_digest).await?;
+        step2_evaluate_memories(
+            &storage,
+            config,
+            &llm_client,
+            &session_digest,
+            embedding_provider.as_ref(),
+        )
+        .await?;
 
         // ── STEP 3: Extract new memories from this batch's digest ──
-        step3_extract_new_memories(&storage, config, &llm_client, &session_digest).await?;
+        step3_extract_new_memories(
+            &storage,
+            config,
+            &llm_client,
+            &session_digest,
+            embedding_provider.as_ref(),
+        )
+        .await?;
 
         // ── Advance watermark after successful batch ──
         last_processed_id = max_msg_id;
@@ -289,6 +357,7 @@ async fn step2_evaluate_memories(
     config: &DeepSleepConfig,
     llm_client: &Arc<dyn LlmClient>,
     session_digest: &str,
+    embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
 ) -> Result<()> {
     let memories = {
         let guard = storage.lock().await;
@@ -340,6 +409,15 @@ async fn step2_evaluate_memories(
                                     guard.update_memory(eval.id, new_content, category, importance)
                                 {
                                     updated += 1;
+                                    if let Some(provider) = embedding_provider {
+                                        if let Ok(embedding) = provider.embed(new_content).await {
+                                            if let Err(e) =
+                                                guard.update_memory_vec_row(eval.id, &embedding)
+                                            {
+                                                tracing::warn!(error = %e, "Deep Sleep: failed to update memory vector");
+                                            }
+                                        }
+                                    }
                                     tracing::info!(
                                         id = eval.id,
                                         "Deep Sleep: updated memory"
@@ -419,6 +497,7 @@ async fn step3_extract_new_memories(
     config: &DeepSleepConfig,
     llm_client: &Arc<dyn LlmClient>,
     session_digest: &str,
+    embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
 ) -> Result<()> {
     // Load current memories (post-evaluation) for context
     let current_memories = {
@@ -503,6 +582,13 @@ async fn step3_extract_new_memories(
                     proposal.importance,
                 ) {
                     Ok(entry) => {
+                        if let Some(provider) = embedding_provider {
+                            if let Ok(embedding) = provider.embed(&proposal.content).await {
+                                if let Err(e) = guard.insert_memory_vec_row(entry.id, &embedding) {
+                                    tracing::warn!(error = %e, "Deep Sleep: failed to insert memory vector");
+                                }
+                            }
+                        }
                         stored += 1;
                         tracing::info!(
                             id = entry.id,

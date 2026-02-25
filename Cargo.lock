@@ -1635,6 +1635,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "socket2 0.6.0",
+ "sqlite-vec",
  "thiserror 2.0.17",
  "tiktoken-rs",
  "tokio",
@@ -6553,6 +6554,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eda41003dc44290527a59b13432d4a0379379fa074b70174882adfbdfd917844"
 dependencies = [
  "bitflags 2.9.4",
+]
+
+[[package]]
+name = "sqlite-vec"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ec77b84fb8dd5f0f8def127226db83b5d1152c5bf367f09af03998b76ba554a"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
