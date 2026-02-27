@@ -166,6 +166,9 @@ impl ServerHandler {
             ClientCommand::StopStreaming { conversation_id } => {
                 self.handle_stop_streaming(conversation_id).await
             }
+            ClientCommand::SummarizeConversation { conversation_id } => {
+                self.handle_summarize_conversation(conversation_id).await
+            }
         };
 
         if let Err(err) = result {
@@ -182,6 +185,38 @@ impl ServerHandler {
             profile: self.session.profile_name.clone(),
         });
         Ok(())
+    }
+
+    /// Manually summarize (compact) a conversation on demand.
+    async fn handle_summarize_conversation(&mut self, conversation_id: String) -> Result<()> {
+        let uuid = Uuid::parse_str(&conversation_id).context("invalid conversation id format")?;
+
+        // Resolve profile & LLM client for this session
+        let resolved = self.session.active_resolved(&self.ctx.config)?;
+        let llm_client = self.session.llm_client.clone();
+        let storage = self.ctx.storage.clone();
+
+        let summary = ContextService::perform_manual_summarization(
+            uuid,
+            storage,
+            &llm_client,
+            &resolved,
+        )
+        .await?;
+
+        tracing::info!(
+            conversation_id = %uuid,
+            summary_length = summary.len(),
+            "Manual summarization completed"
+        );
+
+        // Notify this client that summarization finished
+        let _ = self.outbound.send(ServerEvent::Info {
+            message: "Conversation summarized.".into(),
+        });
+
+        // Reload updated conversation view for this connection
+        self.handle_load_conversation(conversation_id).await
     }
 
     async fn handle_start_conversation(&mut self, title: Option<String>) -> Result<()> {

@@ -28,6 +28,10 @@ pub enum ClientCommand {
     StopStreaming {
         conversation_id: Option<String>,
     },
+    /// Manually summarize (compact) a conversation's history.
+    SummarizeConversation {
+        conversation_id: String,
+    },
     ChangeProfile {
         profile: String,
     },

@@ -123,7 +123,7 @@ impl ContextService {
     /// Summary message content, or error
     pub async fn perform_manual_summarization(
         conv_id: uuid::Uuid,
-        storage: &crate::storage::Storage,
+        storage: std::sync::Arc<tokio::sync::Mutex<crate::storage::Storage>>,
         llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
         resolved: &ResolvedProfile,
     ) -> Result<String> {
@@ -132,9 +132,12 @@ impl ContextService {
         tracing::debug!(conversation_id = %conv_id, "Manual summarization triggered");
         
         // Load messages from DB (ordered by created_at ASC)
-        let db_messages = storage
-            .load_conversation_messages(&conv_id.to_string())
-            .context("Failed to load messages from database")?;
+        let db_messages = {
+            let storage_guard = storage.lock().await;
+            storage_guard
+                .load_conversation_messages(&conv_id.to_string())
+                .context("Failed to load messages from database")?
+        };
 
         // All messages after last summary (or all if first summarization). Includes tool calls.
         let range = match range_to_summarize(&db_messages) {
@@ -175,13 +178,16 @@ impl ContextService {
         );
         
         // Perform database summarization
-        storage
-            .perform_summarization(
-                &conv_id.to_string(),
-                &msgs_to_summarize,
-                &summary_msg.content,
-            )
-            .context("Failed to save summary to DB")?;
+        {
+            let storage_guard = storage.lock().await;
+            storage_guard
+                .perform_summarization(
+                    &conv_id.to_string(),
+                    &msgs_to_summarize,
+                    &summary_msg.content,
+                )
+                .context("Failed to save summary to DB")?;
+        }
         
         tracing::debug!("Summary saved to database");
         

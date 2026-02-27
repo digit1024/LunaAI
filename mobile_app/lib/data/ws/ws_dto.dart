@@ -453,6 +453,12 @@ class ClientCommand {
         'conversation_id': conversationId,
         'message_id': messageId,
       });
+
+  /// Manually summarize/compact a conversation's history.
+  static ClientCommand summarizeConversation(String conversationId) =>
+      ClientCommand('summarize_conversation', {
+        'conversation_id': conversationId,
+      });
 }
 
 
