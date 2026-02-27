@@ -302,6 +302,16 @@ impl OpenAIClient {
     }
 }
 
+/// OpenAI allows max_tokens in [1, 65536]. Return None for 0 or out-of-range so we omit the field.
+fn sanitize_max_tokens(v: Option<u32>) -> Option<u32> {
+    let n = v?;
+    if n == 0 || n > 65536 {
+        tracing::warn!(max_tokens = n, "OpenAI max_tokens must be in [1, 65536]; omitting invalid value");
+        return None;
+    }
+    Some(n)
+}
+
 #[async_trait]
 impl LlmClient for OpenAIClient {
     async fn send_message_stream(
@@ -311,12 +321,13 @@ impl LlmClient for OpenAIClient {
         max_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>, LlmError> {
         let openai_messages = Self::map_messages(messages);
+        let max_tokens = sanitize_max_tokens(max_tokens.or(self.preset.max_tokens));
 
         let request = OpenAIRequest {
             model: self.preset.model.clone(),
             messages: openai_messages,
             temperature: temperature.or(self.preset.temperature),
-            max_tokens: max_tokens.or(self.preset.max_tokens),
+            max_tokens,
             stream: true,
             tools: None,
             tool_choice: None,
@@ -420,11 +431,12 @@ impl LlmClient for OpenAIClient {
             )
         };
 
+        let max_tokens = sanitize_max_tokens(max_tokens.or(self.preset.max_tokens));
         let request = OpenAIRequest {
             model: self.preset.model.clone(),
             messages: openai_messages,
             temperature: temperature.or(self.preset.temperature),
-            max_tokens: max_tokens.or(self.preset.max_tokens),
+            max_tokens,
             stream: false,
             tools,
             tool_choice: self.preset.tool_choice.as_ref().and_then(|v| v.as_str().map(String::from)).or_else(|| if has_tools { Some("auto".to_string()) } else { None }),
@@ -523,11 +535,12 @@ impl LlmClient for OpenAIClient {
             )
         };
 
+        let max_tokens = sanitize_max_tokens(max_tokens.or(self.preset.max_tokens));
         let request = OpenAIRequest {
             model: self.preset.model.clone(),
             messages: openai_messages,
             temperature: temperature.or(self.preset.temperature),
-            max_tokens: max_tokens.or(self.preset.max_tokens),
+            max_tokens,
             stream: true,
             tools,
             tool_choice: self.preset.tool_choice.as_ref().and_then(|v| v.as_str().map(String::from)).or_else(|| if has_tools { Some("auto".to_string()) } else { None }),

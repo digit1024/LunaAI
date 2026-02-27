@@ -580,96 +580,56 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           onHistory: controller.openConversations,
           onSetup: controller.openSetup,
         ),
-        body: Stack(
+        body: Column(
           children: [
-            // Base layout: top bar + list + composer
-            Column(
-              children: [
-                _TopBar(
-                  title: heading,
-                  connection: state.connection,
-                  streaming: state.streaming,
-                  onSettings: controller.openSetup,
-                ),
-                Expanded(
-                  child: Stack(
-                    children: [
-                      Positioned.fill(
-                        child: ListView.builder(
-                          controller: _scrollController,
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 12),
-                          itemCount: state.chatMessages.length +
-                              (state.streaming ? 1 : 0),
-                          itemBuilder: (context, index) {
-                            if (index < state.chatMessages.length) {
-                              final message = state.chatMessages[index];
-                              final prevMessage = index > 0
-                                  ? state.chatMessages[index - 1]
-                                  : null;
-                              final nextMessage = index < state.chatMessages.length - 1
-                                  ? state.chatMessages[index + 1]
-                                  : null;
-                              return ChatBubble(
-                                message: message,
-                                prevMessage: prevMessage,
-                                nextMessage: nextMessage,
-                                onRetry: message.bubbleType == BubbleType.user
-                                    ? () => controller.retryMessage(message.id)
-                                    : null,
-                              );
-                            }
-                            return const Padding(
-                              padding: EdgeInsets.symmetric(vertical: 6),
-                              child: TypingBubble(),
-                            );
-                          },
-                        ),
-                      ),
-                      if (state.chatMessages.isEmpty && !state.streaming)
-                        const IgnorePointer(child: _EmptyChat()),
-                    ],
-                  ),
-                ),
-                _Composer(
-                  controller: _controller,
-                  focusNode: _focusNode,
-                  attachedFiles: state.attachedFiles,
-                  onSend: () {
-                    final text = _controller.text;
-                    if (text.trim().isNotEmpty) {
-                      _focusNode.unfocus();
-                      _sentPlayer.stop();
-                      unawaited(_sentPlayer.play(AssetSource('audio/sent.mp3')));
-                      controller.sendPrompt(text);
-                      _controller.clear();
-                    }
-                  },
-                  onVoiceMode: () {
-                    controller.startDialogMode();
-                  },
-                  onAttachFile: () async {
-                    final result = await FilePicker.platform.pickFiles(
-                      type: FileType.any,
-                      allowMultiple: false,
-                    );
-                    if (result != null && result.files.single.path != null) {
-                      final file = File(result.files.single.path!);
-                      await controller.attachFile(file);
-                    }
-                  },
-                  onRemoveFile: (fileId) {
-                    controller.removeAttachedFile(fileId);
-                  },
-                ),
-              ],
+            _TopBar(
+              title: heading,
+              connection: state.connection,
+              streaming: state.streaming,
+              onSettings: controller.openSetup,
+              onRequestCompact: controller.requestCompactConversation,
             ),
-            // Full-screen voice mode overlay (covers top bar + list + composer)
-            // RepaintBoundary isolates overlay into its own layer to avoid BLASTBufferQueue overflow on Android
-            if (state.isDialogModeActive)
+            Expanded(
+          child: Stack(
+            children: [
               Positioned.fill(
-                child: RepaintBoundary(
-                  child: VoiceModeOverlay(
+                child: ListView.builder(
+                  controller: _scrollController,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 12),
+                  itemCount: state.chatMessages.length +
+                      (state.streaming ? 1 : 0),
+                  itemBuilder: (context, index) {
+                    if (index < state.chatMessages.length) {
+                      final message = state.chatMessages[index];
+                      final prevMessage = index > 0
+                          ? state.chatMessages[index - 1]
+                          : null;
+                      final nextMessage = index < state.chatMessages.length - 1
+                          ? state.chatMessages[index + 1]
+                          : null;
+                      
+                      return ChatBubble(
+                        message: message,
+                        prevMessage: prevMessage,
+                        nextMessage: nextMessage,
+                        onRetry: message.bubbleType == BubbleType.user
+                            ? () => controller.retryMessage(message.id)
+                            : null,
+                      );
+                    }
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 6),
+                      child: TypingBubble(),
+                    );
+                  },
+                ),
+              ),
+              if (state.chatMessages.isEmpty && !state.streaming)
+                const IgnorePointer(child: _EmptyChat()),
+              // Voice mode overlay
+              if (state.isDialogModeActive)
+                VoiceModeOverlay(
                   state: state.dialogModeState,
                   onClose: () {
                     controller.stopDialogMode();
@@ -678,10 +638,42 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     _stopTtsAndResumeListing();
                   },
                 ),
-                ),
-              ),
-          ],
+            ],
+          ),
         ),
+        _Composer(
+          controller: _controller,
+          focusNode: _focusNode,
+          attachedFiles: state.attachedFiles,
+          onSend: () {
+            final text = _controller.text;
+            if (text.trim().isNotEmpty) {
+              _focusNode.unfocus();
+              _sentPlayer.stop();
+              unawaited(_sentPlayer.play(AssetSource('audio/sent.mp3')));
+              controller.sendPrompt(text);
+              _controller.clear();
+            }
+          },
+          onVoiceMode: () {
+            controller.startDialogMode();
+          },
+          onAttachFile: () async {
+            final result = await FilePicker.platform.pickFiles(
+              type: FileType.any,
+              allowMultiple: false,
+            );
+            if (result != null && result.files.single.path != null) {
+              final file = File(result.files.single.path!);
+              await controller.attachFile(file);
+            }
+          },
+          onRemoveFile: (fileId) {
+            controller.removeAttachedFile(fileId);
+          },
+        ),
+      ],
+    ),
       ),
     );
   }
@@ -693,12 +685,14 @@ class _TopBar extends ConsumerWidget {
     required this.connection,
     required this.streaming,
     required this.onSettings,
+    this.onRequestCompact,
   });
 
   final String title;
   final ConnectionStatus connection;
   final bool streaming;
   final VoidCallback onSettings;
+  final VoidCallback? onRequestCompact;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -738,18 +732,95 @@ class _TopBar extends ConsumerWidget {
               ),
             ),
           ),
-          Icon(
-            connectionIcon,
-            color: connectionColor,
-            size: 16,
-          ),
-          if (streaming) const Padding(
-            padding: EdgeInsets.only(left: 8),
-            child: Text('Streaming…', style: TextStyle(fontSize: 12)),
+          _StatusMenuAnchor(
+            connectionIcon: connectionIcon,
+            connectionColor: connectionColor,
+            streaming: streaming,
+            onRequestCompact: onRequestCompact,
           ),
         ],
       ),
     );
+  }
+}
+
+/// Tappable status icon that shows "Current chat" menu with Compact option.
+class _StatusMenuAnchor extends StatelessWidget {
+  const _StatusMenuAnchor({
+    required this.connectionIcon,
+    required this.connectionColor,
+    required this.streaming,
+    this.onRequestCompact,
+  });
+
+  final IconData connectionIcon;
+  final Color connectionColor;
+  final bool streaming;
+  final VoidCallback? onRequestCompact;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: () => _showCurrentChatMenu(context),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(connectionIcon, color: connectionColor, size: 16),
+              if (streaming)
+                const Padding(
+                  padding: EdgeInsets.only(left: 8),
+                  child: Text('Streaming…', style: TextStyle(fontSize: 12)),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showCurrentChatMenu(BuildContext context) {
+    final box = context.findRenderObject() as RenderBox?;
+    final offset = box != null ? box.localToGlobal(Offset.zero) : Offset.zero;
+    final size = box != null ? box.size : Size.zero;
+
+    showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        offset.dx,
+        offset.dy + size.height,
+        offset.dx + size.width,
+        offset.dy + size.height + 8,
+      ),
+      items: [
+        PopupMenuItem<String>(
+          enabled: false,
+          child: Text(
+            'Current chat',
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+            ),
+          ),
+        ),
+        const PopupMenuItem<String>(
+          value: 'compact',
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.compress),
+            title: Text('Compact'),
+          ),
+        ),
+      ],
+    ).then((value) {
+      if (value == 'compact' && context.mounted) {
+        onRequestCompact?.call();
+      }
+    });
   }
 }
 

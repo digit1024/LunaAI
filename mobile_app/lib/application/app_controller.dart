@@ -194,6 +194,18 @@ class AppController extends Notifier<AppState> {
     wsClient.send(ClientCommand.deleteConversation(conversationId));
   }
 
+  /// Request compact/summarization for the current chat (Current chat menu → Compact).
+  /// Shows user feedback; backend trigger can be wired later.
+  void requestCompactConversation() {
+    final convId = state.activeConversation?.id;
+    if (convId == null) {
+      state = state.copyWith(infoMessage: 'No active conversation.');
+      return;
+    }
+    // TODO: send manual summarization request to backend when API exists
+    state = state.copyWith(infoMessage: 'Compact requested.');
+  }
+
   void stopStreaming({String? conversationId}) {
     wsClient.send(ClientCommand.stopStreaming(conversationId: conversationId));
   }
