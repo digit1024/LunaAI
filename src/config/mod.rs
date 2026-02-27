@@ -196,11 +196,11 @@ fn default_server_api_key() -> String {
 }
 
 fn default_stream_timeout_secs() -> u64 {
-    600  // 10 minutes - increased to support long-running streams
+    600 // 10 minutes - increased to support long-running streams
 }
 
 fn default_tool_call_timeout_secs() -> u64 {
-    240  // 4 minutes per MCP tool call (was 20s)
+    240 // 4 minutes per MCP tool call (was 20s)
 }
 
 fn default_healthcheck_interval_secs() -> u64 {
@@ -289,6 +289,14 @@ fn default_embedding_dimensions() -> usize {
     1536
 }
 
+fn default_max_memories() -> usize {
+    3
+}
+
+fn default_min_importance() -> Option<i32> {
+    None
+}
+
 #[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct EmbeddingConfig {
     #[serde(default = "default_embedding_enabled")]
@@ -302,6 +310,15 @@ pub struct EmbeddingConfig {
     pub dimensions: usize,
     #[serde(default)]
     pub api_key: Option<String>,
+    /// Maximum number of memories to retrieve per query
+    #[serde(default = "default_max_memories")]
+    pub max_memories: usize,
+    /// Maximum cosine distance threshold (0.0-2.0, lower = more similar). None = no filter.
+    #[serde(default)]
+    pub max_distance: Option<f32>,
+    /// Minimum importance score (1-5). None = no filter.
+    #[serde(default = "default_min_importance")]
+    pub min_importance: Option<i32>,
 }
 
 impl Default for EmbeddingConfig {
@@ -312,6 +329,9 @@ impl Default for EmbeddingConfig {
             model: default_embedding_model(),
             dimensions: default_embedding_dimensions(),
             api_key: None,
+            max_memories: default_max_memories(),
+            max_distance: None,
+            min_importance: default_min_importance(),
         }
     }
 }
@@ -325,11 +345,21 @@ impl EmbeddingConfig {
 
 // ── Deep Sleep config ──
 
-fn default_deep_sleep_enabled() -> bool { false }
-fn default_deep_sleep_interval_hours() -> u64 { 24 }
-fn default_deep_sleep_memory_batch_size() -> usize { 20 }
-fn default_deep_sleep_max_conversations() -> usize { 50 }
-fn default_deep_sleep_inter_call_delay_secs() -> u64 { 2 }
+fn default_deep_sleep_enabled() -> bool {
+    false
+}
+fn default_deep_sleep_interval_hours() -> u64 {
+    24
+}
+fn default_deep_sleep_memory_batch_size() -> usize {
+    20
+}
+fn default_deep_sleep_max_conversations() -> usize {
+    50
+}
+fn default_deep_sleep_inter_call_delay_secs() -> u64 {
+    2
+}
 
 #[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct DeepSleepConfig {
@@ -500,9 +530,9 @@ impl AppConfig {
 
     #[allow(dead_code)] // Public API method
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
+        use chrono::Local;
         use std::fs;
         use toml;
-        use chrono::Local;
 
         let config_path = Self::config_toml_path();
 
@@ -514,13 +544,13 @@ impl AppConfig {
         // Create backup if config file exists
         if config_path.exists() {
             let now = Local::now();
-            let backup_filename = format!(
-                "config_bcp_{}.toml",
-                now.format("%Y_%m_%d_%H_%M_%S")
-            );
-            let backup_path = config_path.parent()
+            let backup_filename = format!("config_bcp_{}.toml", now.format("%Y_%m_%d_%H_%M_%S"));
+            let backup_path = config_path
+                .parent()
                 .ok_or_else(|| anyhow::anyhow!("Config path has no parent directory"))
-                .with_context(|| format!("Failed to create backup path for {}", config_path.display()))?
+                .with_context(|| {
+                    format!("Failed to create backup path for {}", config_path.display())
+                })?
                 .join(backup_filename);
             fs::copy(&config_path, &backup_path)?;
         }

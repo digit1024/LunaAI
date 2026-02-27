@@ -85,12 +85,18 @@ hidden = false
 # ── Embedding config (for long-term memory vector search) ──
 # When enabled, memory recall uses semantic search via sqlite-vec instead of keyword search.
 # Requires OpenAI-compatible embeddings API. Set api_key or use OPENAI_API_KEY env.
-# [embedding]
-# enabled = true
-# endpoint = "https://api.openai.com/v1/embeddings"
-# model = "text-embedding-3-small"
-# dimensions = 1536
-# api_key = "sk-xxx"  # optional, falls back to OPENAI_API_KEY
+
+[embedding]
+enabled = false
+endpoint = "https://api.openai.com/v1/embeddings"
+model = "text-embedding-3-small"
+dimensions = 1536
+api_key = ""  # optional, falls back to OPENAI_API_KEY
+
+# Memory retrieval control (only used when embedding is enabled)
+max_memories = 3           # Maximum memories to return per query (default: 3)
+# max_distance = 0.4       # Maximum cosine distance (0.0-2.0, lower = more similar). Comment out for no filter.
+# min_importance = 2       # Minimum importance score (1-5). Comment out for no filter.
 
 # Prompt configuration (global system prompt)
 [prompts]

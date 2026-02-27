@@ -17,9 +17,8 @@ fn load_sqlite_vec_extension() {
             *mut *mut std::ffi::c_char,
             *const rusqlite::ffi::sqlite3_api_routines,
         ) -> std::ffi::c_int;
-        let init_fn = std::mem::transmute::<*const (), RawExt>(
-            sqlite_vec::sqlite3_vec_init as *const (),
-        );
+        let init_fn =
+            std::mem::transmute::<*const (), RawExt>(sqlite_vec::sqlite3_vec_init as *const ());
         if let Err(e) = register_auto_extension(init_fn) {
             tracing::warn!(error = %e, "Failed to load sqlite-vec extension; memory vector search disabled");
         }
@@ -59,7 +58,7 @@ pub struct Message {
     #[allow(dead_code)] // Field used for serialization/storage
     pub is_summarized: bool, // True if this message has been summarized (should be excluded from LLM payload)
     pub summarized_message_ids: Option<Vec<i64>>, // IDs of messages that were summarized
-    pub summarized_count: Option<usize>, // Count of messages summarized
+    pub summarized_count: Option<usize>,          // Count of messages summarized
 }
 
 /// Represents a search snippet from FTS5
@@ -193,13 +192,12 @@ impl SqliteStorage {
             )",
             [],
         )?;
-        
+
         // Migrate existing conversations: add profile_name column if it doesn't exist
-        let _ = self.conn.execute(
-            "ALTER TABLE conversations ADD COLUMN profile_name TEXT",
-            [],
-        );
-        
+        let _ = self
+            .conn
+            .execute("ALTER TABLE conversations ADD COLUMN profile_name TEXT", []);
+
         // Migrate existing conversations: add last_message column if it doesn't exist
         let _ = self.conn.execute(
             "ALTER TABLE conversations ADD COLUMN last_message INTEGER",
@@ -228,10 +226,9 @@ impl SqliteStorage {
         )?;
 
         // Migrate existing messages: add reasoning_content column if it doesn't exist
-        let _ = self.conn.execute(
-            "ALTER TABLE messages ADD COLUMN reasoning_content TEXT",
-            [],
-        );
+        let _ = self
+            .conn
+            .execute("ALTER TABLE messages ADD COLUMN reasoning_content TEXT", []);
 
         // Migrate existing messages: add summarization columns if they don't exist
         let _ = self.conn.execute(
@@ -331,10 +328,9 @@ impl SqliteStorage {
         )?;
 
         // Migration: add updated_at column if missing (existing DBs)
-        let _ = self.conn.execute(
-            "ALTER TABLE memory ADD COLUMN updated_at INTEGER",
-            [],
-        );
+        let _ = self
+            .conn
+            .execute("ALTER TABLE memory ADD COLUMN updated_at INTEGER", []);
 
         // Deep sleep state (key-value store for tracking progress)
         self.conn.execute(
@@ -388,7 +384,8 @@ impl SqliteStorage {
         )?;
 
         // Rebuild FTS index from content table (syncs pre-existing rows not covered by triggers)
-        self.conn.execute("INSERT INTO memory_fts(memory_fts) VALUES('rebuild')", [])?;
+        self.conn
+            .execute("INSERT INTO memory_fts(memory_fts) VALUES('rebuild')", [])?;
 
         // Create memory_vec virtual table for vector search when embedding is enabled
         if let Some(dim) = embedding_dimension {
@@ -410,9 +407,13 @@ impl SqliteStorage {
     pub fn insert_conversation(&self, title: &str) -> SqliteResult<String> {
         self.insert_conversation_with_profile(title, None)
     }
-    
+
     /// Insert a new conversation with profile
-    pub fn insert_conversation_with_profile(&self, title: &str, profile_name: Option<&str>) -> SqliteResult<String> {
+    pub fn insert_conversation_with_profile(
+        &self,
+        title: &str,
+        profile_name: Option<&str>,
+    ) -> SqliteResult<String> {
         let id = Uuid::new_v4().to_string();
         let created_at = Utc::now().timestamp();
 
@@ -560,7 +561,7 @@ impl SqliteStorage {
             let tool_params_json = Self::read_json_value(row.get(10)?);
             let tool_result_json = Self::read_json_value(row.get(11)?);
             let reasoning_content: Option<String> = row.get(12)?;
-            
+
             // Read summarization fields
             let is_summary: i64 = row.get(13).unwrap_or(0);
             let is_summarized: i64 = row.get(14).unwrap_or(0);
@@ -641,9 +642,13 @@ impl SqliteStorage {
 
         Ok(changes > 0)
     }
-    
+
     /// Update conversation profile
-    pub fn update_profile(&self, conversation_id: &str, profile_name: Option<&str>) -> SqliteResult<bool> {
+    pub fn update_profile(
+        &self,
+        conversation_id: &str,
+        profile_name: Option<&str>,
+    ) -> SqliteResult<bool> {
         let changes = self.conn.execute(
             "UPDATE conversations SET profile_name = ?1 WHERE id = ?2",
             params![profile_name, conversation_id],
@@ -695,36 +700,55 @@ impl SqliteStorage {
         }
 
         // Build placeholders for IN clause
-        let placeholders: String = message_ids.iter()
+        let placeholders: String = message_ids
+            .iter()
             .map(|_| "?")
             .collect::<Vec<_>>()
             .join(",");
 
         let sql = format!("DELETE FROM messages WHERE id IN ({})", placeholders);
-        let changes = self.conn.execute(&sql, rusqlite::params_from_iter(message_ids.iter()))?;
+        let changes = self
+            .conn
+            .execute(&sql, rusqlite::params_from_iter(message_ids.iter()))?;
 
         Ok(changes)
     }
 
     /// Truncate conversation by rowid: delete all messages including and AFTER the specified rowid
     /// This is called from storage_wrapper after UUID matching
-    pub fn truncate_conversation_by_rowid(&self, conversation_id: &str, target_rowid: i64) -> SqliteResult<usize> {
-        tracing::debug!("Truncating conversation {} from rowid {} (inclusive)", conversation_id, target_rowid);
-        
+    pub fn truncate_conversation_by_rowid(
+        &self,
+        conversation_id: &str,
+        target_rowid: i64,
+    ) -> SqliteResult<usize> {
+        tracing::debug!(
+            "Truncating conversation {} from rowid {} (inclusive)",
+            conversation_id,
+            target_rowid
+        );
+
         // Delete all messages in this conversation with id >= target_rowid
         // (since id is rowid and messages are inserted in order)
         let changes = self.conn.execute(
             "DELETE FROM messages WHERE conversation_id = ?1 AND id >= ?2",
             params![conversation_id, target_rowid],
         )?;
-        
-        tracing::debug!("Deleted {} messages from rowid {} (inclusive)", changes, target_rowid);
+
+        tracing::debug!(
+            "Deleted {} messages from rowid {} (inclusive)",
+            changes,
+            target_rowid
+        );
         Ok(changes)
     }
-    
+
     /// Legacy truncate - deprecated, use truncate_conversation_by_rowid via storage_wrapper
     #[allow(dead_code)]
-    pub fn truncate_conversation(&self, _conversation_id: &str, _message_id: &str) -> SqliteResult<usize> {
+    pub fn truncate_conversation(
+        &self,
+        _conversation_id: &str,
+        _message_id: &str,
+    ) -> SqliteResult<usize> {
         // This should not be called - truncate should go through storage_wrapper which handles UUID matching
         Ok(0)
     }
@@ -754,11 +778,15 @@ impl SqliteStorage {
             .unwrap_or_else(|| chrono::Utc::now().timestamp());
 
         // Mark messages as summarized instead of deleting them
-        let placeholders: String = message_ids.iter()
+        let placeholders: String = message_ids
+            .iter()
             .map(|_| "?")
             .collect::<Vec<_>>()
             .join(",");
-        let update_sql = format!("UPDATE messages SET is_summarized = 1 WHERE id IN ({})", placeholders);
+        let update_sql = format!(
+            "UPDATE messages SET is_summarized = 1 WHERE id IN ({})",
+            placeholders
+        );
         transaction.execute(&update_sql, rusqlite::params_from_iter(message_ids.iter()))?;
 
         // Insert the summary message
@@ -824,14 +852,14 @@ impl SqliteStorage {
         // Order by last_message DESC first (most recently updated), then created_at DESC
         // Conversations with NULL last_message (no messages yet) appear at the end
         let mut query = "SELECT id, title, created_at, title_generated, profile_name, last_message FROM conversations ORDER BY (last_message IS NULL), last_message DESC, created_at DESC".to_string();
-        
+
         if let Some(lim) = limit {
             query.push_str(&format!(" LIMIT {}", lim));
             if let Some(off) = offset {
                 query.push_str(&format!(" OFFSET {}", off));
             }
         }
-        
+
         let mut stmt = self.conn.prepare(&query)?;
 
         let conversation_iter = stmt.query_map([], |row| {
@@ -870,15 +898,13 @@ impl SqliteStorage {
 
     /// Get conversations without generated titles (only those that have at least one message)
     pub fn get_conversations_without_title(&self) -> SqliteResult<Vec<Conversation>> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT c.id, c.title, c.created_at, c.title_generated, c.profile_name, c.last_message
+        let mut stmt = self.conn.prepare(
+            "SELECT c.id, c.title, c.created_at, c.title_generated, c.profile_name, c.last_message
                  FROM conversations c
                  WHERE c.title_generated = 0
                    AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)
                  ORDER BY c.created_at ASC",
-            )?;
+        )?;
 
         let conversation_iter = stmt.query_map([], |row| {
             Ok(Conversation {
@@ -900,7 +926,11 @@ impl SqliteStorage {
     }
 
     /// Update conversation title and set title_generated flag
-    pub fn update_conversation_title_and_flag(&self, conversation_id: &str, title: &str) -> SqliteResult<bool> {
+    pub fn update_conversation_title_and_flag(
+        &self,
+        conversation_id: &str,
+        title: &str,
+    ) -> SqliteResult<bool> {
         let changes = self.conn.execute(
             "UPDATE conversations SET title = ?1, title_generated = 1 WHERE id = ?2",
             params![title, conversation_id],
@@ -912,7 +942,12 @@ impl SqliteStorage {
     // ── Long-term memory methods (ported from mcp_luna_memory) ──
 
     /// Store a memory entry. Returns the new entry with its assigned ID.
-    pub fn store_memory(&self, content: &str, category: Option<&str>, importance: Option<i32>) -> SqliteResult<MemoryEntry> {
+    pub fn store_memory(
+        &self,
+        content: &str,
+        category: Option<&str>,
+        importance: Option<i32>,
+    ) -> SqliteResult<MemoryEntry> {
         let importance = importance.unwrap_or(5);
         let now = Utc::now().timestamp();
         self.conn.execute(
@@ -931,8 +966,17 @@ impl SqliteStorage {
     }
 
     /// Search memory via FTS5 full-text search. Keywords are OR-joined.
-    pub fn search_memory(&self, keywords: &[String], limit: usize) -> SqliteResult<Vec<MemoryEntry>> {
-        let fts_query: String = keywords.iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" OR ");
+    pub fn search_memory(
+        &self,
+        keywords: &[String],
+        limit: usize,
+    ) -> SqliteResult<Vec<MemoryEntry>> {
+        let fts_query: String = keywords
+            .iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" OR ");
         if fts_query.is_empty() {
             return Ok(Vec::new());
         }
@@ -958,7 +1002,11 @@ impl SqliteStorage {
     }
 
     /// Search memory entries by category, ordered by importance then recency.
-    pub fn search_memory_by_category(&self, category: &str, limit: usize) -> SqliteResult<Vec<MemoryEntry>> {
+    pub fn search_memory_by_category(
+        &self,
+        category: &str,
+        limit: usize,
+    ) -> SqliteResult<Vec<MemoryEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, content, category, importance, created_at, updated_at
              FROM memory
@@ -982,9 +1030,14 @@ impl SqliteStorage {
     /// Delete a memory entry by ID. Returns true if a row was deleted.
     pub fn delete_memory(&self, memory_id: i64) -> SqliteResult<bool> {
         if self.embedding_dimension.is_some() {
-            let _ = self.conn.execute("DELETE FROM memory_vec WHERE rowid = ?1", params![memory_id]);
+            let _ = self.conn.execute(
+                "DELETE FROM memory_vec WHERE rowid = ?1",
+                params![memory_id],
+            );
         }
-        let changes = self.conn.execute("DELETE FROM memory WHERE id = ?1", params![memory_id])?;
+        let changes = self
+            .conn
+            .execute("DELETE FROM memory WHERE id = ?1", params![memory_id])?;
         Ok(changes > 0)
     }
 
@@ -993,9 +1046,8 @@ impl SqliteStorage {
         if self.embedding_dimension.is_none() {
             return Ok(());
         }
-        let json = serde_json::to_string(embedding).map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
+        let json = serde_json::to_string(embedding)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         self.conn.execute(
             "INSERT INTO memory_vec(rowid, embedding) VALUES (?1, ?2)",
             params![memory_id, json],
@@ -1008,7 +1060,10 @@ impl SqliteStorage {
         if self.embedding_dimension.is_none() {
             return Ok(());
         }
-        let _ = self.conn.execute("DELETE FROM memory_vec WHERE rowid = ?1", params![memory_id]);
+        let _ = self.conn.execute(
+            "DELETE FROM memory_vec WHERE rowid = ?1",
+            params![memory_id],
+        );
         self.insert_memory_vec_row(memory_id, embedding)
     }
 
@@ -1022,28 +1077,63 @@ impl SqliteStorage {
     }
 
     /// Search memories by vector similarity (KNN). Returns MemoryEntry sorted by distance.
-    pub fn search_memory_by_vector(&self, embedding: &[f32], limit: usize) -> SqliteResult<Vec<MemoryEntry>> {
+    /// If max_distance is Some, only returns entries with distance <= max_distance.
+    pub fn search_memory_by_vector(
+        &self,
+        embedding: &[f32],
+        limit: usize,
+        max_distance: Option<f32>,
+    ) -> SqliteResult<Vec<MemoryEntry>> {
         if self.embedding_dimension.is_none() {
             return Ok(Vec::new());
         }
-        let json = serde_json::to_string(embedding).map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
-        let mut stmt = self.conn.prepare(
-            "SELECT rowid, distance FROM memory_vec WHERE embedding MATCH ?1 ORDER BY distance LIMIT ?2",
-        )?;
+
+        let json = serde_json::to_string(embedding)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+        let validated_max_distance = match max_distance {
+            Some(dist) => {
+                if !dist.is_finite() || dist < 0.0 || dist > 2.0 {
+                    tracing::warn!(
+                        max_distance = dist,
+                        "Invalid max_distance, ignoring filter (must be 0.0-2.0)"
+                    );
+                    None
+                } else {
+                    Some(dist)
+                }
+            }
+            None => None,
+        };
+
+        let sql = match validated_max_distance {
+            Some(max_dist) => {
+                format!(
+                    "SELECT rowid, distance FROM memory_vec WHERE embedding MATCH ?1 AND distance <= {} ORDER BY distance LIMIT ?2",
+                    max_dist
+                )
+            }
+            None => {
+                "SELECT rowid, distance FROM memory_vec WHERE embedding MATCH ?1 ORDER BY distance LIMIT ?2".to_string()
+            }
+        };
+
+        let mut stmt = self.conn.prepare(&sql)?;
         let rowids: Vec<i64> = stmt
             .query_map(params![json, limit as i64], |row| Ok(row.get::<_, i64>(0)?))?
             .collect::<Result<Vec<_>, _>>()?;
         if rowids.is_empty() {
             return Ok(Vec::new());
         }
-        let placeholders = std::iter::repeat("?").take(rowids.len()).collect::<Vec<_>>().join(", ");
-        let sql = format!(
+        let placeholders = std::iter::repeat("?")
+            .take(rowids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql2 = format!(
             "SELECT id, content, category, importance, created_at, updated_at FROM memory WHERE id IN ({})",
             placeholders
         );
-        let mut stmt2 = self.conn.prepare(&sql)?;
+        let mut stmt2 = self.conn.prepare(&sql2)?;
         let entries: Vec<MemoryEntry> = stmt2
             .query_map(rusqlite::params_from_iter(rowids.iter().copied()), |row| {
                 Ok(MemoryEntry {
@@ -1081,14 +1171,23 @@ impl SqliteStorage {
     }
 
     /// Update a memory entry's content, category, importance, and set updated_at = now.
-    pub fn update_memory(&self, memory_id: i64, content: &str, category: Option<&str>, importance: i32) -> SqliteResult<bool> {
+    pub fn update_memory(
+        &self,
+        memory_id: i64,
+        content: &str,
+        category: Option<&str>,
+        importance: i32,
+    ) -> SqliteResult<bool> {
         let now = Utc::now().timestamp();
         // Read old content first so we can properly delete the old FTS entry
-        let old_content: Option<String> = self.conn.query_row(
-            "SELECT content FROM memory WHERE id = ?1",
-            params![memory_id],
-            |row| row.get(0),
-        ).ok();
+        let old_content: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT content FROM memory WHERE id = ?1",
+                params![memory_id],
+                |row| row.get(0),
+            )
+            .ok();
 
         let changes = self.conn.execute(
             "UPDATE memory SET content = ?1, category = ?2, importance = ?3, updated_at = ?4 WHERE id = ?5",
@@ -1112,9 +1211,9 @@ impl SqliteStorage {
 
     /// Get a deep sleep state value by key.
     pub fn get_deep_sleep_state(&self, key: &str) -> SqliteResult<Option<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT value FROM deep_sleep_state WHERE key = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM deep_sleep_state WHERE key = ?1")?;
         let result = stmt.query_row(params![key], |row| row.get(0));
         match result {
             Ok(val) => Ok(Some(val)),
@@ -1136,7 +1235,11 @@ impl SqliteStorage {
     /// Get conversations that have at least one message with id > message_id.
     /// Returns up to `limit` conversations, ordered by oldest first (ASC) so the
     /// watermark advances naturally through the backlog.
-    pub fn get_conversations_with_messages_after(&self, message_id: i64, limit: usize) -> SqliteResult<Vec<Conversation>> {
+    pub fn get_conversations_with_messages_after(
+        &self,
+        message_id: i64,
+        limit: usize,
+    ) -> SqliteResult<Vec<Conversation>> {
         let mut stmt = self.conn.prepare(
             "SELECT DISTINCT c.id, c.title, c.created_at, c.title_generated, c.profile_name, c.last_message
              FROM conversations c
@@ -1160,15 +1263,18 @@ impl SqliteStorage {
 
     /// Get the maximum message ID in the database.
     pub fn get_max_message_id(&self) -> SqliteResult<i64> {
-        self.conn.query_row(
-            "SELECT COALESCE(MAX(id), 0) FROM messages",
-            [],
-            |row| row.get(0),
-        )
+        self.conn
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM messages", [], |row| {
+                row.get(0)
+            })
     }
 
     /// Record that the given memories were recalled (injected) in this conversation.
-    pub fn record_memory_recalls(&self, conversation_id: &str, memory_ids: &[i64]) -> SqliteResult<()> {
+    pub fn record_memory_recalls(
+        &self,
+        conversation_id: &str,
+        memory_ids: &[i64],
+    ) -> SqliteResult<()> {
         if memory_ids.is_empty() {
             return Ok(());
         }
@@ -1213,7 +1319,11 @@ impl SqliteStorage {
     }
 
     /// Get due scheduled jobs (pending, run_at <= now)
-    pub fn get_due_scheduled_jobs(&self, now_utc_secs: i64, limit: u32) -> SqliteResult<Vec<ScheduledJob>> {
+    pub fn get_due_scheduled_jobs(
+        &self,
+        now_utc_secs: i64,
+        limit: u32,
+    ) -> SqliteResult<Vec<ScheduledJob>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, conversation_id, run_at_utc_secs, message, profile_name, title, status, created_at_utc_secs, updated_at_utc_secs, error_message, schedule FROM scheduled_jobs WHERE status = 'pending' AND run_at_utc_secs <= ?1 ORDER BY run_at_utc_secs ASC LIMIT ?2",
         )?;
@@ -1245,7 +1355,13 @@ impl SqliteStorage {
     }
 
     /// Mark job completed or failed
-    pub fn set_scheduled_job_completed(&self, id: &str, now_utc_secs: i64, failed: bool, error_message: Option<&str>) -> SqliteResult<()> {
+    pub fn set_scheduled_job_completed(
+        &self,
+        id: &str,
+        now_utc_secs: i64,
+        failed: bool,
+        error_message: Option<&str>,
+    ) -> SqliteResult<()> {
         let status = if failed { "failed" } else { "completed" };
         self.conn.execute(
             "UPDATE scheduled_jobs SET status = ?1, updated_at_utc_secs = ?2, error_message = ?3 WHERE id = ?4",
@@ -1255,7 +1371,12 @@ impl SqliteStorage {
     }
 
     /// Set next run for recurring job and set status back to pending
-    pub fn set_scheduled_job_next_run(&self, id: &str, next_run_utc_secs: i64, now_utc_secs: i64) -> SqliteResult<()> {
+    pub fn set_scheduled_job_next_run(
+        &self,
+        id: &str,
+        next_run_utc_secs: i64,
+        now_utc_secs: i64,
+    ) -> SqliteResult<()> {
         self.conn.execute(
             "UPDATE scheduled_jobs SET run_at_utc_secs = ?1, status = 'pending', updated_at_utc_secs = ?2 WHERE id = ?3",
             params![next_run_utc_secs, now_utc_secs, id],
@@ -1265,7 +1386,9 @@ impl SqliteStorage {
 
     /// Delete a scheduled job by id. Returns true if a row was deleted.
     pub fn delete_scheduled_job(&self, id: &str) -> SqliteResult<bool> {
-        let changes = self.conn.execute("DELETE FROM scheduled_jobs WHERE id = ?1", params![id])?;
+        let changes = self
+            .conn
+            .execute("DELETE FROM scheduled_jobs WHERE id = ?1", params![id])?;
         Ok(changes > 0)
     }
 }
@@ -1317,7 +1440,7 @@ mod tests {
         let conv = conversation.ok_or_else(|| {
             rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERNAL),
-                Some("Conversation should exist after update".to_string())
+                Some("Conversation should exist after update".to_string()),
             )
         })?;
         assert_eq!(conv.title, "Updated Title");
@@ -1358,7 +1481,7 @@ mod tests {
         let msg_embedding = messages[0].embedding.as_ref().ok_or_else(|| {
             rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERNAL),
-                Some("Message embedding should exist".to_string())
+                Some("Message embedding should exist".to_string()),
             )
         })?;
         assert_eq!(msg_embedding, &embedding);
@@ -1369,8 +1492,7 @@ mod tests {
 
     #[test]
     fn wal_mode_enabled_when_requested() -> SqliteResult<()> {
-        let db_path = std::env::temp_dir()
-            .join(format!("wal_mode_test_{}.db", Uuid::new_v4()));
+        let db_path = std::env::temp_dir().join(format!("wal_mode_test_{}.db", Uuid::new_v4()));
         let settings = SqliteSettings {
             wal_enabled: true,
             wal_autocheckpoint: 5,

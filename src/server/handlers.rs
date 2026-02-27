@@ -465,6 +465,7 @@ impl ServerHandler {
                 &content,
                 used_ids,
                 self.ctx.embedding_provider.as_deref(),
+                &self.ctx.config.embedding,
             )
             .await;
             if let Some((memory_msg, new_ids)) = result {

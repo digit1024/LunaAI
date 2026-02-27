@@ -50,10 +50,16 @@ impl Storage {
     pub fn create_conversation(&self, title: String) -> SqliteResult<Uuid> {
         self.create_conversation_with_profile(title, None)
     }
-    
+
     /// Create a new conversation with profile
-    pub fn create_conversation_with_profile(&self, title: String, profile_name: Option<&str>) -> SqliteResult<Uuid> {
-        let id_str = self.sqlite.insert_conversation_with_profile(&title, profile_name)?;
+    pub fn create_conversation_with_profile(
+        &self,
+        title: String,
+        profile_name: Option<&str>,
+    ) -> SqliteResult<Uuid> {
+        let id_str = self
+            .sqlite
+            .insert_conversation_with_profile(&title, profile_name)?;
         Uuid::parse_str(&id_str)
             .map_err(|e| rusqlite::Error::InvalidParameterName(format!("Invalid UUID: {}", e)))
     }
@@ -99,8 +105,7 @@ impl Storage {
                 title: db_conv.title,
                 created_at: DateTime::from_timestamp(db_conv.created_at, 0)
                     .unwrap_or_else(Utc::now),
-                updated_at: DateTime::from_timestamp(updated_at_secs, 0)
-                    .unwrap_or_else(Utc::now),
+                updated_at: DateTime::from_timestamp(updated_at_secs, 0).unwrap_or_else(Utc::now),
                 messages: stored_messages,
                 turns: Vec::new(), // Turns are not yet migrated to SQLite
                 profile_name: db_conv.profile_name.clone(),
@@ -174,8 +179,7 @@ impl Storage {
                 title: db_conv.title,
                 created_at: DateTime::from_timestamp(db_conv.created_at, 0)
                     .unwrap_or_else(Utc::now),
-                updated_at: DateTime::from_timestamp(updated_at_secs, 0)
-                    .unwrap_or_else(Utc::now),
+                updated_at: DateTime::from_timestamp(updated_at_secs, 0).unwrap_or_else(Utc::now),
                 messages: stored_messages,
                 turns: Vec::new(), // Turns are not yet migrated to SQLite
                 profile_name: db_conv.profile_name.clone(),
@@ -192,9 +196,13 @@ impl Storage {
         let id_str = id.to_string();
         self.sqlite.update_title(&id_str, &title)
     }
-    
+
     /// Update conversation profile
-    pub fn update_conversation_profile(&self, id: &Uuid, profile_name: Option<&str>) -> SqliteResult<bool> {
+    pub fn update_conversation_profile(
+        &self,
+        id: &Uuid,
+        profile_name: Option<&str>,
+    ) -> SqliteResult<bool> {
         let id_str = id.to_string();
         self.sqlite.update_profile(&id_str, profile_name)
     }
@@ -225,7 +233,8 @@ impl Storage {
         metadata: MessageMetadata<'_>,
     ) -> SqliteResult<Uuid> {
         let id_str = conversation_id.to_string();
-        let rowid = self.sqlite
+        let rowid = self
+            .sqlite
             .insert_message_with_metadata(&id_str, &role, &content, embedding, &metadata)?;
         // Same deterministic UUID format as in get_conversation / truncate
         let hex_id = format!("{:012x}", rowid.min(0xffffffffffff));
@@ -258,15 +267,19 @@ impl Storage {
     ) -> SqliteResult<usize> {
         let conv_id_str = conversation_id.to_string();
         let msg_id_str = message_id.to_string();
-        
-        tracing::debug!("Truncating conversation {} at message {}", conv_id_str, msg_id_str);
-        
+
+        tracing::debug!(
+            "Truncating conversation {} at message {}",
+            conv_id_str,
+            msg_id_str
+        );
+
         // Load all messages to find which one matches the UUID
         // (UUIDs are generated from i64 rowid in get_conversation)
         let messages = self.sqlite.load_conversation(&conv_id_str)?;
-        
+
         tracing::debug!("Loaded {} messages from conversation", messages.len());
-        
+
         // Find the target message by matching UUID
         // Since UUIDs are generated from i64 rowid, we need to convert each message's rowid to UUID
         // and compare with the target message_id
@@ -281,21 +294,35 @@ impl Storage {
             });
             msg_uuid == *message_id
         });
-        
+
         if let Some(target) = target_msg {
             // Use the rowid directly for deletion
             let target_rowid = target.id;
-            tracing::info!("Found target message with rowid: {}, timestamp: {}", target_rowid, target.created_at);
-            
+            tracing::info!(
+                "Found target message with rowid: {}, timestamp: {}",
+                target_rowid,
+                target.created_at
+            );
+
             // Delete all messages including and AFTER this one using the sqlite method
-            let changes = self.sqlite.truncate_conversation_by_rowid(&conv_id_str, target_rowid)?;
-            
-            tracing::info!("Deleted {} messages from rowid {} (inclusive)", changes, target_rowid);
+            let changes = self
+                .sqlite
+                .truncate_conversation_by_rowid(&conv_id_str, target_rowid)?;
+
+            tracing::info!(
+                "Deleted {} messages from rowid {} (inclusive)",
+                changes,
+                target_rowid
+            );
             Ok(changes)
         } else {
-            tracing::warn!("Message with UUID {} not found in conversation {} (checked {} messages)", 
-                msg_id_str, conv_id_str, messages.len());
-            
+            tracing::warn!(
+                "Message with UUID {} not found in conversation {} (checked {} messages)",
+                msg_id_str,
+                conv_id_str,
+                messages.len()
+            );
+
             // Debug: log all message IDs to help troubleshoot
             for (idx, msg) in messages.iter().enumerate() {
                 let id_str = msg.id.to_string();
@@ -305,7 +332,7 @@ impl Storage {
                 };
                 tracing::debug!("  Message {}: rowid={}, uuid={}", idx, msg.id, uuid_str);
             }
-            
+
             Ok(0)
         }
     }
@@ -362,17 +389,17 @@ impl Storage {
     }
 
     /// Update conversation title and set title_generated flag
-    pub fn update_conversation_title_and_flag(
-        &self,
-        id: &Uuid,
-        title: &str,
-    ) -> SqliteResult<bool> {
+    pub fn update_conversation_title_and_flag(&self, id: &Uuid, title: &str) -> SqliteResult<bool> {
         let id_str = id.to_string();
-        self.sqlite.update_conversation_title_and_flag(&id_str, title)
+        self.sqlite
+            .update_conversation_title_and_flag(&id_str, title)
     }
 
     /// Load messages for a conversation (exposed for title generation)
-    pub fn load_conversation_messages(&self, conversation_id: &str) -> SqliteResult<Vec<super::sqlite_storage_simple::Message>> {
+    pub fn load_conversation_messages(
+        &self,
+        conversation_id: &str,
+    ) -> SqliteResult<Vec<super::sqlite_storage_simple::Message>> {
         self.sqlite.load_conversation(conversation_id)
     }
 
@@ -383,23 +410,37 @@ impl Storage {
         messages_to_summarize: &[super::sqlite_storage_simple::Message],
         summary_content: &str,
     ) -> SqliteResult<()> {
-        self.sqlite.perform_summarization(conversation_id, messages_to_summarize, summary_content)
+        self.sqlite
+            .perform_summarization(conversation_id, messages_to_summarize, summary_content)
     }
 
     // ── Long-term memory methods ──
 
     /// Store a memory entry
-    pub fn store_memory(&self, content: &str, category: Option<&str>, importance: Option<i32>) -> SqliteResult<super::sqlite_storage_simple::MemoryEntry> {
+    pub fn store_memory(
+        &self,
+        content: &str,
+        category: Option<&str>,
+        importance: Option<i32>,
+    ) -> SqliteResult<super::sqlite_storage_simple::MemoryEntry> {
         self.sqlite.store_memory(content, category, importance)
     }
 
     /// Search memory via FTS5
-    pub fn search_memory(&self, keywords: &[String], limit: usize) -> SqliteResult<Vec<super::sqlite_storage_simple::MemoryEntry>> {
+    pub fn search_memory(
+        &self,
+        keywords: &[String],
+        limit: usize,
+    ) -> SqliteResult<Vec<super::sqlite_storage_simple::MemoryEntry>> {
         self.sqlite.search_memory(keywords, limit)
     }
 
     /// Search memory by category
-    pub fn search_memory_by_category(&self, category: &str, limit: usize) -> SqliteResult<Vec<super::sqlite_storage_simple::MemoryEntry>> {
+    pub fn search_memory_by_category(
+        &self,
+        category: &str,
+        limit: usize,
+    ) -> SqliteResult<Vec<super::sqlite_storage_simple::MemoryEntry>> {
         self.sqlite.search_memory_by_category(category, limit)
     }
 
@@ -409,13 +450,23 @@ impl Storage {
     }
 
     /// List all memory entries
-    pub fn list_memory(&self, limit: usize) -> SqliteResult<Vec<super::sqlite_storage_simple::MemoryEntry>> {
+    pub fn list_memory(
+        &self,
+        limit: usize,
+    ) -> SqliteResult<Vec<super::sqlite_storage_simple::MemoryEntry>> {
         self.sqlite.list_memory(limit)
     }
 
     /// Update a memory entry
-    pub fn update_memory(&self, memory_id: i64, content: &str, category: Option<&str>, importance: i32) -> SqliteResult<bool> {
-        self.sqlite.update_memory(memory_id, content, category, importance)
+    pub fn update_memory(
+        &self,
+        memory_id: i64,
+        content: &str,
+        category: Option<&str>,
+        importance: i32,
+    ) -> SqliteResult<bool> {
+        self.sqlite
+            .update_memory(memory_id, content, category, importance)
     }
 
     /// Insert a row into memory_vec (vector index). Call after store_memory when embedding is enabled.
@@ -429,8 +480,15 @@ impl Storage {
     }
 
     /// Search memories by vector similarity (KNN).
-    pub fn search_memory_by_vector(&self, embedding: &[f32], limit: usize) -> SqliteResult<Vec<super::sqlite_storage_simple::MemoryEntry>> {
-        self.sqlite.search_memory_by_vector(embedding, limit)
+    /// If max_distance is Some, only returns entries with distance <= max_distance.
+    pub fn search_memory_by_vector(
+        &self,
+        embedding: &[f32],
+        limit: usize,
+        max_distance: Option<f32>,
+    ) -> SqliteResult<Vec<super::sqlite_storage_simple::MemoryEntry>> {
+        self.sqlite
+            .search_memory_by_vector(embedding, limit, max_distance)
     }
 
     /// Delete all rows from memory_vec. Used when reorganizing the vector index.
@@ -449,8 +507,13 @@ impl Storage {
     }
 
     /// Get conversations that have messages after a given message ID
-    pub fn get_conversations_with_messages_after(&self, message_id: i64, limit: usize) -> SqliteResult<Vec<super::sqlite_storage_simple::Conversation>> {
-        self.sqlite.get_conversations_with_messages_after(message_id, limit)
+    pub fn get_conversations_with_messages_after(
+        &self,
+        message_id: i64,
+        limit: usize,
+    ) -> SqliteResult<Vec<super::sqlite_storage_simple::Conversation>> {
+        self.sqlite
+            .get_conversations_with_messages_after(message_id, limit)
     }
 
     /// Get the maximum message ID
@@ -459,8 +522,13 @@ impl Storage {
     }
 
     /// Record memories recalled (injected) in this conversation
-    pub fn record_memory_recalls(&self, conversation_id: &str, memory_ids: &[i64]) -> SqliteResult<()> {
-        self.sqlite.record_memory_recalls(conversation_id, memory_ids)
+    pub fn record_memory_recalls(
+        &self,
+        conversation_id: &str,
+        memory_ids: &[i64],
+    ) -> SqliteResult<()> {
+        self.sqlite
+            .record_memory_recalls(conversation_id, memory_ids)
     }
 
     /// Get memory IDs previously recalled in this conversation
@@ -474,7 +542,11 @@ impl Storage {
     }
 
     /// Get due scheduled jobs
-    pub fn get_due_scheduled_jobs(&self, now_utc_secs: i64, limit: u32) -> SqliteResult<Vec<ScheduledJob>> {
+    pub fn get_due_scheduled_jobs(
+        &self,
+        now_utc_secs: i64,
+        limit: u32,
+    ) -> SqliteResult<Vec<ScheduledJob>> {
         self.sqlite.get_due_scheduled_jobs(now_utc_secs, limit)
     }
 
@@ -484,13 +556,26 @@ impl Storage {
     }
 
     /// Mark scheduled job completed or failed
-    pub fn set_scheduled_job_completed(&self, id: &str, now_utc_secs: i64, failed: bool, error_message: Option<&str>) -> SqliteResult<()> {
-        self.sqlite.set_scheduled_job_completed(id, now_utc_secs, failed, error_message)
+    pub fn set_scheduled_job_completed(
+        &self,
+        id: &str,
+        now_utc_secs: i64,
+        failed: bool,
+        error_message: Option<&str>,
+    ) -> SqliteResult<()> {
+        self.sqlite
+            .set_scheduled_job_completed(id, now_utc_secs, failed, error_message)
     }
 
     /// Set next run for recurring scheduled job
-    pub fn set_scheduled_job_next_run(&self, id: &str, next_run_utc_secs: i64, now_utc_secs: i64) -> SqliteResult<()> {
-        self.sqlite.set_scheduled_job_next_run(id, next_run_utc_secs, now_utc_secs)
+    pub fn set_scheduled_job_next_run(
+        &self,
+        id: &str,
+        next_run_utc_secs: i64,
+        now_utc_secs: i64,
+    ) -> SqliteResult<()> {
+        self.sqlite
+            .set_scheduled_job_next_run(id, next_run_utc_secs, now_utc_secs)
     }
 
     /// Delete a scheduled job by id
@@ -507,11 +592,10 @@ impl Default for Storage {
                 "Failed to initialize SQLite storage"
             );
             // Fallback to a temporary database
-            Self::new(std::env::temp_dir().join("cosmic_llm_temp.db"))
-                .unwrap_or_else(|e| {
-                    tracing::error!(error = %e, "Failed to create temporary database");
-                    std::process::exit(1);
-                })
+            Self::new(std::env::temp_dir().join("cosmic_llm_temp.db")).unwrap_or_else(|e| {
+                tracing::error!(error = %e, "Failed to create temporary database");
+                std::process::exit(1);
+            })
         })
     }
 }

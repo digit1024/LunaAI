@@ -4,15 +4,13 @@
 //! of the user's message. Requires an embedding provider to be configured.
 //! Tracks which memory IDs have already been injected per conversation to avoid duplication.
 
+use crate::config::EmbeddingConfig;
 use crate::embeddings::EmbeddingProvider;
 use crate::storage::Storage;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing;
-
-/// Maximum number of memories to retrieve per query
-const MAX_MEMORIES: usize = 10;
 
 /// Search memories relevant to the user message via vector similarity, filter out already-used IDs,
 /// and return a formatted system message string plus the list of newly used memory IDs.
@@ -28,6 +26,7 @@ pub async fn retrieve_memory_context(
     user_message: &str,
     used_ids: &mut HashSet<i64>,
     embedding_provider: Option<&dyn EmbeddingProvider>,
+    embedding_config: &EmbeddingConfig,
 ) -> Option<(String, Vec<i64>)> {
     let provider = match embedding_provider {
         Some(p) => p,
@@ -47,7 +46,7 @@ pub async fn retrieve_memory_context(
 
     let entries = {
         let guard = storage.lock().await;
-        match guard.search_memory_by_vector(&query_embedding, MAX_MEMORIES) {
+        match guard.search_memory_by_vector(&query_embedding, embedding_config.max_memories, embedding_config.max_distance) {
             Ok(entries) => entries,
             Err(e) => {
                 tracing::warn!(error = %e, "Memory RAG: vector search failed");
@@ -61,8 +60,30 @@ pub async fn retrieve_memory_context(
         return None;
     }
 
+    // Filter by min_importance if configured and valid (1-5)
+    let validated_min_importance = match embedding_config.min_importance {
+        Some(imp) if imp >= 1 && imp <= 5 => Some(imp),
+        Some(imp) => {
+            tracing::warn!(
+                min_importance = imp,
+                "Invalid min_importance, ignoring filter (must be 1-5)"
+            );
+            None
+        }
+        None => None,
+    };
+
+    let filtered_by_importance: Vec<_> = if let Some(min_imp) = validated_min_importance {
+        entries
+            .into_iter()
+            .filter(|e| e.importance >= min_imp)
+            .collect()
+    } else {
+        entries
+    };
+
     // Filter out memories already injected in this conversation
-    let new_entries: Vec<_> = entries
+    let new_entries: Vec<_> = filtered_by_importance
         .into_iter()
         .filter(|e| !used_ids.contains(&e.id))
         .collect();
