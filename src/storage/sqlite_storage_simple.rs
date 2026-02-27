@@ -770,12 +770,8 @@ impl SqliteStorage {
             return Ok(());
         }
 
-        // Get the earliest timestamp from messages being summarized
-        let earliest_timestamp = messages_to_summarize
-            .iter()
-            .map(|m| m.created_at)
-            .min()
-            .unwrap_or_else(|| chrono::Utc::now().timestamp());
+        // Timestamp for the summary message and conversation update (time of summarization)
+        let now = Utc::now().timestamp();
 
         // Mark messages as summarized instead of deleting them
         let placeholders: String = message_ids
@@ -800,7 +796,7 @@ impl SqliteStorage {
                 conversation_id,
                 "system",
                 summary_content,
-                earliest_timestamp,
+                now,
                 1, // is_summary = true
                 0, // is_summarized = false (summary messages are not themselves summarized)
                 summarized_ids_json,
@@ -809,7 +805,6 @@ impl SqliteStorage {
         )?;
 
         // Update conversation's last_message timestamp to now (when summary is created)
-        let now = Utc::now().timestamp();
         transaction.execute(
             "UPDATE conversations SET last_message = ?1 WHERE id = ?2",
             params![now, conversation_id],
