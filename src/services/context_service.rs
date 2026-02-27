@@ -16,21 +16,29 @@ use anyhow::Result;
 use tracing::debug;
 
 /// Returns the range of `db_messages` (ordered by created_at ASC) to summarize:
-/// - All messages **after** the last summary message (includes user, assistant, and **tool** messages).
-/// - If there is no previous summary, returns the range for **all** messages (first summarization).
-/// - Returns `None` if there is nothing to summarize (e.g. only summary message(s) or empty).
+/// - If there is **no previous summary**, returns a range covering **all messages** (first summarization).
+/// - If there **is** a previous summary, returns a range starting **at the last summary message (inclusive)**
+///   through to the end, so the new summary re-summarizes the prior summary **plus** all newer messages.
+/// - Returns `None` if there are no messages after the last summary (i.e. nothing new to summarize).
 ///
-/// No "keep recent" — we summarize everything since the last summary so tool calls are never excluded.
+/// This ensures each new summary represents the **entire conversation so far** in one rolling summary,
+/// while still only summarizing each raw message once.
 fn range_to_summarize(db_messages: &[StorageMessage]) -> Option<std::ops::Range<usize>> {
-    let start = db_messages
-        .iter()
-        .rposition(|m| m.is_summary)
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    if start >= db_messages.len() {
+    if db_messages.is_empty() {
         return None;
     }
-    Some(start..db_messages.len())
+
+    if let Some(last_summary_idx) = db_messages.iter().rposition(|m| m.is_summary) {
+        // If there is nothing after the last summary, there's nothing new to summarize.
+        if last_summary_idx + 1 >= db_messages.len() {
+            return None;
+        }
+        // Re-summarize: include the last summary itself plus all newer messages.
+        Some(last_summary_idx..db_messages.len())
+    } else {
+        // No previous summary: summarize the full history.
+        Some(0..db_messages.len())
+    }
 }
 
 /// Context service (stateless)

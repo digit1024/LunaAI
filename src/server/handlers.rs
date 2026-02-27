@@ -735,9 +735,17 @@ impl ServerHandler {
         let db_messages = storage
             .load_conversation_messages(&conversation_id.to_string())
             .context("failed to load conversation messages")?;
-        
+
+        // Only keep the latest summary (if any) and all messages after it.
+        // Older summaries and their raw messages are represented by that latest summary.
+        let start_idx = db_messages
+            .iter()
+            .rposition(|m: &StorageMessage| m.is_summary)
+            .unwrap_or(0);
+        let window = &db_messages[start_idx..];
+
         // Use MessageConverter service (single source of truth)
-        Ok(MessageConverter::db_to_llm(&db_messages, true))
+        Ok(MessageConverter::db_to_llm(window, true))
     }
 }
 
@@ -867,7 +875,13 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
                 .load_conversation_messages(conv_id_str)
                 .context("failed to load conversation messages")?
         };
-        let mut llm_messages = MessageConverter::db_to_llm(&db_messages, true);
+        // For existing conversations, keep only the latest summary (if any) and messages after it.
+        let start_idx = db_messages
+            .iter()
+            .rposition(|m: &StorageMessage| m.is_summary)
+            .unwrap_or(0);
+        let window = &db_messages[start_idx..];
+        let mut llm_messages = MessageConverter::db_to_llm(window, true);
         llm_messages.push(LlmMessage::new(
             Role::User,
             format!(
@@ -901,7 +915,14 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
                 .load_conversation_messages(&conv_id.to_string())
                 .context("failed to load messages")?
         };
-        let llm_messages = MessageConverter::db_to_llm(&db_messages, true);
+        // New conversation: same rule still applies; if a summary exists, only keep the latest
+        // plus subsequent messages (typically none yet), otherwise keep all messages.
+        let start_idx = db_messages
+            .iter()
+            .rposition(|m: &StorageMessage| m.is_summary)
+            .unwrap_or(0);
+        let window = &db_messages[start_idx..];
+        let llm_messages = MessageConverter::db_to_llm(window, true);
         let agent_messages =
             ContextService::inject_prompts(llm_messages, &ctx.prompt_manager, resolved.profile())?;
         (conv_id, agent_messages)
