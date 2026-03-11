@@ -1,4 +1,4 @@
-mod agentic;
+
 mod config;
 mod embeddings;
 mod llm;

@@ -1,4 +1,3 @@
-pub mod agentic;
 pub mod config;
 pub mod rig_core;
 pub mod embeddings;

@@ -102,7 +102,6 @@ impl Storage {
                     .unwrap_or_else(Utc::now),
                 updated_at: DateTime::from_timestamp(updated_at_secs, 0).unwrap_or_else(Utc::now),
                 messages: stored_messages,
-                turns: Vec::new(), // Turns are not yet migrated to SQLite
                 profile_name: db_conv.profile_name.clone(),
             };
 
@@ -164,7 +163,6 @@ impl Storage {
                     .unwrap_or_else(Utc::now),
                 updated_at: DateTime::from_timestamp(updated_at_secs, 0).unwrap_or_else(Utc::now),
                 messages: stored_messages,
-                turns: Vec::new(), // Turns are not yet migrated to SQLite
                 profile_name: db_conv.profile_name.clone(),
             };
 

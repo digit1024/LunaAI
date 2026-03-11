@@ -51,7 +51,7 @@ impl Default for ModelPreset {
     fn default() -> Self {
         Self {
             backend: "openai".to_string(),
-            model: "gpt-3.5-turbo".to_string(),
+            model: "gpt-5-mini".to_string(),
             endpoint: "https://api.openai.com/v1/chat/completions".to_string(),
             api_key: String::new(),
             max_tokens: None,
@@ -115,7 +115,7 @@ impl Default for LlmProfile {
     }
 }
 
-/// Resolved profile: profile + its model preset. Use for building LLM client and requests.
+
 #[derive(Debug, Clone)]
 pub struct ResolvedProfile {
     pub profile: LlmProfile,
@@ -131,7 +131,7 @@ impl ResolvedProfile {
     }
 }
 
-// New Claude Desktop-style configuration
+
 #[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct MCPServerConfig {
     pub command: String,

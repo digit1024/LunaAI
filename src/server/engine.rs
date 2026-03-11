@@ -2,13 +2,14 @@
 //!
 //! Runs LLM/tool loop via Rig, broadcasts ServerEvents to subscribers.
 
-use crate::llm::Message as LlmMessage;
+use crate::llm::{Message as LlmMessage, ToolCall};
 use crate::server::handlers::ServerContext;
+use crate::storage::sqlite_storage_simple::MessageMetadata;
 use anyhow::Result;
-use tracing::Instrument;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
+use tracing::Instrument;
 use uuid::Uuid;
 
 /// Parameters for a single conversation turn.
@@ -167,11 +168,20 @@ impl ConversationEngine for RigEngine {
             let mut full_content = String::new();
             let mut seq = 0u64;
 
+            // Accumulators for tool-call persistence
+            let mut content_before_tools = String::new();
+            let mut tool_calls: Vec<ToolCall> = Vec::new();
+            let mut tool_params: HashMap<String, serde_json::Value> = HashMap::new();
+            let mut assistant_with_tools_persisted = false;
+
             let stream_future = async {
                 while let Some(chunk) = stream.next().await {
                     match chunk {
                         Ok(StreamChunk::Delta(text)) => {
                             full_content.push_str(&text);
+                            if tool_calls.is_empty() {
+                                content_before_tools.push_str(&text);
+                            }
                             seq += 1;
                             let _ = subscriptions
                                 .broadcast(
@@ -202,6 +212,13 @@ impl ConversationEngine for RigEngine {
                             }
                         }
                         Ok(StreamChunk::ToolPlanned { tools }) => {
+                            for t in &tools {
+                                tool_calls.push(ToolCall {
+                                    id: t.id.clone(),
+                                    name: t.name.clone(),
+                                    parameters: t.params_json.clone(),
+                                });
+                            }
                             let _ = subscriptions
                                 .broadcast(
                                     conversation_id,
@@ -217,6 +234,7 @@ impl ConversationEngine for RigEngine {
                             name,
                             params_json,
                         }) => {
+                            tool_params.insert(tool_call_id.clone(), params_json.clone());
                             let _ = subscriptions
                                 .broadcast(
                                     conversation_id,
@@ -235,6 +253,46 @@ impl ConversationEngine for RigEngine {
                             result_json,
                             is_error,
                         }) => {
+                            // Persist assistant with tool_calls before first tool result
+                            if !assistant_with_tools_persisted && !tool_calls.is_empty() {
+                                assistant_with_tools_persisted = true;
+                                let guard = storage.lock().await;
+                                let meta = MessageMetadata {
+                                    tool_calls: Some(&tool_calls),
+                                    ..Default::default()
+                                };
+                                let _ = guard.add_message_with_metadata(
+                                    &conversation_id,
+                                    "assistant".to_string(),
+                                    content_before_tools.clone(),
+                                    None,
+                                    meta,
+                                );
+                            }
+                            // Persist tool result
+                            let params = tool_params.get(&tool_call_id).cloned();
+                            let guard = storage.lock().await;
+                            let content = result_json
+                                .get("content")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let meta = MessageMetadata {
+                                tool_call_id: Some(&tool_call_id),
+                                tool_name: Some(&name),
+                                tool_status: Some(if is_error { "error" } else { "ok" }),
+                                tool_params_json: params.as_ref(),
+                                tool_result_json: Some(&result_json),
+                                ..Default::default()
+                            };
+                            let _ = guard.add_message_with_metadata(
+                                &conversation_id,
+                                "tool".to_string(),
+                                content,
+                                None,
+                                meta,
+                            );
+
                             let _ = if is_error {
                                 subscriptions.broadcast(
                                     conversation_id,
@@ -292,15 +350,33 @@ impl ConversationEngine for RigEngine {
                 return;
             }
 
-            // Persist assistant message
-            if !full_content.is_empty() {
+            // Persist assistant message(s)
+            if assistant_with_tools_persisted {
+                // Final assistant content: text after tool calls (avoid duplicating content_before_tools)
+                let final_content = if content_before_tools.len() < full_content.len() {
+                    full_content[content_before_tools.len()..].trim().to_string()
+                } else {
+                    String::new()
+                };
+                if !final_content.is_empty() {
+                    let guard = storage.lock().await;
+                    let _ = guard.add_message_with_metadata(
+                        &conversation_id,
+                        "assistant".to_string(),
+                        final_content,
+                        None,
+                        MessageMetadata::default(),
+                    );
+                }
+            } else if !full_content.is_empty() {
+                // No tools: single assistant message
                 let guard = storage.lock().await;
                 let _ = guard.add_message_with_metadata(
                     &conversation_id,
                     "assistant".to_string(),
                     full_content.clone(),
                     None,
-                    crate::storage::sqlite_storage_simple::MessageMetadata::default(),
+                    MessageMetadata::default(),
                 );
             }
 
