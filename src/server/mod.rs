@@ -1,7 +1,9 @@
 pub mod conversation_subscriptions;
 pub mod dto;
+mod engine;
 mod handlers;
 mod http;
+mod rig_tools;
 mod websocket;
 
 use crate::server::handlers::{run_scheduled_task, ServerContext};
@@ -12,7 +14,7 @@ use crate::{
     prompts::PromptManager,
     storage::{sqlite_storage_simple::SqliteSettings, Storage},
 };
-use agentic_loop::mcp_servers_registry::MCPServerRegistry;
+use crate::mcp::McpRegistry;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::{path::PathBuf, sync::Arc};
@@ -83,10 +85,10 @@ async fn launch(options: ServerOptions) -> Result<()> {
         });
 
     let storage = Arc::new(Mutex::new(storage));
-    let mcp_registry = Arc::new(RwLock::new(MCPServerRegistry::new()));
+    let mcp_registry = Arc::new(RwLock::new(McpRegistry::new()));
     let subscriptions = Arc::new(conversation_subscriptions::ConversationSubscriptions::new());
     let schedule_service = Arc::new(ScheduleService::new(storage.clone()));
-    let mcp_config = load_mcp_config(&config);
+    let mcp_config = load_mcp_config();
     let default_allowed_tool_names = initialize_mcp_registry(&mcp_registry, &mcp_config, &config).await;
 
     let ctx = Arc::new(ServerContext {
@@ -100,6 +102,7 @@ async fn launch(options: ServerOptions) -> Result<()> {
         memory_dedup: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         default_allowed_tool_names,
         embedding_provider,
+        engine: Arc::new(crate::server::engine::RigEngine),
     });
 
     // Spawn background title generation thread only if profile is configured
@@ -150,32 +153,24 @@ fn load_config(path: Option<&PathBuf>) -> Result<AppConfig, config::ConfigError>
     }
 }
 
-fn load_mcp_config(config: &AppConfig) -> crate::config::MCPConfig {
+/// Load MCP config from JSON only (no fallback to config.mcp).
+fn load_mcp_config() -> crate::config::MCPConfig {
     crate::config::MCPConfig::load_from_json().unwrap_or_else(|err| {
-        tracing::warn!("Failed to load external MCP config: {}", err);
-        config.mcp.clone()
+        tracing::warn!("Failed to load MCP config from JSON: {}; using empty config", err);
+        crate::config::MCPConfig::default()
     })
-}
-
-/// Convert main app MCPConfig to agentic-loop MCPConfig
-fn convert_mcp_config(config: &crate::config::MCPConfig) -> agentic_loop::mcp_config::MCPConfig {
-    // Since both configs have identical structure, convert via JSON
-    let json = serde_json::to_value(config).unwrap_or_default();
-    serde_json::from_value(json).unwrap_or_else(|_| agentic_loop::mcp_config::MCPConfig::new())
 }
 
 /// Initialize MCP registry from config, then apply default profile's tools policy.
 /// Returns the allowed tool names set for the default profile (for SessionState).
 async fn initialize_mcp_registry(
-    registry: &Arc<RwLock<MCPServerRegistry>>,
+    registry: &Arc<RwLock<McpRegistry>>,
     config: &crate::config::MCPConfig,
     app_config: &AppConfig,
 ) -> std::collections::HashSet<String> {
-    // Convert to agentic-loop config type and connect servers
-    let agentic_config = convert_mcp_config(config);
     {
         let mut guard = registry.write().await;
-        if let Err(err) = guard.initialize_from_config(&agentic_config).await {
+        if let Err(err) = guard.initialize_from_config(config).await {
             tracing::warn!("MCP registry init failed: {}", err);
         }
     }
@@ -197,22 +192,17 @@ async fn initialize_mcp_registry(
     // Log all connected servers and their tools
     {
         let guard = registry.read().await;
-        let connected_count = guard.servers.len();
-        let failed_count = guard.failed_servers.len();
+        let statuses = guard.get_all_server_names_and_statuses();
+        let connected_count = statuses.iter().filter(|s| matches!(s.server_status, crate::mcp::ServerStatus::Connected)).count();
+        let failed_count = statuses.iter().filter(|s| matches!(s.server_status, crate::mcp::ServerStatus::Failed(_))).count();
         if connected_count > 0 {
             tracing::info!(count = connected_count, "Connected MCP servers:");
-            for (server_name, server_connection) in guard.servers.iter() {
-                let connection_guard = server_connection.read().await;
-                let tools = connection_guard.tools();
-                let tool_names: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
-                let enabled_count = tool_names.iter()
-                    .filter(|name| guard.tools_white_list.contains(name))
-                    .count();
-                drop(connection_guard);
+            for server_name in guard.get_server_names() {
+                let tools = guard.get_all_tools_by_server_name(&server_name);
+                let tool_names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
                 tracing::info!(
                     server = %server_name,
                     tool_count = tool_names.len(),
-                    enabled_count = enabled_count,
                     tools = %tool_names.join(", ")
                 );
             }
@@ -221,12 +211,10 @@ async fn initialize_mcp_registry(
         }
         if failed_count > 0 {
             tracing::error!(count = failed_count, "Failed to connect to MCP servers:");
-            for (server_name, error_msg) in guard.failed_servers.iter() {
-                tracing::error!(
-                    server = %server_name,
-                    error = %error_msg,
-                    "Failed to connect to MCP server"
-                );
+            for s in &statuses {
+                if let crate::mcp::ServerStatus::Failed(ref err) = s.server_status {
+                    tracing::error!(server = %s.server_name, error = %err, "Failed to connect to MCP server");
+                }
             }
         }
         tracing::info!(

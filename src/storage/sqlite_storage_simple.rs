@@ -403,7 +403,8 @@ impl SqliteStorage {
         Ok(())
     }
 
-    /// Insert a new conversation
+    /// Insert a new conversation (simple wrapper; storage_wrapper uses insert_conversation_with_profile)
+    #[allow(dead_code)]
     pub fn insert_conversation(&self, title: &str) -> SqliteResult<String> {
         self.insert_conversation_with_profile(title, None)
     }
@@ -426,6 +427,7 @@ impl SqliteStorage {
     }
 
     /// Insert a new message (returns rowid; use insert_message_with_metadata for full control)
+    #[allow(dead_code)]
     pub fn insert_message(
         &self,
         conversation_id: &str,
@@ -657,7 +659,8 @@ impl SqliteStorage {
         Ok(changes > 0)
     }
 
-    /// Insert a summary message (replaces old messages)
+    /// Insert a summary message (replaces old messages; perform_summarization uses UPDATE + INSERT instead)
+    #[allow(dead_code)]
     pub fn insert_summary_message(
         &self,
         conversation_id: &str,
@@ -693,7 +696,8 @@ impl SqliteStorage {
         Ok(())
     }
 
-    /// Delete messages by IDs (used during summarization)
+    /// Delete messages by IDs (used during summarization; perform_summarization marks summarized instead)
+    #[allow(dead_code)]
     pub fn delete_messages(&self, message_ids: &[i64]) -> SqliteResult<usize> {
         if message_ids.is_empty() {
             return Ok(0);
@@ -834,6 +838,7 @@ impl SqliteStorage {
     }
 
     /// List all conversations ordered by creation date (newest first)
+    #[allow(dead_code)]
     pub fn list_conversations(&self) -> SqliteResult<Vec<Conversation>> {
         self.list_conversations_paginated(None, None)
     }
@@ -887,6 +892,7 @@ impl SqliteStorage {
     }
 
     /// Get the database connection (for advanced operations)
+    #[allow(dead_code)]
     pub fn connection(&self) -> &Connection {
         &self.conn
     }
@@ -1257,6 +1263,7 @@ impl SqliteStorage {
     }
 
     /// Get the maximum message ID in the database.
+    #[allow(dead_code)]
     pub fn get_max_message_id(&self) -> SqliteResult<i64> {
         self.conn
             .query_row("SELECT COALESCE(MAX(id), 0) FROM messages", [], |row| {

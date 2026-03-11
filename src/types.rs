@@ -4,6 +4,17 @@
 //! It serves as a bridge between storage layer (which uses strings for roles)
 //! and LLM layer (which uses Role enum).
 
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// Planned tool call view for wire protocol (ToolPlanned event).
+#[derive(Debug, Serialize, Clone, Deserialize)]
+pub struct PlannedToolView {
+    pub id: String,
+    pub name: String,
+    pub params_json: Value,
+}
+
 use crate::llm::{Message as LlmMessage, Role};
 use crate::storage::sqlite_storage_simple::Message as StorageMessage;
 use chrono::{DateTime, Utc};
@@ -55,8 +66,3 @@ impl From<&StorageMessage> for LlmMessage {
         llm_msg
     }
 }
-
-// Function removed - not used anywhere
-
-// Re-exports removed - not used anywhere
-

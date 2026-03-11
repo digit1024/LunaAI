@@ -15,6 +15,7 @@ pub trait EmbeddingProvider: Send + Sync {
     async fn embed(&self, text: &str) -> Result<Vec<f32>>;
 
     /// Expected dimension of the embedding vector.
+    #[allow(dead_code)] // Trait contract; impls provide it
     fn dimensions(&self) -> usize;
 }
 

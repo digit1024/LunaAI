@@ -4,6 +4,7 @@ mod embeddings;
 mod llm;
 mod mcp;
 mod prompts;
+mod rig_core;
 mod server;
 mod services;
 mod storage;
@@ -39,11 +40,13 @@ struct Cli {
 
 pub fn tracing() {
     use tracing_subscriber::EnvFilter;
-    let base = EnvFilter::from_default_env();
-    // Suppress noisy logs: hyper_util DEBUG (connection pooling), mcp_stderr WARN (MCP subprocess stderr)
+    let base = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+    // Suppress noisy: hyper_util, mcp_stderr. Enable Rig spans for traceability (rig=info; use rig=trace for request/response logs).
     let filter = base
         .add_directive("hyper_util=info".parse().unwrap())
         .add_directive("mcp_stderr=error".parse().unwrap());
+
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .init();

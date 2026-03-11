@@ -64,7 +64,9 @@ struct OpenAIToolCallFunction {
 struct OpenAIToolCallDelta {
     index: Option<usize>,
     id: Option<String>,
-    r#type: Option<String>,
+    #[serde(rename = "type")]
+    #[allow(dead_code)] // Deserialized for API compatibility
+    _type: Option<String>,
     function: Option<OpenAIToolCallFunctionDelta>,
 }
 

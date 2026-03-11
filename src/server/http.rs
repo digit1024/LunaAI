@@ -214,41 +214,31 @@ pub async fn list_mcp_servers_handler(
     }
 
     let registry = ctx.mcp_registry.read().await;
-    let servers_with_status = registry
-        .get_all_server_names_and_statuses()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let servers_with_status = registry.get_all_server_names_and_statuses();
 
     // Get tool counts for connected servers
     let mut tool_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-    for (server_name, server_connection) in registry.servers.iter() {
-        let connection_guard = server_connection.read().await;
-        let count = connection_guard.tools().len() as u32;
-        drop(connection_guard);
-        tool_counts.insert(server_name.clone(), count);
+    for server_name in registry.get_server_names() {
+        let count = registry.get_all_tools_by_server_name(&server_name).len() as u32;
+        tool_counts.insert(server_name, count);
     }
-    drop(registry); // Release the read lock
 
     let servers: Vec<MCPServerInfo> = servers_with_status
         .into_iter()
         .map(|server| {
             let tool_count = match &server.server_status {
-                agentic_loop::mcp_servers_registry::model::ServerStatus::Connected => {
+                crate::mcp::ServerStatus::Connected => {
                     tool_counts.get(&server.server_name).copied().unwrap_or(0)
                 }
-                agentic_loop::mcp_servers_registry::model::ServerStatus::Failed(_) => 0,
+                crate::mcp::ServerStatus::Failed(_) => 0,
             };
-            
+
             MCPServerInfo {
                 name: server.server_name,
                 tool_count,
                 status: match server.server_status {
-                    agentic_loop::mcp_servers_registry::model::ServerStatus::Connected => {
-                        MCPServerStatus::Connected
-                    }
-                    agentic_loop::mcp_servers_registry::model::ServerStatus::Failed(error) => {
-                        MCPServerStatus::Failed { error }
-                    }
+                    crate::mcp::ServerStatus::Connected => MCPServerStatus::Connected,
+                    crate::mcp::ServerStatus::Failed(error) => MCPServerStatus::Failed { error },
                 },
             }
         })

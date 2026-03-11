@@ -100,6 +100,3 @@ pub async fn generate_title_from_messages(
 
     Ok(truncated_title)
 }
-
-// Function removed - not used anywhere
-

@@ -5,8 +5,8 @@
 # Config shape: model_presets (identity + request params), tools_policies (MCP/tool allow/deny),
 # profiles (reference a preset + policy + prompts). No backward compat with old profile fields.
 
-# Default profile to use for new conversations
-default = "openai"
+# Default profile to use for new conversations (Rig is the engine for all profiles)
+default = "rig_default"
 
 # ── Model presets: backend, model, full endpoint URL, api_key, optional request params ──
 # Endpoint = full URL we POST to (no path appended). Only include params you want sent (no defaults).
@@ -73,6 +73,13 @@ hidden = false
 [profiles.ollama]
 model_preset = "ollama_local"
 prompts = []
+tools_policy = "default"
+hidden = false
+
+# Rig-based engine (default). OpenAI backend only.
+[profiles.rig_default]
+model_preset = "openai_gpt4o"
+prompts = ["profiles/openai.md"]
 tools_policy = "default"
 hidden = false
 

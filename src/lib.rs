@@ -1,5 +1,6 @@
 pub mod agentic;
 pub mod config;
+pub mod rig_core;
 pub mod embeddings;
 pub mod llm;
 pub mod mcp;

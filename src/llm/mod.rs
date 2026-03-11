@@ -1,4 +1,3 @@
-use crate::config::LlmProfile;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -73,7 +72,6 @@ pub struct Message {
 pub struct Attachment {
     pub file_path: String,
     pub file_name: String,
-    #[allow(dead_code)] // Field used for serialization
     pub mime_type: String,
     pub file_size: u64,
     pub content: Option<String>, // For text files, store content directly
@@ -89,19 +87,6 @@ impl Message {
             tool_call_id: None,
             tool_calls: None,
             attachments: None,
-            reasoning_content: None,
-        }
-    }
-
-    pub fn new_with_attachments(role: Role, content: String, attachments: Vec<Attachment>) -> Self {
-        Self {
-            role,
-            content,
-            timestamp: Some(Utc::now()),
-            is_prompt: false,
-            tool_call_id: None,
-            tool_calls: None,
-            attachments: Some(attachments),
             reasoning_content: None,
         }
     }
@@ -164,24 +149,21 @@ pub struct ToolDefinition {
 pub struct ChatResponse {
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
-    pub reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
+    #[allow(dead_code)] // API response field (DeepSeek etc)
+    pub reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub struct ToolResult {
-    pub content: String,
-    pub is_error: bool,
-}
-
-#[derive(Debug, Clone)]
+#[allow(dead_code)] // Variant payloads produced by backends; Rig path consumes stream differently
 pub enum ChatStreamEvent {
     ContentDelta(String),
     ToolCallDelta(ToolCall),
-    ReasoningContentDelta(String), // For DeepSeek thinking/reasoning content
+    ReasoningContentDelta(String),
 }
 
 #[async_trait]
 pub trait LlmClient: Send + Sync {
+    #[allow(dead_code)] // Trait contract; backends implement for title/summarization
     async fn send_message_stream(
         &self,
         messages: Vec<Message>,
@@ -198,6 +180,7 @@ pub trait LlmClient: Send + Sync {
         max_tokens: Option<u32>,
     ) -> Result<ChatResponse, LlmError>;
 
+    #[allow(dead_code)] // Trait contract; default impl
     async fn send_message_stream_with_tools(
         &self,
         messages: Vec<Message>,
@@ -215,7 +198,6 @@ pub trait LlmClient: Send + Sync {
 
 pub mod anthropic;
 pub mod context_manager;
-pub mod file_utils;
 pub mod gemini;
 pub mod ollama;
 pub mod openai;

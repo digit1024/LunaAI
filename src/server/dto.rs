@@ -87,6 +87,8 @@ pub enum ServerEvent {
         chunk: String,
         seq: u64,
     },
+    /// Wire protocol: DeepSeek reasoning/thinking chunks. Kept for spec compatibility.
+    #[allow(dead_code)] // Wire protocol (serverspec)
     ReasoningContentDelta {
         conversation_id: String,
         chunk: String,
@@ -96,6 +98,8 @@ pub enum ServerEvent {
         content: String,
         reasoning_content: Option<String>,
     },
+    /// Wire protocol: Pre-announce planned tool calls. Emitted before ToolStarted so clients
+    /// place tool bubbles between assistant turn 1 and turn 2 (correct ordering).
     ToolPlanned {
         conversation_id: String,
         tools: Vec<PlannedToolView>,
@@ -181,12 +185,7 @@ fn is_false(b: &bool) -> bool {
     !b
 }
 
-#[derive(Debug, Serialize, Clone)]
-pub struct PlannedToolView {
-    pub id: String,
-    pub name: String,
-    pub params_json: Value,
-}
+pub use crate::types::PlannedToolView;
 
 impl From<&StoredMessage> for MessageView {
     fn from(msg: &StoredMessage) -> Self {

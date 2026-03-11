@@ -95,19 +95,19 @@ tokio-util = { version = "0.7", features = ["codec", "io"] }
 # Glob pattern matching for tools policy (enabled_mcp, enabled_tools, disabled_tools)
 globset = "0.4"
 
-# Agentic loop library (MCP support)
-agentic-loop = { path = "agentic-loop" }
+# Rig: LLM orchestration (canonical engine) with rmcp for MCP
+rig-core = { version = "0.32", features = ["rmcp"] }
 
-# MCP SDK (needed for type conversions)
-rust-mcp-sdk = { version = "0.8.1", default-features = false, features = ["client", "stdio"] }
+# MCP client (rmcp) for stdio child process transport
+rmcp = { version = "0.16", features = ["client", "macros", "transport-child-process"] }
+async-stream = "0.3"
 
 [dev-dependencies]
 tokio-test = "0.4"
 
 [features]
-default = ["openai", "anthropic"]
-openai = []
-anthropic = []
+default = []
+
 
 [workspace]
-members = [".", "luna_thin_ui", "agentic-loop"]
+members = [".", "luna_thin_ui"]

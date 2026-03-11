@@ -1,2 +1,8 @@
-pub mod conversions;
-pub use conversions::{tool_call_to_params, tools_to_definitions};
+//! MCP (Model Context Protocol) client and registry using rmcp.
+
+pub mod client;
+pub mod model;
+pub mod registry;
+
+pub use model::ServerStatus;
+pub use registry::McpRegistry;

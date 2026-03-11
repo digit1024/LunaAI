@@ -4,7 +4,7 @@ use std::path::Path;
 use tracing;
 use uuid::Uuid;
 
-use super::conversation_storage::{Conversation as FileConversation, StoredMessage, Turn};
+use super::conversation_storage::{Conversation as FileConversation, StoredMessage};
 use super::sqlite_storage_simple::{MessageMetadata, ScheduledJob, SqliteSettings, SqliteStorage};
 
 /// Wrapper that provides compatibility with the existing file-based storage API
@@ -44,11 +44,6 @@ impl Storage {
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join("cosmic_llm")
             .join("conversations.db")
-    }
-
-    /// Create a new conversation
-    pub fn create_conversation(&self, title: String) -> SqliteResult<Uuid> {
-        self.create_conversation_with_profile(title, None)
     }
 
     /// Create a new conversation with profile
@@ -115,18 +110,6 @@ impl Storage {
         } else {
             Ok(None)
         }
-    }
-
-    /// Get a mutable reference to a conversation
-    pub fn get_conversation_mut(&mut self, _id: &Uuid) -> Option<&mut FileConversation> {
-        // Note: This is not easily implementable with SQLite without loading all data
-        // For now, return None - this method would need to be refactored in the calling code
-        None
-    }
-
-    /// List all conversations
-    pub fn list_conversations(&self) -> SqliteResult<Vec<FileConversation>> {
-        self.list_conversations_paginated(None, None)
     }
 
     /// List conversations with pagination
@@ -243,16 +226,6 @@ impl Storage {
             .map_err(|e| rusqlite::Error::InvalidParameterName(format!("Invalid UUID: {}", e)))
     }
 
-    /// Add a turn to a conversation (not yet implemented in SQLite)
-    pub fn add_turn_to_conversation(
-        &self,
-        _conversation_id: &Uuid,
-        _turn: Turn,
-    ) -> SqliteResult<()> {
-        // TODO: Implement turn storage in SQLite
-        Ok(())
-    }
-
     /// Delete a conversation
     pub fn delete_conversation(&self, conversation_id: &Uuid) -> SqliteResult<bool> {
         let id_str = conversation_id.to_string();
@@ -344,33 +317,6 @@ impl Storage {
         limit: usize,
     ) -> SqliteResult<Vec<super::sqlite_storage_simple::Snippet>> {
         self.sqlite.search_history(query, limit)
-    }
-
-    /// List conversations from index (compatibility method)
-    pub fn list_conversations_from_index(
-        &self,
-    ) -> SqliteResult<Vec<super::conversation_storage::ConversationIndex>> {
-        let db_conversations = self.sqlite.list_conversations()?;
-        let mut index = Vec::new();
-
-        for db_conv in db_conversations {
-            let id = Uuid::parse_str(&db_conv.id).map_err(|e| {
-                rusqlite::Error::InvalidParameterName(format!("Invalid UUID: {}", e))
-            })?;
-
-            // Use last_message for updated_at if available, otherwise use created_at
-            let updated_at_timestamp = db_conv.last_message.unwrap_or(db_conv.created_at);
-            index.push(super::conversation_storage::ConversationIndex {
-                id,
-                title: db_conv.title,
-                created_at: DateTime::from_timestamp(db_conv.created_at, 0)
-                    .unwrap_or_else(Utc::now),
-                updated_at: DateTime::from_timestamp(updated_at_timestamp, 0)
-                    .unwrap_or_else(Utc::now),
-            });
-        }
-
-        Ok(index)
     }
 
     /// Get conversations without generated titles
@@ -514,11 +460,6 @@ impl Storage {
     ) -> SqliteResult<Vec<super::sqlite_storage_simple::Conversation>> {
         self.sqlite
             .get_conversations_with_messages_after(message_id, limit)
-    }
-
-    /// Get the maximum message ID
-    pub fn get_max_message_id(&self) -> SqliteResult<i64> {
-        self.sqlite.get_max_message_id()
     }
 
     /// Record memories recalled (injected) in this conversation

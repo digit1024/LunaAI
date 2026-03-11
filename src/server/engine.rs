@@ -108,35 +108,36 @@ impl ConversationEngine for RigEngine {
 
         let handle = tokio::spawn(
             async move {
-                let tools = if allowed_tool_names.is_empty() {
-                vec![]
-            } else {
-                match crate::server::rig_tools::build_all_tools(
-                    &mcp_registry,
-                    &allowed_tool_names,
-                    subscriptions.clone(),
-                    conversation_id,
-                    profile_name,
-                    schedule_service,
-                    storage.clone(),
-                    embedding_provider,
-                )
-                .await
-                {
-                    Ok(t) => t,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Failed to build tools for Rig, continuing without tools");
-                        vec![]
+                let (mcp_servers, internal_tools) = if allowed_tool_names.is_empty() {
+                    (vec![], vec![])
+                } else {
+                    match crate::server::rig_tools::build_turn_tools(
+                        &mcp_registry,
+                        &allowed_tool_names,
+                        subscriptions.clone(),
+                        conversation_id,
+                        profile_name,
+                        schedule_service,
+                        storage.clone(),
+                        embedding_provider,
+                    )
+                    .await
+                    {
+                        Ok(t) => t,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to build tools for Rig, continuing without tools");
+                            (vec![], vec![])
+                        }
                     }
-                }
-            };
+                };
 
             let rig_ctx = RigConversationContext {
                 messages: history,
                 user_message,
                 preset,
                 preamble: preamble.clone(),
-                mcp_tools: tools,
+                mcp_servers,
+                internal_tools,
             };
 
             let mut stream = match run_turn_streaming(rig_ctx).await {
@@ -184,8 +185,6 @@ impl ConversationEngine for RigEngine {
                                 .await;
                         }
                         Ok(StreamChunk::Final(final_text)) => {
-                            // Append only the suffix not already received (avoids duplication
-                            // when stream had full content; fills gap when provider only streams turn 1).
                             if final_text.len() > full_content.len() {
                                 let suffix = &final_text[full_content.len()..];
                                 full_content.push_str(suffix);
@@ -201,6 +200,67 @@ impl ConversationEngine for RigEngine {
                                     )
                                     .await;
                             }
+                        }
+                        Ok(StreamChunk::ToolPlanned { tools }) => {
+                            let _ = subscriptions
+                                .broadcast(
+                                    conversation_id,
+                                    ServerEvent::ToolPlanned {
+                                        conversation_id: cid_str.clone(),
+                                        tools,
+                                    },
+                                )
+                                .await;
+                        }
+                        Ok(StreamChunk::ToolStarted {
+                            tool_call_id,
+                            name,
+                            params_json,
+                        }) => {
+                            let _ = subscriptions
+                                .broadcast(
+                                    conversation_id,
+                                    ServerEvent::ToolStarted {
+                                        conversation_id: cid_str.clone(),
+                                        tool_call_id,
+                                        name,
+                                        params_json,
+                                    },
+                                )
+                                .await;
+                        }
+                        Ok(StreamChunk::ToolResult {
+                            tool_call_id,
+                            name,
+                            result_json,
+                            is_error,
+                        }) => {
+                            let _ = if is_error {
+                                subscriptions.broadcast(
+                                    conversation_id,
+                                    ServerEvent::ToolError {
+                                        conversation_id: cid_str.clone(),
+                                        tool_call_id,
+                                        name,
+                                        error: result_json
+                                            .get("content")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                    },
+                                )
+                            } else {
+                                subscriptions.broadcast(
+                                    conversation_id,
+                                    ServerEvent::ToolResult {
+                                        conversation_id: cid_str.clone(),
+                                        tool_call_id,
+                                        name,
+                                        result_json,
+                                    },
+                                )
+                            }
+                            .await;
                         }
                         Err(e) => {
                             let _ = subscriptions
