@@ -191,7 +191,7 @@ fn default_server_port() -> u16 {
 }
 
 fn default_server_api_key() -> String {
-    "LUna".to_string()
+    "NyX".to_string()
 }
 
 fn default_stream_timeout_secs() -> u64 {

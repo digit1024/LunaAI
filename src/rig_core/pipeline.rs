@@ -139,7 +139,7 @@ pub async fn run_turn_streaming(
 
     let stream_req = agent
         .stream_chat(context.user_message.clone(), rig_history)
-        .multi_turn(10);
+        .multi_turn(64);
     let mut rig_stream = stream_req.await;
 
     use futures::StreamExt;
@@ -178,7 +178,7 @@ pub async fn run_turn_streaming(
                         .get(&tool_result.id)
                         .cloned()
                         .unwrap_or_else(|| tool_result.id.clone());
-                    let content: String = tool_result
+                    let raw: String = tool_result
                         .content
                         .iter()
                         .filter_map(|c| {
@@ -190,6 +190,9 @@ pub async fn run_turn_streaming(
                         })
                         .collect::<Vec<_>>()
                         .join("\n");
+                    let config = crate::safety::SafetyConfig::default();
+                    let sanitized = crate::safety::sanitize_tool_output(&name, &raw, &config);
+                    let content = sanitized.content;
                     let result_json = serde_json::json!({ "content": content, "is_error": false });
                     yield Ok(StreamChunk::ToolResult {
                         tool_call_id: tool_result.id,

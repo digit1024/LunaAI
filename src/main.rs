@@ -5,6 +5,7 @@ mod llm;
 mod mcp;
 mod prompts;
 mod rig_core;
+mod safety;
 mod server;
 mod services;
 mod storage;
