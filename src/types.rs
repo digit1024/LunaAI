@@ -45,6 +45,23 @@ impl From<&StorageMessage> for LlmMessage {
                     LlmMessage::new(role, storage_msg.content.clone())
                 }
             }
+            Role::User => {
+                if let Some(ref atts) = storage_msg.attachments {
+                    if !atts.is_empty() {
+                        let mut cloned = atts.clone();
+                        let _ = crate::llm::file_utils::hydrate_attachments_for_llm(&mut cloned);
+                        LlmMessage::new_with_attachments(
+                            role,
+                            storage_msg.content.clone(),
+                            cloned,
+                        )
+                    } else {
+                        LlmMessage::new(role, storage_msg.content.clone())
+                    }
+                } else {
+                    LlmMessage::new(role, storage_msg.content.clone())
+                }
+            }
             _ => LlmMessage::new(role, storage_msg.content.clone()),
         };
         

@@ -39,6 +39,8 @@ pub enum ClientCommand {
     SendMessage {
         conversation_id: Option<String>,
         content: String,
+        #[serde(default)]
+        attachment_ids: Option<Vec<String>>,
     },
 }
 
@@ -201,7 +203,7 @@ impl From<&StoredMessage> for MessageView {
             tool_status: msg.tool_status.clone(),
             tool_params_json: msg.tool_params_json.clone(),
             tool_result_json: msg.tool_result_json.clone(),
-            attachments: None, // StoredMessage doesn't have attachments yet
+            attachments: msg.attachments.clone(),
             reasoning_content: msg.reasoning_content.clone(),
             is_summary: msg.is_summary,
             summarized_count: msg.summarized_count,

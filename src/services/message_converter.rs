@@ -95,7 +95,25 @@ impl MessageConverter {
                 msg.content.clone()
             };
 
-            let mut llm_msg = LlmMessage::new(role.clone(), content);
+            let mut llm_msg = if role == Role::User {
+                if let Some(ref atts) = msg.attachments {
+                    if !atts.is_empty() {
+                        let mut cloned = atts.clone();
+                        if let Err(e) =
+                            crate::llm::file_utils::hydrate_attachments_for_llm(&mut cloned)
+                        {
+                            warn!(error = %e, "Failed to hydrate attachments from disk");
+                        }
+                        LlmMessage::new_with_attachments(role.clone(), content.clone(), cloned)
+                    } else {
+                        LlmMessage::new(role.clone(), content)
+                    }
+                } else {
+                    LlmMessage::new(role.clone(), content)
+                }
+            } else {
+                LlmMessage::new(role.clone(), content)
+            };
 
             // Preserve tool call metadata
             if role == Role::Tool {
@@ -189,6 +207,7 @@ mod tests {
                 is_summarized: false,
                 summarized_message_ids: None,
                 summarized_count: None,
+                attachments: None,
             },
             StorageMessage {
                 id: 2,
@@ -208,6 +227,7 @@ mod tests {
                 is_summarized: false,
                 summarized_message_ids: None,
                 summarized_count: None,
+                attachments: None,
             },
             StorageMessage {
                 id: 3,
@@ -227,6 +247,7 @@ mod tests {
                 is_summarized: false,
                 summarized_message_ids: None,
                 summarized_count: None,
+                attachments: None,
             },
         ];
 
@@ -260,6 +281,7 @@ mod tests {
                 is_summarized: true, // Summarized
                 summarized_message_ids: None,
                 summarized_count: None,
+                attachments: None,
             },
             StorageMessage {
                 id: 2,
@@ -279,6 +301,7 @@ mod tests {
                 is_summarized: false,
                 summarized_message_ids: None,
                 summarized_count: Some(1),
+                attachments: None,
             },
         ];
 

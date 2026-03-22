@@ -329,15 +329,14 @@ class AppController extends Notifier<AppState> {
         file,
         conversationId: state.activeConversation?.id,
       );
-      final template =
-          'User uploaded file ${result.originalName}. It has been stored under ${result.storedPath}. '
-          'You should obtain content of this file if possible.';
-      _appendUserMessage(template);
+      final label = result.originalName;
+      _appendUserMessage('📎 $label');
       await guard.ensureStarted('Streaming reply');
       _waitingForResponse = true;
       wsClient.send(ClientCommand.sendMessage(
         conversationId: state.activeConversation?.id,
-        content: template,
+        content: label,
+        attachmentIds: [result.uid],
       ));
     } catch (e) {
       debugPrint('Error attaching file: $e');

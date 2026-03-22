@@ -55,21 +55,12 @@ pub fn handle_chat_messages(
                 None
             }
         }
-        Message::UploadSuccess {
-            stored_path,
-            original_name,
-            ..
-        } => {
-            let template = format!(
-                "User uploaded file {}. It has been stored under {}. You should obtain content of this file if possible.",
-                original_name, stored_path
-            );
-            app.messages.push(ChatMessage::user(template.clone()));
-            crate::ui::audio::AudioService::play_sound("sent.mp3");
-            app.send_command(crate::server::dto::ClientCommand::SendMessage {
-                conversation_id: app.current_conversation_id.clone(),
-                content: template,
-            });
+        Message::UploadSuccess { uid, original_name, .. } => {
+            app.pending_attachment_ids.push(uid);
+            app.messages.push(ChatMessage::user(format!(
+                "📎 Attached: {} (send a message to include it)",
+                original_name
+            )));
             None
         }
         Message::FileUploadError(error) => {
@@ -142,30 +133,42 @@ pub fn handle_chat_messages(
 
 /// Handle SendMessage - the main chat handler
 fn handle_send_message(app: &mut LunaThinApp) -> Option<app::Task<Message>> {
-    if app.input_text.trim().is_empty() || app.connection_status != ConnectionStatus::Connected {
+    let has_pending = !app.pending_attachment_ids.is_empty();
+    if app.connection_status != ConnectionStatus::Connected {
+        return None;
+    }
+    if app.input_text.trim().is_empty() && !has_pending {
         return None;
     }
 
     // Save content before clearing
     let message_content = app.input_text.clone();
-    
+    let attachment_ids = if app.pending_attachment_ids.is_empty() {
+        None
+    } else {
+        Some(std::mem::take(&mut app.pending_attachment_ids))
+    };
+
     // Clear input immediately when message is sent
     app.input_text.clear();
     app.chat_page.input_content = text_editor::Content::new();
 
     // Reset assistant bubble tracking for new conversation turn
     app.current_assistant_bubble_id = None;
-    
-    // Add user message immediately (only if not empty)
-    if !message_content.trim().is_empty() {
-        app.messages.push(ChatMessage::user(message_content.clone()));
-    }
+
+    let bubble_text = if message_content.trim().is_empty() {
+        "(attachment)".to_string()
+    } else {
+        message_content.clone()
+    };
+    app.messages.push(ChatMessage::user(bubble_text));
 
     crate::ui::audio::AudioService::play_sound("sent.mp3");
 
     app.send_command(crate::server::dto::ClientCommand::SendMessage {
         conversation_id: app.current_conversation_id.clone(),
         content: message_content,
+        attachment_ids,
     });
 
     None

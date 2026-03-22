@@ -24,7 +24,12 @@ use crate::{
 use agentic_loop::mcp_servers_registry::MCPServerRegistry;
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
-use std::{collections::{HashMap, HashSet}, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    sync::Arc,
+    time::Duration,
+};
 use tokio::{
     sync::{mpsc::UnboundedSender, Mutex, RwLock},
     task::JoinHandle,
@@ -156,7 +161,8 @@ impl ServerHandler {
             ClientCommand::SendMessage {
                 conversation_id,
                 content,
-            } => self.handle_send_message(conversation_id, content).await,
+                attachment_ids,
+            } => self.handle_send_message(conversation_id, content, attachment_ids).await,
             ClientCommand::DeleteConversation { conversation_id } => {
                 self.handle_delete_conversation(conversation_id).await
             }
@@ -365,8 +371,13 @@ impl ServerHandler {
         &mut self,
         conversation_id: Option<String>,
         content: String,
+        attachment_ids: Option<Vec<String>>,
     ) -> Result<()> {
-        if content.trim().is_empty() {
+        let has_attachments = attachment_ids
+            .as_ref()
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        if content.trim().is_empty() && !has_attachments {
             return Err(anyhow!("Cannot send an empty message"));
         }
 
@@ -402,8 +413,78 @@ impl ServerHandler {
             conv_id
         };
 
+        let uploads_base = self.ctx.config.uploads_dir();
+        let rag_cfg = self.ctx.config.attachment_rag.clone();
+        let emb = self.ctx.embedding_provider.as_deref();
+
+        let mut resolved_attachments: Vec<crate::llm::Attachment> = Vec::new();
+        let mut resolved_uids: Vec<String> = Vec::new();
+        if let Some(ids) = attachment_ids.as_ref() {
+            for uid in ids {
+                let uid = uid.trim();
+                if uid.is_empty() {
+                    return Err(anyhow!("Invalid empty attachment id"));
+                }
+                let path = resolve_attachment_upload_path(&uploads_base, &conversation_uuid, uid)
+                    .with_context(|| format!("resolve attachment {}", uid))?;
+                let path_str = path
+                    .to_str()
+                    .ok_or_else(|| anyhow!("attachment path is not valid UTF-8"))?
+                    .to_string();
+                let stem_uid = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(uid)
+                    .to_string();
+                let mut att =
+                    crate::llm::file_utils::create_attachment(&path_str).context("create_attachment")?;
+                crate::llm::file_utils::validate_file_for_llm(&att)?;
+                if att.mime_type.starts_with("text/") || att.mime_type == "text/markdown" {
+                    att.content = crate::services::attachment_rag::trim_extracted_text_for_inline(
+                        att.content.take(),
+                        rag_cfg.inline_max_chars,
+                    );
+                }
+                resolved_uids.push(stem_uid);
+                resolved_attachments.push(att);
+            }
+        }
+
+        let storage_arc = self.ctx.storage.clone();
+        for (att, uid) in resolved_attachments.iter().zip(resolved_uids.iter()) {
+            if let Err(e) = crate::services::attachment_rag::index_large_attachment_if_needed(
+                storage_arc.clone(),
+                emb,
+                &rag_cfg,
+                &conversation_uuid.to_string(),
+                uid,
+                &att.file_name,
+                &att.file_path,
+            )
+            .await
+            {
+                tracing::warn!(error = %e, attachment_uid = %uid, "Attachment RAG indexing failed");
+            }
+        }
+
+        let to_store = crate::llm::file_utils::strip_attachments_for_storage(resolved_attachments);
+        let metadata = MessageMetadata {
+            attachments: if to_store.is_empty() {
+                None
+            } else {
+                Some(to_store.as_slice())
+            },
+            ..MessageMetadata::default()
+        };
+
         let message_id = storage
-            .add_message_to_conversation(&conversation_uuid, "user".to_string(), content.clone())
+            .add_message_with_metadata(
+                &conversation_uuid,
+                "user".to_string(),
+                content.clone(),
+                None,
+                metadata,
+            )
             .context("failed to persist user message")?;
         drop(storage);
 
@@ -423,9 +504,8 @@ impl ServerHandler {
             .await;
 
         let resolved = self.session.active_resolved(&self.ctx.config)?.clone();
-        let mut llm_messages = self.build_llm_messages(conversation_uuid).await?;
+        let llm_messages = self.build_llm_messages(conversation_uuid).await?;
         let prompt_manager = self.ctx.prompt_manager.clone();
-        llm_messages.push(LlmMessage::new(Role::User, content.clone()));
 
         let agent_messages = ContextService::inject_prompts(llm_messages, &prompt_manager, resolved.profile())?;
 
@@ -785,6 +865,41 @@ impl ServerHandler {
     }
 }
 
+/// Locate an uploaded file by attachment UUID prefix under `uploads/{conversation_id}/`,
+/// or `uploads/_no_conversation/` when the client uploaded before a conversation id existed.
+fn resolve_attachment_upload_path(
+    uploads_base: &Path,
+    conversation_id: &Uuid,
+    attachment_uid: &str,
+) -> Result<std::path::PathBuf> {
+    let dirs = [
+        uploads_base.join(conversation_id.to_string()),
+        uploads_base.join("_no_conversation"),
+    ];
+    for dir in dirs {
+        if !dir.is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(&dir).context("read upload directory")? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with(attachment_uid) {
+                let p = entry.path();
+                let meta = std::fs::symlink_metadata(&p)?;
+                if meta.file_type().is_symlink() {
+                    return Err(anyhow!("attachment path must not be a symlink"));
+                }
+                return Ok(p);
+            }
+        }
+    }
+    Err(anyhow!(
+        "no file found for attachment id {}",
+        attachment_uid
+    ))
+}
+
 /// Spawn the agent task for a conversation. Used by handle_send_message and run_scheduled_task.
 pub fn spawn_agent_task(
     ctx: Arc<ServerContext>,
@@ -804,6 +919,7 @@ pub fn spawn_agent_task(
         profile_name: profile_name.clone(),
         allowed_tool_names,
         embedding_provider: ctx.embedding_provider.clone(),
+        attachment_rag: ctx.config.attachment_rag.clone(),
     };
 
     tokio::spawn(async move {
@@ -1084,6 +1200,7 @@ impl PersistenceContext {
         let metadata = MessageMetadata {
             tool_calls: tool_calls_slice,
             reasoning_content,
+            attachments: None,
             ..MessageMetadata::default()
         };
         self.storage
@@ -1140,6 +1257,7 @@ impl PersistenceContext {
             tool_params_json: params,
             tool_result_json: Some(&result_value),
             reasoning_content: None,
+            attachments: None,
         };
         // Use empty content - tool_result_json holds the actual data
         self.storage

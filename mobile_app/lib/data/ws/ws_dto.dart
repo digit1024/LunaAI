@@ -428,10 +428,13 @@ class ClientCommand {
   static ClientCommand sendMessage({
     String? conversationId,
     required String content,
+    List<String>? attachmentIds,
   }) =>
       ClientCommand('send_message', {
         if (conversationId != null) 'conversation_id': conversationId,
         'content': content,
+        if (attachmentIds != null && attachmentIds.isNotEmpty)
+          'attachment_ids': attachmentIds,
       });
   static ClientCommand changeProfile(String profile) =>
       ClientCommand('change_profile', {'profile': profile});

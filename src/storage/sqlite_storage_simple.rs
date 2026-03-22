@@ -6,7 +6,10 @@ use std::path::Path;
 use std::time::Duration;
 use uuid::Uuid;
 
-use crate::{config::ServerConfig, llm::ToolCall};
+use crate::{
+    config::ServerConfig,
+    llm::{Attachment, ToolCall},
+};
 
 // Load sqlite-vec extension for memory vector search (must be called before opening any connection)
 fn load_sqlite_vec_extension() {
@@ -59,6 +62,9 @@ pub struct Message {
     pub is_summarized: bool, // True if this message has been summarized (should be excluded from LLM payload)
     pub summarized_message_ids: Option<Vec<i64>>, // IDs of messages that were summarized
     pub summarized_count: Option<usize>,          // Count of messages summarized
+    /// JSON-serialized `Vec<Attachment>` for user messages with files; omit image `content` when persisted.
+    #[serde(default)]
+    pub attachments: Option<Vec<Attachment>>,
 }
 
 /// Represents a search snippet from FTS5
@@ -68,6 +74,16 @@ pub struct Snippet {
     pub content: String,
     pub timestamp: i64,
     pub rank: f64,
+}
+
+/// Vector search hit over chunked attachment text (same conversation only).
+#[derive(Debug, Clone)]
+pub struct AttachmentDocSearchHit {
+    pub attachment_uid: String,
+    pub file_name: String,
+    pub chunk_index: i32,
+    pub text: String,
+    pub distance: f32,
 }
 
 /// A long-term memory entry
@@ -248,6 +264,10 @@ impl SqliteStorage {
             [],
         );
 
+        let _ = self
+            .conn
+            .execute("ALTER TABLE messages ADD COLUMN attachments_json TEXT", []);
+
         // Create FTS5 virtual table for full-text search
         self.conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -397,6 +417,36 @@ impl SqliteStorage {
                 if let Err(e) = self.conn.execute(&sql, []) {
                     tracing::warn!(error = %e, dim, "Failed to create memory_vec table");
                 }
+
+                // Chunked attachment text for semantic search (same embedding dimension as memory)
+                self.conn.execute(
+                    "CREATE TABLE IF NOT EXISTS attachment_doc_chunk (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        conversation_id TEXT NOT NULL,
+                        attachment_uid TEXT NOT NULL,
+                        file_name TEXT NOT NULL,
+                        chunk_index INTEGER NOT NULL,
+                        text TEXT NOT NULL,
+                        content_hash TEXT NOT NULL
+                    )",
+                    [],
+                )?;
+                self.conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_attachment_chunk_conv ON attachment_doc_chunk(conversation_id)",
+                    [],
+                )?;
+                self.conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_attachment_chunk_uid ON attachment_doc_chunk(conversation_id, attachment_uid)",
+                    [],
+                )?;
+
+                let sql_doc = format!(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS attachment_doc_vec USING vec0(embedding float[{}])",
+                    dim
+                );
+                if let Err(e) = self.conn.execute(&sql_doc, []) {
+                    tracing::warn!(error = %e, dim, "Failed to create attachment_doc_vec table");
+                }
             }
         }
 
@@ -490,9 +540,18 @@ impl SqliteStorage {
             None
         };
 
+        let attachments_json = if let Some(atts) = metadata.attachments {
+            Some(
+                serde_json::to_string(atts)
+                    .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?,
+            )
+        } else {
+            None
+        };
+
         self.conn.execute(
-            "INSERT INTO messages (conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json, reasoning_content, is_summary, is_summarized, summarized_message_ids, summarized_count) 
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            "INSERT INTO messages (conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json, reasoning_content, is_summary, is_summarized, summarized_message_ids, summarized_count, attachments_json) 
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 conversation_id,
                 role,
@@ -510,6 +569,7 @@ impl SqliteStorage {
                 0, // is_summarized = false for regular messages
                 None::<String>, // summarized_message_ids
                 None::<i64>, // summarized_count
+                attachments_json,
             ],
         )?;
 
@@ -527,7 +587,7 @@ impl SqliteStorage {
     /// Load all messages for a conversation
     pub fn load_conversation(&self, conversation_id: &str) -> SqliteResult<Vec<Message>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json, reasoning_content, is_summary, is_summarized, summarized_message_ids, summarized_count
+            "SELECT id, conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json, reasoning_content, is_summary, is_summarized, summarized_message_ids, summarized_count, attachments_json
              FROM messages 
              WHERE conversation_id = ?1 
              ORDER BY created_at ASC"
@@ -572,6 +632,11 @@ impl SqliteStorage {
             let summarized_count: Option<i64> = row.get(16)?;
             let summarized_count_usize = summarized_count.map(|c| c as usize);
 
+            let attachments_json: Option<String> = row.get(17)?;
+            let attachments = attachments_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<Vec<Attachment>>(json).ok());
+
             Ok(Message {
                 id: row.get(0)?,
                 conversation_id: row.get(1)?,
@@ -590,6 +655,7 @@ impl SqliteStorage {
                 is_summarized: is_summarized != 0,
                 summarized_message_ids,
                 summarized_count: summarized_count_usize,
+                attachments,
             })
         })?;
 
@@ -1144,6 +1210,139 @@ impl SqliteStorage {
         Ok(entries)
     }
 
+    /// Remove indexed chunks for one uploaded file (before re-index).
+    pub fn delete_attachment_doc_chunks_for(
+        &self,
+        conversation_id: &str,
+        attachment_uid: &str,
+    ) -> SqliteResult<()> {
+        if self.embedding_dimension.is_none() {
+            return Ok(());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM attachment_doc_chunk WHERE conversation_id = ?1 AND attachment_uid = ?2",
+        )?;
+        let ids: Vec<i64> = stmt
+            .query_map(params![conversation_id, attachment_uid], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for id in ids {
+            let _ = self
+                .conn
+                .execute("DELETE FROM attachment_doc_vec WHERE rowid = ?1", params![id]);
+        }
+        self.conn.execute(
+            "DELETE FROM attachment_doc_chunk WHERE conversation_id = ?1 AND attachment_uid = ?2",
+            params![conversation_id, attachment_uid],
+        )?;
+        Ok(())
+    }
+
+    /// Insert one text chunk and its embedding row (rowid = chunk id).
+    pub fn insert_attachment_doc_chunk_with_embedding(
+        &self,
+        conversation_id: &str,
+        attachment_uid: &str,
+        file_name: &str,
+        chunk_index: i32,
+        text: &str,
+        content_hash: &str,
+        embedding: &[f32],
+    ) -> SqliteResult<()> {
+        if self.embedding_dimension.is_none() {
+            return Ok(());
+        }
+        self.conn.execute(
+            "INSERT INTO attachment_doc_chunk (conversation_id, attachment_uid, file_name, chunk_index, text, content_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                conversation_id,
+                attachment_uid,
+                file_name,
+                chunk_index,
+                text,
+                content_hash
+            ],
+        )?;
+        let rowid = self.conn.last_insert_rowid();
+        let json = serde_json::to_string(embedding)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        self.conn.execute(
+            "INSERT INTO attachment_doc_vec(rowid, embedding) VALUES (?1, ?2)",
+            params![rowid, json],
+        )?;
+        Ok(())
+    }
+
+    /// Semantic search over attachment chunks in one conversation.
+    pub fn search_attachment_chunks_by_vector(
+        &self,
+        conversation_id: &str,
+        embedding: &[f32],
+        limit: usize,
+        max_distance: Option<f32>,
+    ) -> SqliteResult<Vec<AttachmentDocSearchHit>> {
+        if self.embedding_dimension.is_none() {
+            return Ok(Vec::new());
+        }
+
+        let json = serde_json::to_string(embedding)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+        let validated_max_distance = match max_distance {
+            Some(dist) => {
+                if !dist.is_finite() || dist < 0.0 || dist > 2.0 {
+                    None
+                } else {
+                    Some(dist)
+                }
+            }
+            None => None,
+        };
+
+        let fetch_limit = ((limit as i64).saturating_mul(8)).max(limit as i64);
+        let sql = match validated_max_distance {
+            Some(max_dist) => format!(
+                "SELECT rowid, distance FROM attachment_doc_vec WHERE embedding MATCH ?1 AND distance <= {} ORDER BY distance LIMIT ?2",
+                max_dist
+            ),
+            None => {
+                "SELECT rowid, distance FROM attachment_doc_vec WHERE embedding MATCH ?1 ORDER BY distance LIMIT ?2"
+                    .to_string()
+            }
+        };
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let candidates: Vec<(i64, f32)> = stmt
+            .query_map(params![json, fetch_limit], |row| {
+                let dist: f64 = row.get(1)?;
+                Ok((row.get::<_, i64>(0)?, dist as f32))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut hits = Vec::new();
+        for (rowid, distance) in candidates {
+            let row_result = self.conn.query_row(
+                "SELECT attachment_uid, file_name, chunk_index, text FROM attachment_doc_chunk WHERE id = ?1 AND conversation_id = ?2",
+                params![rowid, conversation_id],
+                |row| {
+                    Ok(AttachmentDocSearchHit {
+                        attachment_uid: row.get(0)?,
+                        file_name: row.get(1)?,
+                        chunk_index: row.get(2)?,
+                        text: row.get(3)?,
+                        distance,
+                    })
+                },
+            );
+            if let Ok(h) = row_result {
+                hits.push(h);
+                if hits.len() >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(hits)
+    }
+
     /// List all memory entries, ordered by importance then recency.
     pub fn list_memory(&self, limit: usize) -> SqliteResult<Vec<MemoryEntry>> {
         let mut stmt = self.conn.prepare(
@@ -1512,6 +1711,7 @@ pub struct MessageMetadata<'a> {
     pub tool_params_json: Option<&'a Value>,
     pub tool_result_json: Option<&'a Value>,
     pub reasoning_content: Option<&'a str>, // For DeepSeek thinking/reasoning content
+    pub attachments: Option<&'a [Attachment]>,
 }
 
 impl<'a> Default for MessageMetadata<'a> {
@@ -1524,6 +1724,7 @@ impl<'a> Default for MessageMetadata<'a> {
             tool_params_json: None,
             tool_result_json: None,
             reasoning_content: None,
+            attachments: None,
         }
     }
 }

@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::config::AttachmentRagConfig;
 use crate::embeddings::EmbeddingProvider;
 
 /// Context passed into the agent loop for internal tools (e.g. schedule_task).
@@ -13,6 +14,8 @@ pub struct RunContext {
     pub allowed_tool_names: std::collections::HashSet<String>,
     /// Embedding provider for memory vector index. None when embedding is disabled.
     pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    /// Thresholds for attachment document RAG.
+    pub attachment_rag: AttachmentRagConfig,
 }
 
 impl std::fmt::Debug for RunContext {
@@ -22,6 +25,7 @@ impl std::fmt::Debug for RunContext {
             .field("profile_name", &self.profile_name)
             .field("allowed_tool_names", &self.allowed_tool_names)
             .field("embedding_provider", &self.embedding_provider.as_ref().map(|_| "Some"))
+            .field("attachment_rag", &self.attachment_rag)
             .finish()
     }
 }

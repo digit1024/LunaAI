@@ -17,6 +17,7 @@ pub const INTERNAL_TOOL_NAMES: &[&str] = &[
     "search_memory",
     "search_memory_by_category",
     "delete_memory",
+    "search_attachment_chunks",
 ];
 
 /// Result of applying a tools policy: tool names to set on the registry (MCP only) and full allowed set (for internal tool filtering in loop_engine).

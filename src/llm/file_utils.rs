@@ -1,5 +1,7 @@
+use crate::llm::attachment_limits::{MAX_IMAGE_BYTES, MAX_INLINE_TEXT_CHARS};
 use crate::llm::Attachment;
 use anyhow::{Context, Result};
+use base64::Engine;
 use std::fs;
 use std::path::Path;
 use tracing;
@@ -57,8 +59,17 @@ pub fn create_attachment(file_path: &str) -> Result<Attachment> {
     // Extract content based on file type
     let (content, final_mime_type, final_file_name) = match file_type {
         FileType::Text => {
-            // For text files, read content directly
-            let text_content = fs::read_to_string(path).ok();
+            let text_content = fs::read_to_string(path).ok().map(|s| {
+                if s.chars().count() > MAX_INLINE_TEXT_CHARS {
+                    let truncated: String = s.chars().take(MAX_INLINE_TEXT_CHARS).collect();
+                    format!(
+                        "{}\n\n[... truncated to {} characters ...]",
+                        truncated, MAX_INLINE_TEXT_CHARS
+                    )
+                } else {
+                    s
+                }
+            });
             (text_content, mime_type, file_name)
         }
         FileType::Document => {
@@ -70,6 +81,18 @@ pub fn create_attachment(file_path: &str) -> Result<Attachment> {
                         content_length = markdown_content.len(),
                         "Converted file to markdown"
                     );
+                    let md = if markdown_content.chars().count() > MAX_INLINE_TEXT_CHARS {
+                        let truncated: String = markdown_content
+                            .chars()
+                            .take(MAX_INLINE_TEXT_CHARS)
+                            .collect();
+                        format!(
+                            "{}\n\n[... truncated to {} characters ...]",
+                            truncated, MAX_INLINE_TEXT_CHARS
+                        )
+                    } else {
+                        markdown_content
+                    };
                     // Update file name to indicate it's now markdown
                     let markdown_file_name = if let Some(base_name) = path
                         .file_stem()
@@ -80,7 +103,7 @@ pub fn create_attachment(file_path: &str) -> Result<Attachment> {
                         format!("{}.md", file_name)
                     };
                     (
-                        Some(markdown_content),
+                        Some(md),
                         "text/markdown".to_string(),
                         markdown_file_name,
                     )
@@ -97,8 +120,19 @@ pub fn create_attachment(file_path: &str) -> Result<Attachment> {
             }
         }
         FileType::Image => {
-            // Images are handled separately by LLM providers
-            (None, mime_type, file_name)
+            let b64 = if file_size <= MAX_IMAGE_BYTES {
+                match fs::read(path) {
+                    Ok(bytes) => Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+                    Err(e) => {
+                        tracing::warn!(file_name = %file_name, error = %e, "Failed to read image for base64");
+                        None
+                    }
+                }
+            } else {
+                tracing::warn!(file_name = %file_name, file_size, "Image too large for inline encoding");
+                None
+            };
+            (b64, mime_type, file_name)
         }
         FileType::Unsupported => {
             // Unsupported files - try to read as text
@@ -191,9 +225,8 @@ pub fn validate_file_for_llm(attachment: &Attachment) -> Result<()> {
 
     match file_type {
         FileType::Image => {
-            // Check file size limit for images (e.g., 50MB)
-            if attachment.file_size > 50 * 1024 * 1024 {
-                anyhow::bail!("Image file too large: {} bytes", attachment.file_size)
+            if attachment.file_size > MAX_IMAGE_BYTES {
+                anyhow::bail!("Image file too large: {} bytes (max {})", attachment.file_size, MAX_IMAGE_BYTES)
             } else {
                 Ok(())
             }
@@ -219,4 +252,39 @@ pub fn validate_file_for_llm(attachment: &Attachment) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Remove bulky inline image payloads before persisting to SQLite (paths remain for rehydration).
+pub fn strip_attachments_for_storage(mut attachments: Vec<Attachment>) -> Vec<Attachment> {
+    for a in &mut attachments {
+        if a.mime_type.starts_with("image/") {
+            a.content = None;
+        }
+    }
+    attachments
+}
+
+/// Restore base64 image `content` from `file_path` when missing (e.g. after loading from DB).
+pub fn hydrate_attachments_for_llm(attachments: &mut [Attachment]) -> Result<()> {
+    for a in attachments.iter_mut() {
+        if !a.mime_type.starts_with("image/") {
+            continue;
+        }
+        if a.content.is_some() {
+            continue;
+        }
+        let path = Path::new(&a.file_path);
+        if !path.exists() {
+            tracing::warn!(path = %a.file_path, "Attachment file missing for rehydration");
+            continue;
+        }
+        let meta = fs::metadata(path)?;
+        if meta.len() > MAX_IMAGE_BYTES {
+            tracing::warn!(path = %a.file_path, "Skipping rehydration: image too large");
+            continue;
+        }
+        let bytes = fs::read(path)?;
+        a.content = Some(base64::engine::general_purpose::STANDARD.encode(bytes));
+    }
+    Ok(())
 }

@@ -375,6 +375,9 @@ pub struct LunaThinApp {
     /// Informational message (e.g. summarization started/finished) – show as info banner.
     pub inline_info: Option<String>,
 
+    /// Upload UUIDs waiting to be sent with the next message (`SendMessage.attachment_ids`).
+    pub pending_attachment_ids: Vec<String>,
+
     // Settings input
     pub settings_host: String,
     pub settings_port: String,
@@ -436,6 +439,7 @@ impl LunaThinApp {
             pending_retry_input: None,
             inline_error: None,
             inline_info: None,
+            pending_attachment_ids: Vec::new(),
         }
     }
 
@@ -839,11 +843,13 @@ impl LunaThinApp {
                 // Just set the conversation ID - don't clear messages!
                 // The user message we added is already there and should be preserved
                 self.current_conversation_id = Some(conversation_id);
+                self.pending_attachment_ids.clear();
                 self.list_conversations();
             }
             ServerEvent::ConversationLoaded { conversation } => {
                 tracing::info!("📥 ConversationLoaded: {} ({} messages)", conversation.id, conversation.messages.len());
                 self.current_conversation_id = Some(conversation.id.clone());
+                self.pending_attachment_ids.clear();
                 self.current_profile = conversation.profile_name.unwrap_or_default();
                 self.current_assistant_bubble_id = None;
                 

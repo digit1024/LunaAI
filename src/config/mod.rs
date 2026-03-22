@@ -343,6 +343,51 @@ impl EmbeddingConfig {
     }
 }
 
+// ── Attachment document RAG (chunk + vector index; requires embedding + sqlite-vec) ──
+
+fn default_attachment_inline_max_chars() -> usize {
+    100_000
+}
+
+fn default_attachment_chunk_chars() -> usize {
+    1500
+}
+
+fn default_attachment_chunk_overlap() -> usize {
+    200
+}
+
+fn default_attachment_search_limit() -> usize {
+    8
+}
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct AttachmentRagConfig {
+    /// Extracted text longer than this is not fully inlined; chunks are indexed for `search_attachment_chunks`.
+    #[serde(default = "default_attachment_inline_max_chars")]
+    pub inline_max_chars: usize,
+    #[serde(default = "default_attachment_chunk_chars")]
+    pub chunk_chars: usize,
+    #[serde(default = "default_attachment_chunk_overlap")]
+    pub chunk_overlap: usize,
+    #[serde(default = "default_attachment_search_limit")]
+    pub search_limit: usize,
+    #[serde(default)]
+    pub max_distance: Option<f32>,
+}
+
+impl Default for AttachmentRagConfig {
+    fn default() -> Self {
+        Self {
+            inline_max_chars: default_attachment_inline_max_chars(),
+            chunk_chars: default_attachment_chunk_chars(),
+            chunk_overlap: default_attachment_chunk_overlap(),
+            search_limit: default_attachment_search_limit(),
+            max_distance: None,
+        }
+    }
+}
+
 // ── Deep Sleep config ──
 
 fn default_deep_sleep_enabled() -> bool {
@@ -415,6 +460,8 @@ pub struct AppConfig {
     pub deep_sleep: DeepSleepConfig,
     #[serde(default)]
     pub embedding: EmbeddingConfig,
+    #[serde(default)]
+    pub attachment_rag: AttachmentRagConfig,
 }
 
 impl Default for AppConfig {
@@ -456,6 +503,7 @@ impl Default for AppConfig {
             title_summary: TitleSummaryConfig::default(),
             deep_sleep: DeepSleepConfig::default(),
             embedding: EmbeddingConfig::default(),
+            attachment_rag: AttachmentRagConfig::default(),
         }
     }
 }

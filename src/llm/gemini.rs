@@ -23,10 +23,21 @@ struct GeminiContent {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct GeminiInlineBlob {
+    #[serde(rename = "mimeType")]
+    mime_type: String,
+    data: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 enum GeminiPart {
     Text {
         text: String,
+    },
+    InlineData {
+        #[serde(rename = "inlineData")]
+        inline_data: GeminiInlineBlob,
     },
     FunctionCall {
         #[serde(rename = "functionCall")]
@@ -209,38 +220,41 @@ impl GeminiClient {
                     });
                 }
             } else {
-                // Regular text message with potential attachments
+                // Regular text message with potential attachments (text first, then image inlineData)
                 let mut text_content = msg.content;
+                let mut image_parts: Vec<GeminiPart> = Vec::new();
 
-                // Handle attachments
                 if let Some(attachments) = msg.attachments {
                     for attachment in attachments {
-                        match attachment.mime_type.as_str() {
-                            mime if mime.starts_with("image/") => {
+                        if attachment.mime_type.starts_with("image/") {
+                            if let Some(data) = attachment.content {
+                                image_parts.push(GeminiPart::InlineData {
+                                    inline_data: GeminiInlineBlob {
+                                        mime_type: attachment.mime_type.clone(),
+                                        data,
+                                    },
+                                });
+                            }
+                        } else if attachment.mime_type.starts_with("text/") {
+                            if let Some(file_content) = &attachment.content {
                                 text_content.push_str(&format!(
-                                    "\n[Image: {} - {} bytes]",
-                                    attachment.file_name, attachment.file_size
+                                    "\n\nFile: {}\nContent:\n{}",
+                                    attachment.file_name, file_content
                                 ));
                             }
-                            mime if mime.starts_with("text/") => {
-                                if let Some(file_content) = &attachment.content {
-                                    text_content.push_str(&format!(
-                                        "\n\nFile: {}\nContent:\n{}",
-                                        attachment.file_name, file_content
-                                    ));
-                                }
-                            }
-                            _ => {
-                                text_content.push_str(&format!(
-                                    "\nFile attached: {} ({} bytes)",
-                                    attachment.file_name, attachment.file_size
-                                ));
-                            }
+                        } else {
+                            text_content.push_str(&format!(
+                                "\nFile attached: {} ({} bytes)",
+                                attachment.file_name, attachment.file_size
+                            ));
                         }
                     }
                 }
 
-                current_parts.push(GeminiPart::Text { text: text_content });
+                if !text_content.is_empty() {
+                    current_parts.push(GeminiPart::Text { text: text_content });
+                }
+                current_parts.extend(image_parts);
             }
 
             current_role = Some(role.to_string());

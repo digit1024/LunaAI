@@ -9,6 +9,7 @@ pub mod tool_call_manager;
 pub mod mcp_service;
 pub mod schedule_service;
 pub mod memory_rag;
+pub mod attachment_rag;
 pub mod deep_sleep_service;
 
 pub use message_converter::MessageConverter;

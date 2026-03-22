@@ -42,6 +42,8 @@ pub enum ClientCommand {
     SendMessage {
         conversation_id: Option<String>,
         content: String,
+        #[serde(default)]
+        attachment_ids: Option<Vec<String>>,
     },
 }
 
@@ -209,13 +211,15 @@ pub struct PlannedToolView {
     pub params_json: Value,
 }
 
-/// File attachment
+/// File attachment (matches server `llm::Attachment` JSON)
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AttachmentView {
-    pub file_id: String,
+    pub file_path: String,
     pub file_name: String,
     pub mime_type: String,
     pub file_size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
 }
 
 /// MCP Server status

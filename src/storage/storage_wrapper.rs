@@ -96,6 +96,7 @@ impl Storage {
                     is_summary: msg.is_summary,
                     is_summarized: msg.is_summarized,
                     summarized_count: msg.summarized_count,
+                    attachments: msg.attachments.clone(),
                 })
                 .collect();
 
@@ -170,6 +171,7 @@ impl Storage {
                     is_summary: msg.is_summary,
                     is_summarized: msg.is_summarized,
                     summarized_count: msg.summarized_count,
+                    attachments: msg.attachments.clone(),
                 })
                 .collect();
 
@@ -494,6 +496,47 @@ impl Storage {
     /// Delete all rows from memory_vec. Used when reorganizing the vector index.
     pub fn delete_all_memory_vec_rows(&self) -> SqliteResult<()> {
         self.sqlite.delete_all_memory_vec_rows()
+    }
+
+    pub fn delete_attachment_doc_chunks_for(
+        &self,
+        conversation_id: &str,
+        attachment_uid: &str,
+    ) -> SqliteResult<()> {
+        self.sqlite
+            .delete_attachment_doc_chunks_for(conversation_id, attachment_uid)
+    }
+
+    pub fn insert_attachment_doc_chunk_with_embedding(
+        &self,
+        conversation_id: &str,
+        attachment_uid: &str,
+        file_name: &str,
+        chunk_index: i32,
+        text: &str,
+        content_hash: &str,
+        embedding: &[f32],
+    ) -> SqliteResult<()> {
+        self.sqlite.insert_attachment_doc_chunk_with_embedding(
+            conversation_id,
+            attachment_uid,
+            file_name,
+            chunk_index,
+            text,
+            content_hash,
+            embedding,
+        )
+    }
+
+    pub fn search_attachment_chunks_by_vector(
+        &self,
+        conversation_id: &str,
+        embedding: &[f32],
+        limit: usize,
+        max_distance: Option<f32>,
+    ) -> SqliteResult<Vec<super::sqlite_storage_simple::AttachmentDocSearchHit>> {
+        self.sqlite
+            .search_attachment_chunks_by_vector(conversation_id, embedding, limit, max_distance)
     }
 
     /// Get a deep sleep state value

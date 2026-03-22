@@ -9,6 +9,15 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 
+/// Merge tool definitions by `name`. Later entries replace earlier ones (internal tools win over MCP).
+fn upsert_tool_definition(defs: &mut Vec<ToolDefinition>, tool: ToolDefinition) {
+    if let Some(i) = defs.iter().position(|d| d.name == tool.name) {
+        defs[i] = tool;
+    } else {
+        defs.push(tool);
+    }
+}
+
 fn schedule_task_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "schedule_task".to_string(),
@@ -102,6 +111,23 @@ fn search_memory_by_category_tool_definition() -> ToolDefinition {
     }
 }
 
+fn search_attachment_chunks_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "search_attachment_chunks".to_string(),
+        description: "Semantic search over large documents attached in the current conversation (chunk index). Use when the user asks about uploaded files that were indexed instead of fully inlined. Requires embeddings to be enabled.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What to find in the indexed attachment text"
+                }
+            },
+            "required": ["query"]
+        }),
+    }
+}
+
 fn delete_memory_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "delete_memory".to_string(),
@@ -178,25 +204,31 @@ impl AgenticLoop {
         };
         let registry = self.mcp_registry.read().await;
         let tools = registry.get_enabled_tools().await.context("Failed to get enabled tools")?;
-        let mut defs = tools_to_definitions(&tools);
+        let mut defs = Vec::new();
+        for d in tools_to_definitions(&tools) {
+            upsert_tool_definition(&mut defs, d);
+        }
         if allow_internal("schedule_task") {
-            defs.push(schedule_task_tool_definition());
+            upsert_tool_definition(&mut defs, schedule_task_tool_definition());
         }
         if allow_internal("cancel_scheduled_task") {
-            defs.push(cancel_scheduled_task_tool_definition());
+            upsert_tool_definition(&mut defs, cancel_scheduled_task_tool_definition());
         }
         if self.storage.is_some() {
             if allow_internal("store_memory") {
-                defs.push(store_memory_tool_definition());
+                upsert_tool_definition(&mut defs, store_memory_tool_definition());
             }
             if allow_internal("search_memory") {
-                defs.push(search_memory_tool_definition());
+                upsert_tool_definition(&mut defs, search_memory_tool_definition());
             }
             if allow_internal("search_memory_by_category") {
-                defs.push(search_memory_by_category_tool_definition());
+                upsert_tool_definition(&mut defs, search_memory_by_category_tool_definition());
             }
             if allow_internal("delete_memory") {
-                defs.push(delete_memory_tool_definition());
+                upsert_tool_definition(&mut defs, delete_memory_tool_definition());
+            }
+            if allow_internal("search_attachment_chunks") {
+                upsert_tool_definition(&mut defs, search_attachment_chunks_tool_definition());
             }
         }
         tracing::debug!(tool_count = defs.len(), "Enabled tools");
@@ -343,6 +375,9 @@ impl AgenticLoop {
                     || tool_call.name == "delete_memory"
                 {
                     self.execute_memory_tool(&tool_call, run_context_clone.as_ref()).await
+                } else if tool_call.name == "search_attachment_chunks" {
+                    self.execute_attachment_search_tool(&tool_call, run_context_clone.as_ref())
+                        .await
                 } else {
                     self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref()).await
                 };
@@ -714,6 +749,9 @@ impl AgenticLoop {
                     || tool_call.name == "delete_memory"
                 {
                     self.execute_memory_tool(&tool_call, run_context.as_ref()).await
+                } else if tool_call.name == "search_attachment_chunks" {
+                    self.execute_attachment_search_tool(&tool_call, run_context.as_ref())
+                        .await
                 } else {
                     self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref()).await
                 };
@@ -732,6 +770,94 @@ impl AgenticLoop {
                     result.is_error,
                 ));
             }
+        }
+    }
+
+    async fn execute_attachment_search_tool(
+        &self,
+        tool_call: &ToolCall,
+        run_context: Option<&RunContext>,
+    ) -> ToolResult {
+        let Some(storage) = &self.storage else {
+            return ToolResult {
+                content: "search_attachment_chunks requires storage".to_string(),
+                is_error: true,
+            };
+        };
+        let Some(ctx) = run_context else {
+            return ToolResult {
+                content: "search_attachment_chunks requires run context".to_string(),
+                is_error: true,
+            };
+        };
+        let Some(conv) = ctx.conversation_id else {
+            return ToolResult {
+                content: "search_attachment_chunks requires an active conversation".to_string(),
+                is_error: true,
+            };
+        };
+        let Some(provider) = ctx.embedding_provider.as_ref() else {
+            return ToolResult {
+                content: "search_attachment_chunks requires embedding to be enabled (same setup as memory vector search).".to_string(),
+                is_error: true,
+            };
+        };
+        let query = tool_call
+            .parameters
+            .get("query")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if query.is_empty() {
+            return ToolResult {
+                content: "search_attachment_chunks requires non-empty 'query'".to_string(),
+                is_error: true,
+            };
+        }
+        let emb = match provider.embed(query).await {
+            Ok(e) => e,
+            Err(e) => {
+                return ToolResult {
+                    content: format!("embedding failed: {}", e),
+                    is_error: true,
+                };
+            }
+        };
+        let guard = storage.lock().await;
+        match guard.search_attachment_chunks_by_vector(
+            &conv.to_string(),
+            &emb,
+            ctx.attachment_rag.search_limit,
+            ctx.attachment_rag.max_distance,
+        ) {
+            Ok(hits) => {
+                #[derive(serde::Serialize)]
+                struct HitSer {
+                    attachment_uid: String,
+                    file_name: String,
+                    chunk_index: i32,
+                    text: String,
+                    distance: f32,
+                }
+                let payload: Vec<HitSer> = hits
+                    .into_iter()
+                    .map(|h| HitSer {
+                        attachment_uid: h.attachment_uid,
+                        file_name: h.file_name,
+                        chunk_index: h.chunk_index,
+                        text: h.text,
+                        distance: h.distance,
+                    })
+                    .collect();
+                ToolResult {
+                    content: serde_json::to_string(&payload).unwrap_or_else(|_| "[]".to_string()),
+                    is_error: false,
+                }
+            }
+            Err(e) => ToolResult {
+                content: format!("search failed: {}", e),
+                is_error: true,
+            },
         }
     }
 }

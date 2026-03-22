@@ -1,4 +1,4 @@
-use crate::llm::ToolCall;
+use crate::llm::{Attachment, ToolCall};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -64,6 +64,8 @@ pub struct StoredMessage {
     #[allow(dead_code)] // Field used for serialization/storage
     pub is_summarized: bool, // True if this message has been summarized (should be excluded from LLM payload)
     pub summarized_count: Option<usize>, // Count of messages summarized
+    #[serde(default)]
+    pub attachments: Option<Vec<Attachment>>,
 }
 
 impl Conversation {
@@ -100,6 +102,7 @@ impl Conversation {
             is_summary: false,
             is_summarized: false,
             summarized_count: None,
+            attachments: None,
         };
         self.messages.push(message);
         self.updated_at = Utc::now();
@@ -119,10 +122,19 @@ impl Conversation {
         for msg in &self.messages {
             let role = Role::from(msg.role.as_str());
             if role == Role::User {
-                llm_messages.push(crate::llm::Message::new(
-                    role,
-                    msg.content.clone(),
-                ));
+                if let Some(ref atts) = msg.attachments {
+                    if !atts.is_empty() {
+                        llm_messages.push(crate::llm::Message::new_with_attachments(
+                            role,
+                            msg.content.clone(),
+                            atts.clone(),
+                        ));
+                    } else {
+                        llm_messages.push(crate::llm::Message::new(role, msg.content.clone()));
+                    }
+                } else {
+                    llm_messages.push(crate::llm::Message::new(role, msg.content.clone()));
+                }
             }
         }
 
