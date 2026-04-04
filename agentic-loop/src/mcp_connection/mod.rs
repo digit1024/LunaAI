@@ -5,7 +5,7 @@ pub mod model;
 mod no_stderr_transport;
 
 use std::sync::Arc;
-use rust_mcp_sdk::schema::{CallToolRequestParams, CallToolResult, ListToolsResult};
+use rust_mcp_sdk::schema::{CallToolRequestParams, CallToolResult};
 use tracing::{debug, info};
 
 use crate::error::{AgenticLoopError, Result};
@@ -14,7 +14,7 @@ use crate::mcp_config::model::MCPServerConfig;
 use no_stderr_transport::NoStderrTransport;
 use rust_mcp_sdk::{
     mcp_client::{client_runtime, ClientHandler, McpClientOptions},
-    schema::{ClientCapabilities, Implementation, InitializeRequestParams, LATEST_PROTOCOL_VERSION},
+    schema::{ClientCapabilities, Implementation, InitializeRequestParams},
     McpClient, ToMcpClientHandler, TransportOptions,
 };
 
@@ -93,6 +93,7 @@ impl MCPConnection {
             handler: handler.to_mcp_client_handler(),
             task_store: None,
             server_task_store: None,
+            message_observer: None,
         });
 
         // Step 5: Start the MCP client

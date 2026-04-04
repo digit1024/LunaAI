@@ -3,7 +3,7 @@
 //! Strips all markdown syntax from text, leaving only plain text content.
 //! Used before sending text to TTS to ensure natural speech.
 
-use pulldown_cmark::{Event, Parser, Tag};
+use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 
 /// Strip all markdown syntax from text, preserving only plain text content
 ///
@@ -33,7 +33,7 @@ pub fn strip_markdown(text: &str) -> String {
             Event::Start(Tag::CodeBlock(_)) => {
                 // Code block started - ignore content
             }
-            Event::End(Tag::CodeBlock(_)) => {
+            Event::End(TagEnd::CodeBlock) => {
                 // Add space after code block
                 if !result.ends_with(' ') {
                     result.push(' ');
@@ -52,21 +52,21 @@ pub fn strip_markdown(text: &str) -> String {
                     result.push(' ');
                 }
             }
-            Event::Start(Tag::Link(_, _url, _)) => {
+            Event::Start(Tag::Link { .. }) => {
                 // Links: we'll get the text from Event::Text, ignore URL
                 // Just continue to collect text
             }
-            Event::End(Tag::Link(_, _, _)) => {
+            Event::End(TagEnd::Link) => {
                 // Link ended, add space if needed
                 if !result.ends_with(' ') {
                     result.push(' ');
                 }
             }
-            Event::Start(Tag::Image(_, _url, _)) => {
+            Event::Start(Tag::Image { .. }) => {
                 // Images: we'll get alt text from Event::Text if present
                 // Just continue to collect text
             }
-            Event::End(Tag::Image(_, _, _)) => {
+            Event::End(TagEnd::Image) => {
                 // Image ended, add space if needed
                 if !result.ends_with(' ') {
                     result.push(' ');
@@ -75,7 +75,7 @@ pub fn strip_markdown(text: &str) -> String {
             Event::Start(Tag::List(_)) => {
                 // List started
             }
-            Event::End(Tag::List(_)) => {
+            Event::End(TagEnd::List(_)) => {
                 // Add space after list
                 if !result.ends_with(' ') {
                     result.push(' ');
@@ -87,7 +87,7 @@ pub fn strip_markdown(text: &str) -> String {
                     result.push(' ');
                 }
             }
-            Event::End(Tag::Item) => {
+            Event::End(TagEnd::Item) => {
                 // List item ended
             }
             Event::Start(Tag::Paragraph) => {
@@ -96,40 +96,40 @@ pub fn strip_markdown(text: &str) -> String {
                     result.push(' ');
                 }
             }
-            Event::End(Tag::Paragraph) => {
+            Event::End(TagEnd::Paragraph) => {
                 // Paragraph ended - add space
                 if !result.ends_with(' ') {
                     result.push(' ');
                 }
             }
-            Event::Start(Tag::Heading(_, _, _)) => {
+            Event::Start(Tag::Heading { .. }) => {
                 // Heading start - add space if needed
                 if !result.ends_with(' ') && !result.is_empty() {
                     result.push(' ');
                 }
             }
-            Event::End(Tag::Heading(_, _, _)) => {
+            Event::End(TagEnd::Heading(_)) => {
                 // Heading ended - add space
                 if !result.ends_with(' ') {
                     result.push(' ');
                 }
             }
-            Event::Start(Tag::BlockQuote) => {
+            Event::Start(Tag::BlockQuote(_)) => {
                 // Blockquote start
             }
-            Event::End(Tag::BlockQuote) => {
+            Event::End(TagEnd::BlockQuote(_)) => {
                 // Blockquote ended - add space
                 if !result.ends_with(' ') {
                     result.push(' ');
                 }
             }
-            Event::Start(Tag::Emphasis) | Event::End(Tag::Emphasis) => {
+            Event::Start(Tag::Emphasis) | Event::End(TagEnd::Emphasis) => {
                 // Italic - ignore tags, text is already captured
             }
-            Event::Start(Tag::Strong) | Event::End(Tag::Strong) => {
+            Event::Start(Tag::Strong) | Event::End(TagEnd::Strong) => {
                 // Bold - ignore tags, text is already captured
             }
-            Event::Start(Tag::Strikethrough) | Event::End(Tag::Strikethrough) => {
+            Event::Start(Tag::Strikethrough) | Event::End(TagEnd::Strikethrough) => {
                 // Strikethrough - ignore tags, text is already captured
             }
             // Note: Tag::Rule doesn't exist in pulldown_cmark, horizontal rules are handled differently

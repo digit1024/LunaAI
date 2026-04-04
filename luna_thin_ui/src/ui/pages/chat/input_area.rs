@@ -2,7 +2,7 @@
 
 use cosmic::{
     iced::{keyboard, Background, Color, Length},
-    widget::{self, button, column, container, row, text_editor, Space},
+    widget::{self, button, container, text_editor, Column, Row, Space},
     Element,
 };
 
@@ -10,7 +10,7 @@ use crate::ui::app::{LunaThinApp, Message};
 
 pub fn input_area(app: &LunaThinApp) -> Element<Message> {
     container(
-        column()
+        Column::new()
             .push(
                 // Text editor (multi-line)
                 container(
@@ -19,11 +19,10 @@ pub fn input_area(app: &LunaThinApp) -> Element<Message> {
                             |_theme, _status| text_editor::Style {
                                 background: Background::Color(Color::TRANSPARENT),
                                 border: cosmic::iced::Border {
+                                    color: Color::TRANSPARENT,
                                     width: 0.0,
                                     radius: 0.0.into(),
-                                    color: Color::TRANSPARENT,
                                 },
-                                icon: cosmic::theme::active().cosmic().on_bg_color().into(),
                                 placeholder: cosmic::theme::active().cosmic().on_bg_color().into(),
                                 value: cosmic::theme::active().cosmic().on_bg_color().into(),
                                 selection: Color::from_rgba(1.0, 1.0, 1.0, 0.3),
@@ -54,13 +53,13 @@ pub fn input_area(app: &LunaThinApp) -> Element<Message> {
             .push(
                 // Bottom row: Attach button, send/stop button
                 {
-                    let mut bottom_row = row()
+                    let mut bottom_row = Row::new()
                         .push(
                             button::icon(crate::ui::icons::get_handle("mail-attachment-symbolic", 16))
                                 .on_press(Message::AttachFile),
                         )
-                        .push(Space::with_width(8))
-                        .push(Space::with_width(Length::Fill));
+                        .push(Space::new().width(8))
+                        .push(Space::new().width(Length::Fill));
 
                     // Send/Stop button with icons
                     if app.is_streaming {

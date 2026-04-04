@@ -2,7 +2,7 @@
 
 use cosmic::{
     iced::Length,
-    widget::{self, column, container, row, text},
+    widget::{self, container, text, Column, Row},
     Element,
 };
 
@@ -10,7 +10,7 @@ use crate::server::dto::MCPServerStatus;
 use crate::ui::app::{LunaThinApp, Message, ConnectionStatus};
 
 pub fn mcp_servers_page(app: &LunaThinApp) -> Element<Message> {
-    let mut content = column().spacing(16).padding(16);
+    let mut content = Column::new().spacing(16).padding(16);
 
     // Header
     content = content.push(text("🔌 MCP Servers").size(24));
@@ -61,9 +61,9 @@ pub fn mcp_servers_page(app: &LunaThinApp) -> Element<Message> {
 
                 content = content.push(
                     container(
-                        column()
+                        Column::new()
                             .push(
-                                row()
+                                Row::new()
                                     .push(text(&server.name).size(16).width(Length::Fill))
                                     .push(
                                         text(status_text)

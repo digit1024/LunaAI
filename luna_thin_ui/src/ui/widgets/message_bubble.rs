@@ -1,11 +1,16 @@
 //! Message bubble widget - styled chat bubbles with smart corners
 
+use std::collections::HashMap;
+
 use cosmic::{
     iced::{Length, Padding},
-    widget::{self, button, column, container, markdown, row, text, Space},
+    widget::{self, button, container, markdown, text, Column, Row, Space},
     Element,
 };
+
+use crate::ui::app::{ImageState, Message};
 use crate::ui::icons;
+use crate::ui::widgets::markdown_viewer::ImageViewer;
 
 /// Context for rendering message bubbles with smart corners
 #[derive(Debug, Clone, Copy)]
@@ -27,14 +32,37 @@ impl Default for BubbleContext {
     }
 }
 
+fn bubble_markdown_style() -> widget::markdown::Style {
+    let iced_theme = if cosmic::theme::is_dark() {
+        cosmic::iced::theme::Theme::Dark
+    } else {
+        cosmic::iced::theme::Theme::Light
+    };
+    let mut style = widget::markdown::Style::from(iced_theme);
+    style.inline_code_padding = cosmic::iced::Padding::from([1, 2]);
+    style.inline_code_highlight = widget::markdown::Highlight {
+        background: cosmic::iced::Background::Color(cosmic::iced::Color::from_rgb(
+            0.1, 0.1, 0.1,
+        )),
+        border: cosmic::iced::Border::default().rounded(2),
+    };
+    style.inline_code_color = cosmic::iced::Color::WHITE;
+    style.link_color = cosmic::iced::Color::from_rgb(0.3, 0.6, 1.0);
+    style
+}
+
+// ============================================================================
+// User bubble
+// ============================================================================
+
 /// Message bubble for user messages (right-aligned, primary color)
-pub fn user_bubble<M: Clone + 'static>(
+pub fn user_bubble<'a>(
     content: &str,
-    on_copy: M,
-    on_retry: Option<M>, // Retry button (regenerate from this message)
-) -> Element<'static, M> {
+    on_copy: Message,
+    on_retry: Option<Message>,
+) -> Element<'a, Message> {
     let content_owned = content.to_string();
-    
+
     let content_widget = container(
         text(content_owned)
             .size(14)
@@ -44,11 +72,8 @@ pub fn user_bubble<M: Clone + 'static>(
     )
     .width(Length::Fill);
 
-    // Button row: Retry (if provided), Copy
-    let mut buttons = row()
-        .push(Space::with_width(Length::Fill));
-    
-    // Retry button (regenerate from this message)
+    let mut buttons = Row::new().push(Space::new().width(Length::Fill));
+
     if let Some(on_retry) = on_retry {
         buttons = buttons.push(
             button::icon(icons::get_handle("arrow-circular-bottom-right-symbolic", 16))
@@ -57,46 +82,43 @@ pub fn user_bubble<M: Clone + 'static>(
                 .padding(4),
         );
     }
-    
-    // Copy button
-    buttons = buttons.push(
-        button::icon(icons::get_handle("copy-symbolic", 16))
-            .on_press(on_copy)
-            .class(cosmic::style::Button::Text)
-            .padding(4),
-    )
-    .spacing(4);
+
+    buttons = buttons
+        .push(
+            button::icon(icons::get_handle("copy-symbolic", 16))
+                .on_press(on_copy)
+                .class(cosmic::style::Button::Text)
+                .padding(4),
+        )
+        .spacing(4);
 
     let message_widget = container(
-        column()
+        Column::new()
             .push(content_widget)
             .push(buttons)
             .spacing(4),
     )
     .padding(Padding::from([12, 16]))
-    .style(|theme| {
-        cosmic::widget::container::Style {
-            background: Some(cosmic::iced::Background::Color(
-                theme.cosmic().primary.component.hover.into(),
-            )),
-            border: cosmic::iced::Border {
-                width: 0.0,
-                color: cosmic::iced::Color::TRANSPARENT,
-                radius: cosmic::iced::border::Radius {
-                    top_left: 20.0,
-                    top_right: 20.0,
-                    bottom_left: 20.0,
-                    bottom_right: 0.0, // Not rounded on right bottom
-                },
+    .style(|theme| cosmic::widget::container::Style {
+        background: Some(cosmic::iced::Background::Color(
+            theme.cosmic().primary.component.hover.into(),
+        )),
+        border: cosmic::iced::Border {
+            width: 0.0,
+            color: cosmic::iced::Color::TRANSPARENT,
+            radius: cosmic::iced::border::Radius {
+                top_left: 20.0,
+                top_right: 20.0,
+                bottom_left: 20.0,
+                bottom_right: 0.0,
             },
-            ..Default::default()
-        }
+        },
+        ..Default::default()
     })
     .width(Length::FillPortion(7));
 
-    // Right-aligned row
-    row()
-        .push(Space::with_width(Length::FillPortion(3)))
+    Row::new()
+        .push(Space::new().width(Length::FillPortion(3)))
         .push(
             container(message_widget)
                 .width(Length::FillPortion(7))
@@ -105,25 +127,29 @@ pub fn user_bubble<M: Clone + 'static>(
         .into()
 }
 
+// ============================================================================
+// Assistant bubble
+// ============================================================================
+
 /// Message bubble for assistant messages (left-aligned, smart corners)
-pub fn assistant_bubble<M: Clone + 'static>(
-    content: &str,
+pub fn assistant_bubble<'a>(
+    markdown_items: &'a [markdown::Item],
+    image_cache: &'a HashMap<String, ImageState>,
+    _content: &str,
     reasoning: Option<&str>,
     is_reasoning_expanded: bool,
     ctx: BubbleContext,
-    on_copy: M,
-    on_toggle_reasoning: Option<M>,
-    on_regenerate: Option<M>,
-    is_current_tts_message: bool, // true if THIS message is being spoken
-    on_start_tts: Option<M>, // Start TTS for this message
-    on_stop_tts: Option<M>, // Stop TTS (only shown when is_current_tts_message == true)
-) -> Element<'static, M> {
-    let content_owned = content.to_string();
+    on_copy: Message,
+    on_toggle_reasoning: Option<Message>,
+    _on_regenerate: Option<Message>,
+    is_current_tts_message: bool,
+    on_start_tts: Option<Message>,
+    on_stop_tts: Option<Message>,
+) -> Element<'a, Message> {
     let reasoning_owned = reasoning.map(|s| s.to_string());
-    
-    // Calculate smart corners
+
     let top_radius = if ctx.is_prev_assistant { 0.0 } else { 20.0 };
-    let bottom_left_radius = 0.0; // Always 0 for AI
+    let bottom_left_radius = 0.0;
     let bottom_right_radius = if !ctx.has_next || !ctx.is_next_assistant {
         20.0
     } else {
@@ -136,34 +162,19 @@ pub fn assistant_bubble<M: Clone + 'static>(
         0.0
     };
 
-    // Main content with markdown
-    let content_widget: Element<'static, M> = if content_owned.is_empty() {
-        Space::with_height(Length::Fixed(1.0)).into()
+    let content_widget: Element<'a, Message> = if markdown_items.is_empty() {
+        Space::new().height(Length::Fixed(1.0)).into()
     } else {
-        let items: Vec<_> = markdown::parse(&content_owned).collect();
-        let settings = widget::markdown::Settings::with_text_size(14.0);
-        let style = widget::markdown::Style {
-            inline_code_padding: cosmic::iced::Padding::from([1, 2]),
-            inline_code_highlight: widget::markdown::Highlight {
-                background: cosmic::iced::Background::Color(cosmic::iced::Color::from_rgb(
-                    0.1, 0.1, 0.1,
-                )),
-                border: cosmic::iced::Border::default().rounded(2),
-            },
-            inline_code_color: cosmic::iced::Color::WHITE,
-            link_color: cosmic::iced::Color::from_rgb(0.3, 0.6, 1.0),
-        };
-        let on_copy_clone = on_copy.clone();
-        container(
-            widget::markdown(&items, settings, style).map(move |_| on_copy_clone.clone()),
-        )
-        .width(Length::Fill)
-        .into()
+        let settings =
+            markdown::Settings::with_text_size(14.0f32, bubble_markdown_style());
+        let viewer = ImageViewer { image_cache };
+        container(markdown::view_with(markdown_items, settings, &viewer))
+            .width(Length::Fill)
+            .into()
     };
 
-    let mut col = column().push(content_widget).spacing(8);
+    let mut col = Column::new().push(content_widget).spacing(8);
 
-    // Reasoning toggle
     if let Some(reasoning_content) = reasoning_owned {
         if !reasoning_content.is_empty() {
             let toggle_text = format!(
@@ -185,9 +196,9 @@ pub fn assistant_bubble<M: Clone + 'static>(
                             text(reasoning_content)
                                 .size(12)
                                 .font(cosmic::font::Font::MONOSPACE)
-                                .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(
-                                    0.6, 0.7, 0.9,
-                                )))
+                                .class(cosmic::style::Text::Color(
+                                    cosmic::iced::Color::from_rgb(0.6, 0.7, 0.9),
+                                ))
                                 .width(Length::Fill),
                         )
                         .padding(Padding::from([8, 12]))
@@ -199,13 +210,9 @@ pub fn assistant_bubble<M: Clone + 'static>(
         }
     }
 
-    // Button row: TTS (Play/Stop), Copy (order: TTS, Copy)
-    let mut buttons = row()
-        .push(Space::with_width(Length::Fill));
-    
-    // TTS button: Play or Stop based on current state
+    let mut buttons = Row::new().push(Space::new().width(Length::Fill));
+
     if is_current_tts_message {
-        // This message is being spoken - show STOP button
         if let Some(on_stop) = on_stop_tts {
             buttons = buttons.push(
                 button::icon(icons::get_handle("stop-symbolic", 16))
@@ -214,27 +221,23 @@ pub fn assistant_bubble<M: Clone + 'static>(
                     .padding(4),
             );
         }
-    } else {
-        // This message is NOT being spoken - show PLAY button
-        if let Some(on_start) = on_start_tts {
-            buttons = buttons.push(
-                button::icon(icons::get_handle("playback-symbolic", 16))
-                    .on_press(on_start)
-                    .class(cosmic::style::Button::Text)
-                    .padding(4),
-            );
-        }
+    } else if let Some(on_start) = on_start_tts {
+        buttons = buttons.push(
+            button::icon(icons::get_handle("playback-symbolic", 16))
+                .on_press(on_start)
+                .class(cosmic::style::Button::Text)
+                .padding(4),
+        );
     }
-    
-    // Copy button (always present)
-    buttons = buttons.push(
-        button::icon(icons::get_handle("copy-symbolic", 16))
-            .on_press(on_copy)
-            .class(cosmic::style::Button::Text)
-            .padding(4),
-    );
-    
-    buttons = buttons.spacing(4);
+
+    buttons = buttons
+        .push(
+            button::icon(icons::get_handle("copy-symbolic", 16))
+                .on_press(on_copy)
+                .class(cosmic::style::Button::Text)
+                .padding(4),
+        )
+        .spacing(4);
     col = col.push(buttons);
 
     let message_widget = container(col)
@@ -257,8 +260,7 @@ pub fn assistant_bubble<M: Clone + 'static>(
         })
         .width(Length::FillPortion(7));
 
-    // Left-aligned row with margins
-    row()
+    Row::new()
         .push(
             container(message_widget)
                 .width(Length::FillPortion(7))
@@ -269,49 +271,40 @@ pub fn assistant_bubble<M: Clone + 'static>(
                     right: 0.0,
                 }),
         )
-        .push(Space::with_width(Length::FillPortion(3)))
+        .push(Space::new().width(Length::FillPortion(3)))
         .into()
 }
 
+// ============================================================================
+// Summary bubble
+// ============================================================================
+
 /// Summary bubble (centered, full width, collapsible)
-pub fn summary_bubble<M: Clone + 'static>(
-    content: &str,
+pub fn summary_bubble<'a>(
+    markdown_items: &'a [markdown::Item],
+    image_cache: &'a HashMap<String, ImageState>,
     count: usize,
     is_expanded: bool,
-    on_toggle: M,
-) -> Element<'static, M> {
-    let content_owned = content.to_string();
-    
+    on_toggle: Message,
+) -> Element<'a, Message> {
     let toggle_text = format!(
-        "{} 📄 Summary ({} messages)",
+        "{} 📄 Summary ({count} messages)",
         if is_expanded { "▼" } else { "▶" },
-        count
     );
 
-    let on_toggle_clone = on_toggle.clone();
     let toggle = button::text(toggle_text)
-        .on_press(on_toggle)
+        .on_press(on_toggle.clone())
         .class(cosmic::style::Button::Text)
         .width(Length::Fill);
 
-    let mut col = column().push(toggle);
+    let mut col = Column::new().push(toggle);
 
     if is_expanded {
-        let items: Vec<_> = markdown::parse(&content_owned).collect();
-        let settings = widget::markdown::Settings::with_text_size(14.0);
-        let style = widget::markdown::Style {
-            inline_code_padding: cosmic::iced::Padding::from([1, 2]),
-            inline_code_highlight: widget::markdown::Highlight {
-                background: cosmic::iced::Background::Color(cosmic::iced::Color::from_rgb(
-                    0.1, 0.1, 0.1,
-                )),
-                border: cosmic::iced::Border::default().rounded(2),
-            },
-            inline_code_color: cosmic::iced::Color::WHITE,
-            link_color: cosmic::iced::Color::from_rgb(0.3, 0.6, 1.0),
-        };
+        let settings =
+            markdown::Settings::with_text_size(14.0f32, bubble_markdown_style());
+        let viewer = ImageViewer { image_cache };
         col = col.push(
-            container(widget::markdown(&items, settings, style).map(move |_| on_toggle_clone.clone()))
+            container(markdown::view_with(markdown_items, settings, &viewer))
                 .width(Length::Fill)
                 .padding(Padding::from([8, 12])),
         );
@@ -324,8 +317,15 @@ pub fn summary_bubble<M: Clone + 'static>(
         .into()
 }
 
-/// Main entry point - routes to appropriate bubble type
-pub fn message_bubble<M: Clone + 'static>(
+// ============================================================================
+// Public entry point
+// ============================================================================
+
+/// Routes to the appropriate bubble type.
+#[allow(clippy::too_many_arguments)]
+pub fn message_bubble<'a>(
+    markdown_items: &'a [markdown::Item],
+    image_cache: &'a HashMap<String, ImageState>,
     content: &str,
     is_user: bool,
     is_summary: bool,
@@ -334,20 +334,39 @@ pub fn message_bubble<M: Clone + 'static>(
     is_reasoning_expanded: bool,
     is_summary_expanded: bool,
     ctx: BubbleContext,
-    on_copy: M,
-    on_toggle_reasoning: Option<M>,
-    on_toggle_summary: Option<M>,
-    on_regenerate: Option<M>,
-    is_current_tts_message: bool, // true if THIS message is being spoken
-    on_start_tts: Option<M>, // Start TTS for this message
-    on_stop_tts: Option<M>, // Stop TTS (only shown when is_current_tts_message == true)
-    on_retry: Option<M>, // Retry button for user messages
-) -> Element<'static, M> {
+    on_copy: Message,
+    on_toggle_reasoning: Option<Message>,
+    on_toggle_summary: Option<Message>,
+    on_regenerate: Option<Message>,
+    is_current_tts_message: bool,
+    on_start_tts: Option<Message>,
+    on_stop_tts: Option<Message>,
+    on_retry: Option<Message>,
+) -> Element<'a, Message> {
     if is_summary {
-        summary_bubble(content, summarized_count.unwrap_or(0), is_summary_expanded, on_toggle_summary.unwrap_or_else(|| on_copy.clone()))
+        summary_bubble(
+            markdown_items,
+            image_cache,
+            summarized_count.unwrap_or(0),
+            is_summary_expanded,
+            on_toggle_summary.unwrap_or_else(|| on_copy.clone()),
+        )
     } else if is_user {
         user_bubble(content, on_copy, on_retry)
     } else {
-        assistant_bubble(content, reasoning, is_reasoning_expanded, ctx, on_copy, on_toggle_reasoning, on_regenerate, is_current_tts_message, on_start_tts, on_stop_tts)
+        assistant_bubble(
+            markdown_items,
+            image_cache,
+            content,
+            reasoning,
+            is_reasoning_expanded,
+            ctx,
+            on_copy,
+            on_toggle_reasoning,
+            on_regenerate,
+            is_current_tts_message,
+            on_start_tts,
+            on_stop_tts,
+        )
     }
 }

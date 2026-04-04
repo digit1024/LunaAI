@@ -4,7 +4,7 @@
 
 use cosmic::{
     iced::Length,
-    widget::{self, button, column, container, icon, row, scrollable, text, text_input, Space},
+    widget::{self, button, container, icon, scrollable, text, text_input, Column, Row, Space},
     Element,
 };
 
@@ -13,20 +13,20 @@ use crate::ui::app::{LunaThinApp, Message};
 pub fn history_page(app: &LunaThinApp) -> Element<'static, Message> {
     let conv_count = app.conversations.len();
     
-    let mut content = column().spacing(12);
+    let mut content = Column::new().spacing(12);
 
     // Header card with icon and count
     content = content.push(
         container(
-            row()
+            Row::new()
                 .push(
-                    row()
+                    Row::new()
                         .push(icon::from_name("list-large-symbolic").size(20))
                         .push(text("Conversation History").size(20))
                         .spacing(8)
                         .align_y(cosmic::iced::Alignment::Center),
                 )
-                .push(Space::with_width(Length::Fill))
+                .push(Space::new().width(Length::Fill))
                 .push(
                     text(format!("{} conversations", conv_count))
                         .size(12)
@@ -45,7 +45,7 @@ pub fn history_page(app: &LunaThinApp) -> Element<'static, Message> {
     // Search bar (placeholder for now - server doesn't support search yet)
     content = content.push(
         container(
-            row()
+            Row::new()
                 .push(icon::from_name("search-symbolic").size(16))
                 .push(
                     text_input("Search conversations...", "")
@@ -64,7 +64,7 @@ pub fn history_page(app: &LunaThinApp) -> Element<'static, Message> {
         // Empty state
         content = content.push(
             container(
-                column()
+                Column::new()
                     .push(icon::from_name("chat-bubble-empty-symbolic").size(48))
                     .push(text("No conversations yet").size(16))
                     .push(
@@ -82,7 +82,7 @@ pub fn history_page(app: &LunaThinApp) -> Element<'static, Message> {
             .class(cosmic::style::Container::Card),
         );
     } else {
-        let mut list = column().spacing(8);
+        let mut list = Column::new().spacing(8);
 
         for conv in &app.conversations {
             let is_selected = Some(&conv.id) == app.current_conversation_id.as_ref();
@@ -108,12 +108,12 @@ pub fn history_page(app: &LunaThinApp) -> Element<'static, Message> {
             let title = conv.title.clone();
 
             let card = container(
-                column()
+                Column::new()
                     .push(
                         // Title row
-                        row()
+                        Row::new()
                             .push(text(title).size(16))
-                            .push(Space::with_width(Length::Fill))
+                            .push(Space::new().width(Length::Fill))
                             .push(
                                 text(date_str)
                                     .size(12)
@@ -133,10 +133,10 @@ pub fn history_page(app: &LunaThinApp) -> Element<'static, Message> {
                     )
                     .push(
                         // Action buttons
-                        row()
-                            .push(Space::with_width(Length::Fill))
+                        Row::new()
+                            .push(Space::new().width(Length::Fill))
                             .push(
-                                row()
+                                Row::new()
                                     .push(
                                         button::icon(crate::ui::icons::get_handle(
                                             "chat-bubble-text-symbolic",
@@ -167,8 +167,8 @@ pub fn history_page(app: &LunaThinApp) -> Element<'static, Message> {
                             theme.cosmic().primary.component.hover.into(),
                         )),
                         border: cosmic::iced::Border {
-                            width: 2.0,
                             color: theme.cosmic().primary.base.into(),
+                            width: 2.0,
                             radius: 8.0.into(),
                         },
                         ..Default::default()
@@ -179,8 +179,8 @@ pub fn history_page(app: &LunaThinApp) -> Element<'static, Message> {
                             theme.cosmic().background.component.hover.into(),
                         )),
                         border: cosmic::iced::Border {
-                            width: 0.0,
                             color: cosmic::iced::Color::TRANSPARENT,
+                            width: 0.0,
                             radius: 8.0.into(),
                         },
                         ..Default::default()

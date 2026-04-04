@@ -145,6 +145,27 @@ fn delete_memory_tool_definition() -> ToolDefinition {
     }
 }
 
+fn search_history_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "search_history".to_string(),
+        description: "Full-text search over raw conversation history. Use this to recall specific conversations, find what was discussed on a topic, or look up past exchanges. Results include the matching message snippet, its conversation ID, and timestamp — ranked by relevance (BM25). Unlike search_memory which searches curated facts, this searches the actual raw message text.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Full-text search query (e.g. 'deployment pipeline', 'user authentication issue')"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results to return (default: 20, max: 100)"
+                }
+            },
+            "required": ["query"]
+        }),
+    }
+}
+
 fn cancel_scheduled_task_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "cancel_scheduled_task".to_string(),
@@ -229,6 +250,9 @@ impl AgenticLoop {
             }
             if allow_internal("search_attachment_chunks") {
                 upsert_tool_definition(&mut defs, search_attachment_chunks_tool_definition());
+            }
+            if allow_internal("search_history") {
+                upsert_tool_definition(&mut defs, search_history_tool_definition());
             }
         }
         tracing::debug!(tool_count = defs.len(), "Enabled tools");
@@ -378,6 +402,8 @@ impl AgenticLoop {
                 } else if tool_call.name == "search_attachment_chunks" {
                     self.execute_attachment_search_tool(&tool_call, run_context_clone.as_ref())
                         .await
+                } else if tool_call.name == "search_history" {
+                    self.execute_search_history_tool(&tool_call).await
                 } else {
                     self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref()).await
                 };
@@ -485,6 +511,58 @@ impl AgenticLoop {
             }
             _ => ToolResult {
                 content: format!("Unknown memory tool: {}", tool_call.name),
+                is_error: true,
+            },
+        }
+    }
+
+    async fn execute_search_history_tool(&self, tool_call: &ToolCall) -> ToolResult {
+        let Some(storage) = &self.storage else {
+            return ToolResult {
+                content: "search_history requires storage".to_string(),
+                is_error: true,
+            };
+        };
+        let params = &tool_call.parameters;
+        let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        if query.is_empty() {
+            return ToolResult {
+                content: "search_history requires a non-empty 'query'".to_string(),
+                is_error: true,
+            };
+        }
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| (n as usize).min(100))
+            .unwrap_or(20);
+
+        let guard = storage.lock().await;
+        match guard.search_history(&query, limit) {
+            Ok(snippets) if snippets.is_empty() => ToolResult {
+                content: "No conversations found matching your search.".to_string(),
+                is_error: false,
+            },
+            Ok(snippets) => {
+                let lines: Vec<String> = snippets
+                    .into_iter()
+                    .map(|s| {
+                        let ts = chrono::DateTime::from_timestamp(s.timestamp, 0)
+                            .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+                            .unwrap_or_else(|| "unknown time".to_string());
+                        format!(
+                            "conversation_id: {}\ntime: {}\ncontent: {}\nrelevance_rank: {:.3}",
+                            s.conversation_id, ts, s.content, s.rank
+                        )
+                    })
+                    .collect();
+                ToolResult {
+                    content: lines.join("\n\n---\n\n"),
+                    is_error: false,
+                }
+            }
+            Err(e) => ToolResult {
+                content: format!("search_history failed: {}", e),
                 is_error: true,
             },
         }
@@ -752,6 +830,8 @@ impl AgenticLoop {
                 } else if tool_call.name == "search_attachment_chunks" {
                     self.execute_attachment_search_tool(&tool_call, run_context.as_ref())
                         .await
+                } else if tool_call.name == "search_history" {
+                    self.execute_search_history_tool(&tool_call).await
                 } else {
                     self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref()).await
                 };

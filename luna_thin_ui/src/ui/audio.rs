@@ -30,18 +30,14 @@ impl AudioService {
         // Convert to owned bytes for the cursor
         let audio_bytes = audio_data.data.into_owned();
 
-        // Create audio stream using rodio's API (0.18+)
-        let (_stream, stream_handle) = rodio::OutputStream::try_default()
+        let mut sink = rodio::DeviceSinkBuilder::open_default_sink()
             .map_err(|e| format!("Failed to open audio stream: {}", e))?;
-        let sink = rodio::Sink::try_new(&stream_handle)
-            .map_err(|e| format!("Failed to create sink: {}", e))?;
+        sink.log_on_drop(false);
 
-        // Decode from memory using Cursor
         let cursor = Cursor::new(audio_bytes);
-        let source = rodio::Decoder::new(cursor)?;
-        
-        sink.append(source);
-        sink.sleep_until_end();
+        let player = rodio::play(sink.mixer(), cursor)
+            .map_err(|e| format!("Failed to play audio: {}", e))?;
+        player.sleep_until_end();
         
         Ok(())
     }

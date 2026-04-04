@@ -44,7 +44,7 @@ impl Clone for ChatPageState {
 }
 
 /// Main chat page view (matches original app layout)
-pub fn chat_page(app: &LunaThinApp) -> Element<Message> {
+pub fn chat_page<'a>(app: &'a LunaThinApp) -> Element<'a, Message> {
     let mut layout = widget::column::with_capacity(6);
 
     // Top panel (with combined tools)
@@ -53,14 +53,14 @@ pub fn chat_page(app: &LunaThinApp) -> Element<Message> {
     // Error banner if present
     if let Some(ref error) = app.inline_error {
         layout = layout
-            .push(widget::Space::with_height(Length::Fixed(8.0)))
+            .push(widget::Space::new().height(Length::Fixed(8.0)))
             .push(crate::ui::widgets::error_banner(error, Message::DismissError));
     }
 
     // Info banner if present (e.g. summarization started/finished)
     if let Some(ref info) = app.inline_info {
         layout = layout
-            .push(widget::Space::with_height(Length::Fixed(8.0)))
+            .push(widget::Space::new().height(Length::Fixed(8.0)))
             .push(crate::ui::widgets::info_banner(info, Message::DismissInfo));
     }
 

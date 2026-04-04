@@ -2,14 +2,14 @@
 
 use cosmic::{
     iced::Length,
-    widget::{self, button, column, container, row, text, text_input, Space},
+    widget::{self, button, container, text, text_input, Column, Row, Space},
     Element,
 };
 
 use crate::ui::app::{LunaThinApp, Message, ConnectionStatus};
 
 pub fn settings_page(app: &LunaThinApp) -> Element<Message> {
-    let mut content = column().spacing(16).padding(16);
+    let mut content = Column::new().spacing(16).padding(16);
 
     // Header
     content = content.push(text("⚙️ Server Connection").size(24));
@@ -28,10 +28,10 @@ pub fn settings_page(app: &LunaThinApp) -> Element<Message> {
 
     content = content.push(
         container(
-            row()
+            Row::new()
                 .push(text(status_icon).size(24))
                 .push(
-                    column()
+                    Column::new()
                         .push(text(status_text).size(16))
                         .push(
                             text(status_desc)
@@ -55,7 +55,7 @@ pub fn settings_page(app: &LunaThinApp) -> Element<Message> {
 
     // Host input
     content = content.push(
-        column()
+        Column::new()
             .push(text("Host").size(14))
             .push(
                 text_input("e.g. 192.168.1.100 or localhost", &app.settings_host)
@@ -67,7 +67,7 @@ pub fn settings_page(app: &LunaThinApp) -> Element<Message> {
 
     // Port input
     content = content.push(
-        column()
+        Column::new()
             .push(text("Port").size(14))
             .push(
                 text_input("e.g. 8080", &app.settings_port)
@@ -79,7 +79,7 @@ pub fn settings_page(app: &LunaThinApp) -> Element<Message> {
 
     // API Key input
     content = content.push(
-        column()
+        Column::new()
             .push(text("API Key").size(14))
             .push(
                 text_input("Your server API key", &app.settings_api_key)
@@ -91,7 +91,7 @@ pub fn settings_page(app: &LunaThinApp) -> Element<Message> {
     );
 
     // Connect/Disconnect button
-    content = content.push(Space::with_height(8));
+    content = content.push(Space::new().height(8));
 
     let connection_button: Element<Message> = match app.connection_status {
         ConnectionStatus::Connected => button::text("Disconnect")
@@ -111,10 +111,10 @@ pub fn settings_page(app: &LunaThinApp) -> Element<Message> {
 
     // Profile selection (only when connected)
     if app.connection_status == ConnectionStatus::Connected && !app.profiles.is_empty() {
-        content = content.push(Space::with_height(16));
+        content = content.push(Space::new().height(16));
         content = content.push(text("🎭 Active Profile").size(18));
 
-        let mut profile_row = row().spacing(8);
+        let mut profile_row = Row::new().spacing(8);
         for profile in &app.profiles {
             let is_active = profile == &app.current_profile;
             let btn: Element<Message> = if is_active {
@@ -133,10 +133,10 @@ pub fn settings_page(app: &LunaThinApp) -> Element<Message> {
     }
 
     // Info section
-    content = content.push(Space::with_height(24));
+    content = content.push(Space::new().height(24));
     content = content.push(
         container(
-            column()
+            Column::new()
                 .push(text("ℹ️ About ThinUI").size(14))
                 .push(
                     text("This is a thin client that connects to a Luna AI server. All processing happens on the server - this app only provides the interface.")
@@ -154,8 +154,8 @@ pub fn settings_page(app: &LunaThinApp) -> Element<Message> {
                 cosmic::iced::Color::from_rgba(0.3, 0.3, 0.5, 0.2),
             )),
             border: cosmic::iced::Border {
-                width: 1.0,
                 color: cosmic::iced::Color::from_rgba(0.3, 0.3, 0.5, 0.4),
+                width: 1.0,
                 radius: 8.0.into(),
             },
             ..Default::default()

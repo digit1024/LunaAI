@@ -16,12 +16,12 @@ libcosmic = { git = "https://github.com/pop-os/libcosmic.git", branch = "master"
 tokio = { version = "1.0", features = ["full"] }
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
+reqwest = { version = "0.13", features = ["json", "stream", "multipart"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "0.9"
+toml = "1.1"
 
 # Error handling
 anyhow = "1.0"
@@ -44,8 +44,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # WebSocket client
-tokio-tungstenite = "0.28"
-tungstenite = "0.28"
+tokio-tungstenite = "0.29"
+tungstenite = "0.29"
 
 # Futures
 futures = "0.3"
@@ -70,14 +70,17 @@ url = "2.5.4"
 zbus = "5.12.0"
 
 # Audio support
-rodio = "0.18"
+rodio = "0.22"
 rust-embed = "8.1"
 
 # Clipboard support
 arboard = "3.2"
 
 # Markdown parsing for TTS
-pulldown-cmark = "0.9"
+pulldown-cmark = "0.13"
+
+# Base64 decoding for data: URI images
+base64 = "0.22"
 
 [features]
 default = ["ttsandstt"]

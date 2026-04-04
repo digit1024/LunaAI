@@ -5,7 +5,7 @@
 use cosmic::{
     font,
     iced::{Length, Padding},
-    widget::{button, column, container, row, scrollable, text, Space},
+    widget::{button, container, scrollable, text, Column, Row, Space},
     Element,
 };
 use crate::ui::icons;
@@ -70,7 +70,7 @@ impl ToolCallWidget {
         let is_expanded = self.is_expanded;
 
         // Header row: status icon, tool name, expand button (no text labels)
-        let header = row()
+        let header = Row::new()
             .push(
                 cosmic::widget::icon::icon(status_icon_handle)
                     .size(16),
@@ -80,7 +80,7 @@ impl ToolCallWidget {
                     .font(font::Font::MONOSPACE)
                     .size(14),
             )
-            .push(Space::with_width(Length::Fill))
+            .push(Space::new().width(Length::Fill))
             .push(
                 button::icon(toggle_icon_handle)
                     .on_press(on_toggle)
@@ -90,11 +90,11 @@ impl ToolCallWidget {
             .align_y(cosmic::iced::Alignment::Center)
             .width(Length::Fill);
 
-        let mut content = column().push(header).spacing(10);
+        let mut content = Column::new().push(header).spacing(10);
 
         if is_expanded {
             // Parameters section
-            let params_widget = column()
+            let params_widget = Column::new()
                 .push(
                     text("Parameters")
                         .size(14)
@@ -119,7 +119,7 @@ impl ToolCallWidget {
 
             // Result section (if completed)
             if let Some(result_text) = result {
-                let result_widget = column()
+                let result_widget = Column::new()
                     .push(
                         text("Result")
                             .size(14)
@@ -145,7 +145,7 @@ impl ToolCallWidget {
 
             // Error section (if error)
             if let Some(error_text) = error {
-                let error_widget = column()
+                let error_widget = Column::new()
                     .push(
                         text("Error")
                             .size(14)

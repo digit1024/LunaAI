@@ -74,7 +74,7 @@ pub fn create_attachment(file_path: &str) -> Result<Attachment> {
         }
         FileType::Document => {
             // For document files (PDF, DOCX, XLSX, etc.), convert to markdown
-            match markdownify::convert(path) {
+            match markdownify::MarkdownifyInput::from_path(path).and_then(|input| input.convert()) {
                 Ok(markdown_content) => {
                     tracing::debug!(
                         file_name = %file_name,

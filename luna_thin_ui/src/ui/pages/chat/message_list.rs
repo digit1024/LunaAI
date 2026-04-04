@@ -4,7 +4,7 @@
 
 use cosmic::{
     iced::{Length, Padding},
-    widget::{column, container, row, scrollable, text, Space},
+    widget::{container, scrollable, text, Column, Row, Space},
     Element,
 };
 
@@ -17,11 +17,11 @@ fn is_assistant_like(msg: &ChatMessage) -> bool {
 }
 
 /// Build the message list view
-pub fn message_list(app: &LunaThinApp) -> Element<Message> {
+pub fn message_list<'a>(app: &'a LunaThinApp) -> Element<'a, Message> {
     // Empty state
     if app.messages.is_empty() && !app.is_streaming {
         return container(
-            column()
+            Column::new()
                 .push(text("🪄").size(48))
                 .push(text("Ready to help").size(18))
                 .push(
@@ -41,7 +41,7 @@ pub fn message_list(app: &LunaThinApp) -> Element<Message> {
         .into();
     }
 
-    let mut col = column().spacing(0);
+    let mut col = Column::new().spacing(0);
 
     // Filter out empty messages and render based on bubble type
     // Use actual message indices for context calculation
@@ -100,15 +100,15 @@ pub fn message_list(app: &LunaThinApp) -> Element<Message> {
             .width(Length::FillPortion(7));
 
             col = col.push(
-                row()
+                Row::new()
                     .push(indicator)
-                    .push(Space::with_width(Length::FillPortion(3))),
+                    .push(Space::new().width(Length::FillPortion(3))),
             );
         }
     }
 
     // Bottom spacer for scroll anchor
-    col = col.push(Space::with_height(Length::Fixed(1.0)).width(Length::Fill));
+    col = col.push(Space::new().height(Length::Fixed(1.0)).width(Length::Fill));
 
     // Use anchor_bottom() for auto-scroll like original app
     scrollable(col)
@@ -121,7 +121,11 @@ pub fn message_list(app: &LunaThinApp) -> Element<Message> {
 }
 
 /// Render a user/assistant/summary message bubble
-fn render_message_bubble(app: &LunaThinApp, msg: &ChatMessage, idx: usize) -> Element<'static, Message> {
+fn render_message_bubble<'a>(
+    app: &'a LunaThinApp,
+    msg: &'a ChatMessage,
+    idx: usize,
+) -> Element<'a, Message> {
     // Calculate context for smart corners
     let prev_msg = if idx > 0 { app.messages.get(idx - 1) } else { None };
     let next_msg = app.messages.get(idx + 1);
@@ -150,6 +154,8 @@ fn render_message_bubble(app: &LunaThinApp, msg: &ChatMessage, idx: usize) -> El
         .unwrap_or(false);
     
     message_bubble(
+        &msg.markdown_items,
+        &app.image_cache,
         &msg.content,
         is_user_msg,
         is_summary_msg,
@@ -256,7 +262,7 @@ fn render_tool_bubble(app: &LunaThinApp, msg: &ChatMessage, idx: usize) -> Eleme
         });
 
     // Left-aligned row with margins
-    row()
+    Row::new()
         .push(
             container(tool_widget)
                 .width(Length::FillPortion(7))
@@ -267,6 +273,6 @@ fn render_tool_bubble(app: &LunaThinApp, msg: &ChatMessage, idx: usize) -> Eleme
                     right: 0.0,
                 }),
         )
-        .push(Space::with_width(Length::FillPortion(3)))
+        .push(Space::new().width(Length::FillPortion(3)))
         .into()
 }

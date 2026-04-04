@@ -42,7 +42,10 @@ fn chunk_text(s: &str, chunk_chars: usize, overlap: usize) -> Vec<String> {
 fn hash_text(s: &str) -> String {
     let mut h = Sha256::new();
     h.update(s.as_bytes());
-    format!("{:x}", h.finalize())
+    h.finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
 }
 
 /// Full extracted text for indexing (not the truncated inline copy).
@@ -55,7 +58,9 @@ pub fn full_extract_for_indexing(path: &str) -> Option<String> {
         .to_string();
     let ft = FileType::from_extension(&ext);
     match ft {
-        FileType::Document => markdownify::convert(p).ok(),
+        FileType::Document => markdownify::MarkdownifyInput::from_path(p)
+            .ok()
+            .and_then(|input| input.convert().ok()),
         FileType::Text | FileType::Unsupported => std::fs::read_to_string(p).ok(),
         FileType::Image => None,
     }

@@ -2,7 +2,7 @@
 
 use cosmic::{
     iced::Length,
-    widget::{self, button, column, container, dropdown, row, text, Space},
+    widget::{self, button, container, dropdown, text, Column, Row, Space},
     Element,
 };
 
@@ -35,16 +35,16 @@ pub fn top_panel(app: &LunaThinApp) -> Element<'static, Message> {
     let current_idx = profiles_display.iter().position(|p| p == &app.current_profile);
 
     container(
-        column()
+        Column::new()
             .push(
                 // First row: Connection + Title <-> New chat button
-                row()
+                Row::new()
                     .push(
                         widget::icon::from_name(conn_icon).size(16)
                     )
-                    .push(Space::with_width(8))
+                    .push(Space::new().width(8))
                     .push(text(title).size(18))
-                    .push(Space::with_width(Length::Fill))
+                    .push(Space::new().width(Length::Fill))
                     .push(
                         button::icon(crate::ui::icons::get_handle("plus-circle-filled-symbolic", 16))
                             .on_press(Message::NewConversation)
@@ -55,7 +55,7 @@ pub fn top_panel(app: &LunaThinApp) -> Element<'static, Message> {
             )
             .push(
                 // Divider
-                container(Space::with_height(Length::Fixed(1.0)))
+                container(Space::new().height(Length::Fixed(1.0)))
                     .width(Length::Fill)
                     .style(|_theme| cosmic::widget::container::Style {
                         background: Some(cosmic::iced::Background::Color(
@@ -66,9 +66,9 @@ pub fn top_panel(app: &LunaThinApp) -> Element<'static, Message> {
             )
             .push(
                 // Second row: Profile dropdown
-                row()
+                Row::new()
                     .push(text("Profile").size(12))
-                    .push(Space::with_width(8))
+                    .push(Space::new().width(8))
                     .push(
                         dropdown(profiles_display, current_idx, move |idx| {
                             if let Some(profile) = profiles_closure.get(idx) {
@@ -78,7 +78,7 @@ pub fn top_panel(app: &LunaThinApp) -> Element<'static, Message> {
                             }
                         })
                     )
-                    .push(Space::with_width(Length::Fill))
+                    .push(Space::new().width(Length::Fill))
                     .spacing(8)
                     .align_y(cosmic::iced::Alignment::Center),
             )

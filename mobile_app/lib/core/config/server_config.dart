@@ -57,6 +57,24 @@ class ServerConfig {
   /// Returns secure URI by default (for backward compatibility)
   Uri websocketUri() => websocketUriSecure();
 
+  /// REST upload/API base (https) – same host/port semantics as [websocketUriSecure].
+  Uri httpBaseUriSecure() {
+    return Uri(
+      scheme: 'https',
+      host: host,
+      port: port == 443 ? null : port,
+    );
+  }
+
+  /// REST upload/API base (http) – same host/port semantics as [websocketUriInsecure].
+  Uri httpBaseUriInsecure() {
+    return Uri(
+      scheme: 'http',
+      host: host,
+      port: port,
+    );
+  }
+
   ServerConfig copyWith({
     String? host,
     int? port,

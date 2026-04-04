@@ -107,6 +107,10 @@ pub enum Message {
     TtsStatusChanged(String), // "idle" | "speaking" | "listening" | "processing"
     TtsClientInitialized(Option<Arc<crate::services::tts_client::TtsClient>>),
 
+    // Markdown image loading
+    ImageLoaded { url: String, data: Vec<u8>, is_svg: bool },
+    ImageLoadFailed { url: String, error: String },
+
     // Text editor action
     InputActionPerformed(text_editor::Action),
 
@@ -179,6 +183,23 @@ pub enum TtsStatus {
 }
 
 // ============================================================================
+// Markdown image cache
+// ============================================================================
+
+/// Cache state for a markdown image (remote, local, or inline data URI).
+#[derive(Debug, Clone)]
+pub enum ImageState {
+    /// Download / decode in flight.
+    Fetching,
+    /// Raster image ready to display (PNG, JPEG, WebP, GIF, …).
+    Raster(cosmic::widget::image::Handle),
+    /// SVG data ready to display.
+    Svg(Vec<u8>),
+    /// Download or decode failed.
+    Error(String),
+}
+
+// ============================================================================
 // Chat Message (UI representation)
 // ============================================================================
 
@@ -199,6 +220,8 @@ pub enum BubbleType {
 pub struct ChatMessage {
     pub id: String,
     pub content: String,
+    /// Parsed markdown for assistant/summary bubbles (iced 0.14 `markdown::view` borrows items).
+    pub markdown_items: Vec<cosmic::widget::markdown::Item>,
     pub bubble_type: BubbleType,
     pub is_error: bool,
     pub reasoning_content: Option<String>,
@@ -214,11 +237,16 @@ pub struct ChatMessage {
 }
 
 impl ChatMessage {
+    pub(crate) fn parse_markdown_items(content: &str) -> Vec<cosmic::widget::markdown::Item> {
+        cosmic::widget::markdown::parse(content).collect()
+    }
+
     /// Create user message
     pub fn user(content: String) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             content,
+            markdown_items: Vec::new(),
             bubble_type: BubbleType::User,
             is_error: false,
             reasoning_content: None,
@@ -234,9 +262,11 @@ impl ChatMessage {
     
     /// Create assistant message
     pub fn assistant(content: String, reasoning_content: Option<String>) -> Self {
+        let markdown_items = Self::parse_markdown_items(&content);
         Self {
             id: Uuid::new_v4().to_string(),
             content,
+            markdown_items,
             bubble_type: BubbleType::Assistant,
             is_error: false,
             reasoning_content,
@@ -255,6 +285,7 @@ impl ChatMessage {
         Self {
             id: format!("{}_request", tool_call_id),
             content: format!("🧰 {}", name),
+            markdown_items: Vec::new(),
             bubble_type: BubbleType::ToolRequest,
             is_error: false,
             reasoning_content: None,
@@ -273,6 +304,7 @@ impl ChatMessage {
         Self {
             id: format!("{}_result", tool_call_id),
             content: format!("🧰 {}", name),
+            markdown_items: Vec::new(),
             bubble_type: BubbleType::ToolResult,
             is_error,
             reasoning_content: None,
@@ -288,9 +320,11 @@ impl ChatMessage {
     
     /// Create summary message
     pub fn summary(content: String, summarized_count: usize) -> Self {
+        let markdown_items = Self::parse_markdown_items(&content);
         Self {
             id: Uuid::new_v4().to_string(),
             content,
+            markdown_items,
             bubble_type: BubbleType::Summary,
             is_error: false,
             reasoning_content: None,
@@ -378,6 +412,9 @@ pub struct LunaThinApp {
     /// Upload UUIDs waiting to be sent with the next message (`SendMessage.attachment_ids`).
     pub pending_attachment_ids: Vec<String>,
 
+    /// Remote image cache for markdown rendering.
+    pub image_cache: std::collections::HashMap<String, ImageState>,
+
     // Settings input
     pub settings_host: String,
     pub settings_port: String,
@@ -440,6 +477,7 @@ impl LunaThinApp {
             inline_error: None,
             inline_info: None,
             pending_attachment_ids: Vec::new(),
+            image_cache: std::collections::HashMap::new(),
         }
     }
 
@@ -576,6 +614,133 @@ impl LunaThinApp {
             .comments("A thin client that connects to a Luna AI server via WebSocket. All processing happens on the server - this app only provides the interface.")
     }
 
+    // ========================================================================
+    // Markdown image fetching
+    // ========================================================================
+
+    /// Scans `items` for image URLs not yet in the cache, marks them as
+    /// `Fetching`, and returns a batched `Task` that resolves each one.
+    ///
+    /// Supported URL schemes:
+    /// - `http://` / `https://`  — fetched via reqwest
+    /// - `file://`               — read from the local filesystem
+    /// - `data:<mime>;base64,`   — decoded inline (no I/O)
+    pub(crate) fn fetch_missing_images(
+        &mut self,
+        items: &[cosmic::widget::markdown::Item],
+    ) -> app::Task<Message> {
+        use crate::ui::widgets::markdown_viewer::collect_image_urls;
+        let urls = collect_image_urls(items);
+        if urls.is_empty() {
+            return app::Task::none();
+        }
+
+        let mut tasks: Vec<app::Task<Message>> = Vec::new();
+        for url in urls {
+            if self.image_cache.contains_key(&url) {
+                continue;
+            }
+            self.image_cache.insert(url.clone(), ImageState::Fetching);
+            let url_clone = url.clone();
+
+            if let Some(msg) = Self::try_resolve_inline(&url) {
+                // data: URI or file:// — resolve synchronously inside the task
+                tasks.push(app::Task::perform(
+                    async move { msg },
+                    |msg| cosmic::Action::App(msg),
+                ));
+            } else {
+                // Remote http/https
+                tasks.push(app::Task::perform(
+                    async move {
+                        match reqwest::get(&url_clone).await {
+                            Ok(resp) => match resp.bytes().await {
+                                Ok(bytes) => {
+                                    let is_svg = Self::is_svg_bytes(&bytes);
+                                    Message::ImageLoaded { url: url_clone, data: bytes.to_vec(), is_svg }
+                                }
+                                Err(e) => Message::ImageLoadFailed {
+                                    url: url_clone,
+                                    error: e.to_string(),
+                                },
+                            },
+                            Err(e) => Message::ImageLoadFailed {
+                                url: url_clone,
+                                error: e.to_string(),
+                            },
+                        }
+                    },
+                    |msg| cosmic::Action::App(msg),
+                ));
+            }
+        }
+        app::Task::batch(tasks)
+    }
+
+    /// Resolve a `data:` URI or `file://` URL into an `ImageLoaded` /
+    /// `ImageLoadFailed` message without doing any async I/O.
+    fn try_resolve_inline(url: &str) -> Option<Message> {
+        if let Some(rest) = url.strip_prefix("data:") {
+            // data:[<mediatype>][;base64],<encoded>
+            if let Some(comma_pos) = rest.find(',') {
+                let meta = &rest[..comma_pos];
+                let encoded = &rest[comma_pos + 1..];
+                let is_base64 = meta.ends_with(";base64");
+                let mime = meta.trim_end_matches(";base64");
+                let is_svg = mime.contains("svg");
+                if is_base64 {
+                    use base64::Engine as _;
+                    match base64::engine::general_purpose::STANDARD.decode(encoded) {
+                        Ok(bytes) => {
+                            return Some(Message::ImageLoaded {
+                                url: url.to_string(),
+                                data: bytes,
+                                is_svg,
+                            });
+                        }
+                        Err(e) => {
+                            return Some(Message::ImageLoadFailed {
+                                url: url.to_string(),
+                                error: format!("base64 decode: {e}"),
+                            });
+                        }
+                    }
+                }
+            }
+            Some(Message::ImageLoadFailed {
+                url: url.to_string(),
+                error: "Unsupported data URI (only base64 is supported)".into(),
+            })
+        } else if let Some(path) = url.strip_prefix("file://") {
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    let is_svg = path.ends_with(".svg") || path.ends_with(".svgz")
+                        || Self::is_svg_bytes(&bytes);
+                    Some(Message::ImageLoaded {
+                        url: url.to_string(),
+                        data: bytes,
+                        is_svg,
+                    })
+                }
+                Err(e) => Some(Message::ImageLoadFailed {
+                    url: url.to_string(),
+                    error: format!("file read: {e}"),
+                }),
+            }
+        } else {
+            None
+        }
+    }
+
+    fn is_svg_bytes(bytes: &[u8]) -> bool {
+        // Check for SVG XML signature (may have a BOM or whitespace before '<')
+        let trimmed = bytes.iter().position(|&b| b != b' ' && b != b'\t' && b != b'\n' && b != b'\r')
+            .map(|i| &bytes[i..])
+            .unwrap_or(bytes);
+        trimmed.starts_with(b"<svg") || trimmed.starts_with(b"<?xml")
+            || trimmed.windows(4).take(20).any(|w| w == b"<svg")
+    }
+
     pub(crate) fn send_command(&self, command: ClientCommand) {
         let ws_client = self.ws_client.clone();
         tokio::spawn(async move {
@@ -652,10 +817,16 @@ impl LunaThinApp {
                 } else {
                     BubbleType::Assistant
                 };
-                
+                let content = m.content.clone();
+                let markdown_items = match bubble_type {
+                    BubbleType::Assistant => ChatMessage::parse_markdown_items(&content),
+                    _ => Vec::new(),
+                };
+
                 result.push(ChatMessage {
                     id: m.id.clone(),
-                    content: m.content.clone(),
+                    content,
+                    markdown_items,
                     bubble_type,
                     is_error: false,
                     reasoning_content: m.reasoning_content.clone(),
@@ -683,6 +854,7 @@ impl LunaThinApp {
         if let Some(ref bubble_id) = self.current_assistant_bubble_id {
             if let Some(msg) = self.messages.iter_mut().find(|m| &m.id == bubble_id) {
                 msg.content.push_str(chunk);
+                msg.markdown_items = ChatMessage::parse_markdown_items(&msg.content);
                 msg.is_streaming = true;
                 return;
             }
@@ -692,9 +864,12 @@ impl LunaThinApp {
         let new_id = Uuid::new_v4().to_string();
         self.current_assistant_bubble_id = Some(new_id.clone());
         
+        let content = chunk.to_string();
+        let markdown_items = ChatMessage::parse_markdown_items(&content);
         self.messages.push(ChatMessage {
             id: new_id,
-            content: chunk.to_string(),
+            content,
+            markdown_items,
             bubble_type: BubbleType::Assistant,
             is_error: false,
             reasoning_content: None,
@@ -727,6 +902,7 @@ impl LunaThinApp {
         self.messages.push(ChatMessage {
             id: new_id,
             content: String::new(),
+            markdown_items: Vec::new(),
             bubble_type: BubbleType::Assistant,
             is_error: false,
             reasoning_content: Some(chunk.to_string()),
@@ -740,30 +916,41 @@ impl LunaThinApp {
         });
     }
     
-    /// Complete assistant message
+    /// Complete assistant message.
+    /// Returns a Task for any image fetches triggered by the final content.
+    ///
     /// NOTE: Do NOT set is_streaming = false here. In an agentic loop, AssistantComplete
     /// fires before tool execution begins. The global is_streaming flag must stay true
     /// so the stop button remains visible during tool execution.
-    /// is_streaming is cleared by ConversationComplete or StreamingStopped events.
-    fn complete_assistant(&mut self, content: &str, reasoning_content: Option<&str>) {
+    fn complete_assistant(
+        &mut self,
+        content: &str,
+        reasoning_content: Option<&str>,
+    ) -> app::Task<Message> {
         self.streaming_content.clear();
         self.reasoning_content.clear();
-        
-        // Find our tracked bubble or the last assistant bubble
-        if let Some(ref bubble_id) = self.current_assistant_bubble_id {
+
+        let items = ChatMessage::parse_markdown_items(content);
+        let fetch_task = self.fetch_missing_images(&items);
+
+        if let Some(ref bubble_id) = self.current_assistant_bubble_id.clone() {
             if let Some(msg) = self.messages.iter_mut().find(|m| &m.id == bubble_id) {
                 msg.content = content.to_string();
+                msg.markdown_items = items;
                 msg.reasoning_content = reasoning_content.map(|s| s.to_string());
                 msg.is_streaming = false;
-                return;
+                return fetch_task;
             }
         }
-        
-        // Fallback: update last assistant or create new
-        if let Some(msg) = self.messages.iter_mut().rev()
+
+        if let Some(msg) = self
+            .messages
+            .iter_mut()
+            .rev()
             .find(|m| m.bubble_type == BubbleType::Assistant)
         {
             msg.content = content.to_string();
+            msg.markdown_items = items;
             msg.reasoning_content = reasoning_content.map(|s| s.to_string());
             msg.is_streaming = false;
         } else {
@@ -772,6 +959,7 @@ impl LunaThinApp {
                 reasoning_content.map(|s| s.to_string()),
             ));
         }
+        fetch_task
     }
 
     // ========================================================================
@@ -855,24 +1043,28 @@ impl LunaThinApp {
                 
                 // Map messages like mobile app - tool calls become separate bubbles
                 self.messages = self.map_messages_from_server(&conversation.messages);
-                
+
                 self.current_page = Page::Chat;
                 self.update_nav_model();
-                
+
                 // Restore pending retry input AFTER messages are updated
-                // (do this last so it doesn't get cleared)
                 if let Some(retry_input) = self.pending_retry_input.take() {
                     self.input_text = retry_input.clone();
-                    // Also update the text_editor content to actually display it
-                    // Preserve the widget ID by creating new content with the text
-                    // (the input_id is stored separately, so this is safe)
-                    self.chat_page.input_content = cosmic::widget::text_editor::Content::with_text(&retry_input);
+                    self.chat_page.input_content =
+                        cosmic::widget::text_editor::Content::with_text(&retry_input);
                     tracing::info!("Restored retry input text: {} chars", self.input_text.len());
                 } else {
-                    // Clear input if no retry input pending (normal conversation load)
                     self.input_text.clear();
                     self.chat_page.input_content = cosmic::widget::text_editor::Content::new();
                 }
+
+                // Fetch any images referenced in the loaded messages
+                let items_snapshot: Vec<_> = self
+                    .messages
+                    .iter()
+                    .flat_map(|m| m.markdown_items.iter().cloned())
+                    .collect();
+                return self.fetch_missing_images(&items_snapshot);
             }
             ServerEvent::ConversationsList { conversations } => {
                 self.conversations = conversations;
@@ -905,7 +1097,7 @@ impl LunaThinApp {
                 self.apply_reasoning_delta(&chunk);
             }
             ServerEvent::AssistantComplete { content, reasoning_content, .. } => {
-                self.complete_assistant(&content, reasoning_content.as_deref());
+                return self.complete_assistant(&content, reasoning_content.as_deref());
             }
             ServerEvent::ToolPlanned { tools, .. } => {
                 // Tools interrupt assistant stream - reset so next delta creates new bubble
@@ -947,6 +1139,95 @@ impl LunaThinApp {
         }
         app::Task::none()
     }
+}
+
+/// Identity for `Subscription::run_with` (iced 0.14; replaces removed `run_with_id`).
+#[derive(Clone)]
+struct WsSubscriptionClient(std::sync::Arc<tokio::sync::RwLock<LunaWsClient>>);
+
+impl std::hash::Hash for WsSubscriptionClient {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (std::sync::Arc::as_ptr(&self.0) as usize).hash(state);
+    }
+}
+
+fn ws_client_event_stream(
+    id: &WsSubscriptionClient,
+) -> std::pin::Pin<Box<dyn futures::Stream<Item = Message> + Send>> {
+    let ws_client = id.0.clone();
+    Box::pin(async_stream::stream! {
+        tracing::info!("🎧 WS subscription started");
+
+        let rx = {
+            let client = ws_client.read().await;
+            client.subscribe()
+        };
+
+        if let Some(mut rx) = rx {
+            tracing::info!("🎧 Subscribed to event channel, starting poll loop");
+            let mut last_yield = std::time::Instant::now();
+            let min_yield_interval = std::time::Duration::from_millis(FRAME_RATE_MS);
+            let mut event_buffer = Vec::new();
+            let max_buffer_size = 100;
+
+            loop {
+                let next_yield_time = last_yield + min_yield_interval;
+                let sleep_duration =
+                    next_yield_time.saturating_duration_since(std::time::Instant::now());
+                let yield_timer = tokio::time::sleep(sleep_duration);
+                tokio::pin!(yield_timer);
+
+                tokio::select! {
+                    result = rx.recv() => {
+                        match result {
+                            Ok(event) => {
+                                event_buffer.push(event);
+
+                                let now = std::time::Instant::now();
+                                let should_yield = now.duration_since(last_yield) >= min_yield_interval
+                                    || event_buffer.len() >= max_buffer_size;
+
+                                if should_yield && !event_buffer.is_empty() {
+                                    for buffered_event in event_buffer.drain(..) {
+                                        tracing::debug!("🎧 Yielding buffered event: {:?}", buffered_event);
+                                        yield Message::ServerEvent(buffered_event);
+                                    }
+                                    last_yield = std::time::Instant::now();
+                                }
+                            }
+                            Err(BroadcastRecvError::Lagged(skipped)) => {
+                                tracing::warn!("🎧 Lagged behind by {} messages, continuing...", skipped);
+                                if !event_buffer.is_empty() {
+                                    tracing::debug!("🎧 Clearing {} buffered events due to lag", event_buffer.len());
+                                    event_buffer.clear();
+                                }
+                            }
+                            Err(BroadcastRecvError::Closed) => {
+                                for buffered_event in event_buffer.drain(..) {
+                                    yield Message::ServerEvent(buffered_event);
+                                }
+                                tracing::info!("🎧 Event channel closed (disconnected)");
+                                yield Message::ServerDisconnected;
+                                break;
+                            }
+                        }
+                    }
+                    _ = yield_timer.as_mut() => {
+                        if !event_buffer.is_empty() {
+                            for buffered_event in event_buffer.drain(..) {
+                                tracing::debug!("🎧 Yielding buffered event (timer): {:?}", buffered_event);
+                                yield Message::ServerEvent(buffered_event);
+                            }
+                            last_yield = std::time::Instant::now();
+                        }
+                    }
+                }
+            }
+        } else {
+            tracing::warn!("🎧 Not connected, cannot subscribe to events");
+            yield Message::ServerDisconnected;
+        }
+    })
 }
 
 // ============================================================================
@@ -1137,6 +1418,19 @@ impl Application for LunaThinApp {
             Message::Quit => {
                 std::process::exit(0);
             }
+            // Image cache updates
+            Message::ImageLoaded { url, data, is_svg } => {
+                let state = if is_svg {
+                    ImageState::Svg(data)
+                } else {
+                    ImageState::Raster(cosmic::widget::image::Handle::from_bytes(data))
+                };
+                self.image_cache.insert(url, state);
+            }
+            Message::ImageLoadFailed { url, error } => {
+                tracing::warn!("Failed to load markdown image {url}: {error}");
+                self.image_cache.insert(url, ImageState::Error(error));
+            }
             _ => {} // Messages handled by handler modules
         }
 
@@ -1159,95 +1453,10 @@ impl Application for LunaThinApp {
 
         // WebSocket event subscription - subscribes to broadcast channel (supports reconnection)
         if self.connection_status == ConnectionStatus::Connected {
-            let ws_client = self.ws_client.clone();
-            subscriptions.push(
-                Subscription::run_with_id(
-                    "ws-events",
-                    async_stream::stream! {
-                        tracing::info!("🎧 WS subscription started");
-                        
-                        // Subscribe to broadcast channel (can be called multiple times)
-                        let rx = {
-                            let client = ws_client.read().await;
-                            client.subscribe()
-                        };
-                        
-                        if let Some(mut rx) = rx {
-                            tracing::info!("🎧 Subscribed to event channel, starting poll loop");
-                            let mut last_yield = std::time::Instant::now();
-                            let min_yield_interval = std::time::Duration::from_millis(FRAME_RATE_MS);
-                            let mut event_buffer = Vec::new();
-                            let max_buffer_size = 100;
-                            
-                            loop {
-                                // Use select to either receive a new event OR yield buffered events after interval
-                                let next_yield_time = last_yield + min_yield_interval;
-                                let sleep_duration = next_yield_time.saturating_duration_since(std::time::Instant::now());
-                                let yield_timer = tokio::time::sleep(sleep_duration);
-                                tokio::pin!(yield_timer);
-                                
-                                tokio::select! {
-                                    // Receive new event
-                                    result = rx.recv() => {
-                                        match result {
-                                            Ok(event) => {
-                                                // Buffer events and yield them in batches to reduce channel pressure
-                                                event_buffer.push(event);
-                                                
-                                                let now = std::time::Instant::now();
-                                                let should_yield = now.duration_since(last_yield) >= min_yield_interval 
-                                                    || event_buffer.len() >= max_buffer_size;
-                                                
-                                                if should_yield && !event_buffer.is_empty() {
-                                                    // Yield all buffered events
-                                                    for buffered_event in event_buffer.drain(..) {
-                                                        tracing::debug!("🎧 Yielding buffered event: {:?}", buffered_event);
-                                                        yield Message::ServerEvent(buffered_event);
-                                                    }
-                                                    last_yield = std::time::Instant::now();
-                                                }
-                                            }
-                                            Err(BroadcastRecvError::Lagged(skipped)) => {
-                                                tracing::warn!("🎧 Lagged behind by {} messages, continuing...", skipped);
-                                                // Continue receiving - broadcast channels automatically skip lagged messages
-                                                // Clear buffer to prevent further lag
-                                                if !event_buffer.is_empty() {
-                                                    tracing::debug!("🎧 Clearing {} buffered events due to lag", event_buffer.len());
-                                                    event_buffer.clear();
-                                                }
-                                            }
-                                            Err(BroadcastRecvError::Closed) => {
-                                                // Channel closed (disconnected)
-                                                // Yield any remaining buffered events before breaking
-                                                for buffered_event in event_buffer.drain(..) {
-                                                    yield Message::ServerEvent(buffered_event);
-                                                }
-                                                tracing::info!("🎧 Event channel closed (disconnected)");
-                                                yield Message::ServerDisconnected;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    // Timer expired - yield buffered events if any
-                                    _ = yield_timer.as_mut() => {
-                                        if !event_buffer.is_empty() {
-                                            // Yield all buffered events
-                                            for buffered_event in event_buffer.drain(..) {
-                                                tracing::debug!("🎧 Yielding buffered event (timer): {:?}", buffered_event);
-                                                yield Message::ServerEvent(buffered_event);
-                                            }
-                                            last_yield = std::time::Instant::now();
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            tracing::warn!("🎧 Not connected, cannot subscribe to events");
-                            yield Message::ServerDisconnected;
-                        }
-                    },
-                ),
-            );
+            subscriptions.push(Subscription::run_with(
+                WsSubscriptionClient(self.ws_client.clone()),
+                ws_client_event_stream,
+            ));
         }
 
         Subscription::batch(subscriptions)

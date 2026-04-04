@@ -13,7 +13,7 @@ pub fn error_banner<M: Clone + 'static>(error: &str, on_dismiss: M) -> Element<'
     let content = row::with_children(vec![
         text("⚠️").size(16).into(),
         text(error_text).size(14).into(),
-        Space::with_width(Length::Fill).into(),
+        Space::new().width(Length::Fill).into(),
         button::standard("Dismiss")
             .on_press(on_dismiss)
             .padding([4, 12])
@@ -30,8 +30,8 @@ pub fn error_banner<M: Clone + 'static>(error: &str, on_dismiss: M) -> Element<'
                 0.5, 0.2, 0.2,
             ))),
             border: cosmic::iced::Border {
-                width: 1.0,
                 color: cosmic::iced::Color::from_rgb(0.7, 0.3, 0.3),
+                width: 1.0,
                 radius: 8.0.into(),
             },
             ..Default::default()

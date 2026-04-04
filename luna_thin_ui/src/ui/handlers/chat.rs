@@ -68,20 +68,8 @@ pub fn handle_chat_messages(
             None
         }
         Message::CopyMessage(content) => {
-            // Copy to clipboard
-            match arboard::Clipboard::new() {
-                Ok(mut clipboard) => {
-                    if let Err(e) = clipboard.set_text(&content) {
-                        tracing::error!("Failed to copy to clipboard: {}", e);
-                    } else {
-                        tracing::info!("Copied {} bytes to clipboard", content.len());
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to initialize clipboard: {}", e);
-                }
-            }
-            None
+            tracing::info!("Copying {} bytes to clipboard", content.len());
+            Some(cosmic::iced::clipboard::write(content))
         }
         Message::RegenerateMessage(message_id) => {
             // Log regenerate click - will be used in future to regenerate answer
