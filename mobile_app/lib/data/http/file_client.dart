@@ -6,6 +6,61 @@ import 'package:flutter/foundation.dart';
 
 import '../../core/config/server_config.dart';
 
+/// Max file size accepted client-side before upload (50 MB).
+const int kMaxFileSizeBytes = 50 * 1024 * 1024;
+
+/// Threshold above which image downscaling is offered (500 KB).
+const int kImageDownscaleThresholdBytes = 500 * 1024;
+
+/// Extensions treated as images for downscale dialog and MIME routing.
+const Set<String> kImageExtensions = {'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tiff', 'tif'};
+
+/// Returns a best-effort MIME type from a lowercase file extension.
+String mimeTypeFromExtension(String ext) {
+  switch (ext) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'png':
+      return 'image/png';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'bmp':
+      return 'image/bmp';
+    case 'tiff':
+    case 'tif':
+      return 'image/tiff';
+    case 'svg':
+      return 'image/svg+xml';
+    case 'pdf':
+      return 'application/pdf';
+    case 'doc':
+      return 'application/msword';
+    case 'docx':
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    case 'xls':
+      return 'application/vnd.ms-excel';
+    case 'xlsx':
+      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    case 'txt':
+      return 'text/plain';
+    case 'md':
+      return 'text/markdown';
+    case 'csv':
+      return 'text/csv';
+    case 'json':
+      return 'application/json';
+    case 'xml':
+      return 'application/xml';
+    case 'zip':
+      return 'application/zip';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
 class FileAttachment {
   final String fileId;
   final String fileName;
@@ -13,7 +68,7 @@ class FileAttachment {
   final int fileSize;
   final File file;
 
-  FileAttachment({
+  const FileAttachment({
     required this.fileId,
     required this.fileName,
     required this.mimeType,

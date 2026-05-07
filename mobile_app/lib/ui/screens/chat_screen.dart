@@ -1,17 +1,23 @@
 import 'dart:async';
-
 import 'dart:io';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
+import 'package:image/image.dart' as img;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../application/app_controller.dart';
 import '../../application/app_state.dart';
 import '../../core/config/server_config.dart';
-import '../../data/http/file_client.dart';
+import '../../data/http/file_client.dart'
+    show
+        FileAttachment,
+        kImageExtensions,
+        kImageDownscaleThresholdBytes,
+        kMaxFileSizeBytes;
 import '../../core/config/tts_preferences.dart';
 import '../../core/config/tts_provider_type.dart';
 import '../../core/config/stt_preferences.dart';
@@ -533,6 +539,89 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     await _resumeListening();
   }
 
+  /// Full attach flow: pick file → size check → optional downscale → stage.
+  Future<void> _pickAndAttachFile() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.any,
+      allowMultiple: false,
+    );
+    if (result == null || result.files.single.path == null) return;
+
+    final originalFile = File(result.files.single.path!);
+    final fileSize = await originalFile.length();
+
+    if (!mounted) return;
+
+    if (fileSize > kMaxFileSizeBytes) {
+      final mb = (fileSize / (1024 * 1024)).toStringAsFixed(1);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('File too large ($mb MB, max 50 MB)')),
+      );
+      return;
+    }
+
+    final ext = originalFile.path.split('.').last.toLowerCase();
+    final isImage = kImageExtensions.contains(ext);
+    File fileToUpload = originalFile;
+
+    if (isImage && fileSize > kImageDownscaleThresholdBytes && mounted) {
+      final originalMb = (fileSize / (1024 * 1024)).toStringAsFixed(1);
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Send image as'),
+          content: Text(
+            'Original: $originalMb MB\n'
+            'Downscaled: resize to ≤1024 px, JPEG 80 % quality',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'original'),
+              child: const Text('Original'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'downscale'),
+              child: const Text('Downscale'),
+            ),
+          ],
+        ),
+      );
+      if (choice == 'downscale') {
+        fileToUpload = await _downscaleImage(originalFile);
+      }
+    }
+
+    if (!mounted) return;
+    await ref.read(appControllerProvider.notifier).attachFile(fileToUpload);
+  }
+
+  /// Resize [file] to fit within 1024 px on the longest edge, encoded as
+  /// JPEG quality 80. Returns a temp file; falls back to [file] on error.
+  Future<File> _downscaleImage(File file) async {
+    try {
+      final bytes = await file.readAsBytes();
+      final original = await compute(img.decodeImage, bytes);
+      if (original == null) return file;
+
+      const maxDim = 1024;
+      final resized = original.width >= original.height
+          ? img.copyResize(original, width: maxDim)
+          : img.copyResize(original, height: maxDim);
+
+      final jpegBytes = img.encodeJpg(resized, quality: 80);
+      final baseName =
+          file.path.split('/').last.replaceAll(RegExp(r'\.\w+$'), '');
+      final tempFile = File(
+        '${Directory.systemTemp.path}/${baseName}_thumb.jpg',
+      );
+      await tempFile.writeAsBytes(jpegBytes);
+      return tempFile;
+    } catch (e) {
+      debugPrint('Downscale failed ($e), using original');
+      return file;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(appControllerProvider);
@@ -647,7 +736,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           attachedFiles: state.attachedFiles,
           onSend: () {
             final text = _controller.text;
-            if (text.trim().isNotEmpty) {
+            final hasFiles = state.attachedFiles.isNotEmpty;
+            if (text.trim().isNotEmpty || hasFiles) {
               _focusNode.unfocus();
               _sentPlayer.stop();
               unawaited(_sentPlayer.play(AssetSource('audio/sent.mp3')));
@@ -658,16 +748,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           onVoiceMode: () {
             controller.startDialogMode();
           },
-          onAttachFile: () async {
-            final result = await FilePicker.platform.pickFiles(
-              type: FileType.any,
-              allowMultiple: false,
-            );
-            if (result != null && result.files.single.path != null) {
-              final file = File(result.files.single.path!);
-              await controller.attachFile(file);
-            }
-          },
+          onAttachFile: _pickAndAttachFile,
           onRemoveFile: (fileId) {
             controller.removeAttachedFile(fileId);
           },
@@ -1181,6 +1262,8 @@ class _ComposerState extends ConsumerState<_Composer> {
     final isStreaming = state.streaming;
     final colorScheme = Theme.of(context).colorScheme;
     final hasText = widget.controller.text.trim().isNotEmpty;
+    final hasFiles = widget.attachedFiles.isNotEmpty;
+    final canSend = hasText || hasFiles;
 
     return Container(
       decoration: BoxDecoration(
@@ -1230,7 +1313,7 @@ class _ComposerState extends ConsumerState<_Composer> {
             decoration: InputDecoration(
               hintText: 'Send message to Luna AI ...',
               hintStyle: TextStyle(
-                color: colorScheme.onSurfaceVariant.withOpacity(0.6),
+                color: colorScheme.onSurfaceVariant.withValues(alpha: 0.6),
               ),
               filled: true,
               fillColor: Colors.transparent,
@@ -1283,7 +1366,7 @@ class _ComposerState extends ConsumerState<_Composer> {
                   ),
                   tooltip: 'Stop',
                 )
-              else if (hasText)
+              else if (canSend)
                 IconButton.filled(
                   onPressed: widget.onSend,
                   icon: const Icon(Icons.send),

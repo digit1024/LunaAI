@@ -212,51 +212,76 @@ impl AgenticLoop {
         self
     }
 
-    /// Build the list of available tools (MCP enabled + internal tools filtered by run_context policy).
+    /// Build the list of available tools for this run.
+    ///
+    /// MCP tools and internal tools are both filtered by the run's `allowed_tool_names`
+    /// (snapshotted from the profile policy at task spawn). The shared `MCPServerRegistry`
+    /// is treated as a passive catalogue — its `tools_white_list` is intentionally not
+    /// consulted, so concurrent profile switches in other sessions cannot leak tools into
+    /// or out of this run.
+    ///
+    /// When `run_context` is `None` (legacy callers without a policy snapshot), all
+    /// connected MCP tools and internal tools are exposed — preserving the previous
+    /// permissive default for that path.
     async fn build_available_tools(
         &self,
         run_context: &Option<RunContext>,
     ) -> Result<Vec<crate::llm::ToolDefinition>> {
-        let allow_internal = |name: &str| -> bool {
+        let allow = |name: &str| -> bool {
             run_context
                 .as_ref()
                 .map(|r| r.allowed_tool_names.contains(name))
                 .unwrap_or(true)
         };
         let registry = self.mcp_registry.read().await;
-        let tools = registry.get_enabled_tools().await.context("Failed to get enabled tools")?;
+        let tools = registry
+            .get_all_tools()
+            .await
+            .context("Failed to get MCP tools")?;
         let mut defs = Vec::new();
         for d in tools_to_definitions(&tools) {
+            if !allow(&d.name) {
+                continue;
+            }
             upsert_tool_definition(&mut defs, d);
         }
-        if allow_internal("schedule_task") {
+        if allow("schedule_task") {
             upsert_tool_definition(&mut defs, schedule_task_tool_definition());
         }
-        if allow_internal("cancel_scheduled_task") {
+        if allow("cancel_scheduled_task") {
             upsert_tool_definition(&mut defs, cancel_scheduled_task_tool_definition());
         }
         if self.storage.is_some() {
-            if allow_internal("store_memory") {
+            if allow("store_memory") {
                 upsert_tool_definition(&mut defs, store_memory_tool_definition());
             }
-            if allow_internal("search_memory") {
+            if allow("search_memory") {
                 upsert_tool_definition(&mut defs, search_memory_tool_definition());
             }
-            if allow_internal("search_memory_by_category") {
+            if allow("search_memory_by_category") {
                 upsert_tool_definition(&mut defs, search_memory_by_category_tool_definition());
             }
-            if allow_internal("delete_memory") {
+            if allow("delete_memory") {
                 upsert_tool_definition(&mut defs, delete_memory_tool_definition());
             }
-            if allow_internal("search_attachment_chunks") {
+            if allow("search_attachment_chunks") {
                 upsert_tool_definition(&mut defs, search_attachment_chunks_tool_definition());
             }
-            if allow_internal("search_history") {
+            if allow("search_history") {
                 upsert_tool_definition(&mut defs, search_history_tool_definition());
             }
         }
         tracing::debug!(tool_count = defs.len(), "Enabled tools");
         Ok(defs)
+    }
+
+    /// Whether the current run is permitted to call `tool_name`. Used to reject MCP calls
+    /// the model invents/hallucinates outside the snapshotted allow-set (defense in depth).
+    fn is_tool_allowed(run_context: Option<&RunContext>, tool_name: &str) -> bool {
+        match run_context {
+            Some(ctx) => ctx.allowed_tool_names.contains(tool_name),
+            None => true,
+        }
     }
 
     pub async fn process_message(
@@ -389,7 +414,19 @@ impl AgenticLoop {
                     });
                 }
 
-                let result = if tool_call.name == "schedule_task" {
+                let result = if !Self::is_tool_allowed(run_context_clone.as_ref(), &tool_call.name) {
+                    tracing::warn!(
+                        tool = %tool_call.name,
+                        "Rejecting tool call: not in run's allowed_tool_names (policy violation)"
+                    );
+                    ToolResult {
+                        content: format!(
+                            "Tool '{}' is not allowed by the current profile's tools policy.",
+                            tool_call.name
+                        ),
+                        is_error: true,
+                    }
+                } else if tool_call.name == "schedule_task" {
                     self.execute_schedule_task(&tool_call, run_context_clone.as_ref()).await
                 } else if tool_call.name == "cancel_scheduled_task" {
                     self.execute_cancel_scheduled_task(&tool_call).await
@@ -817,7 +854,19 @@ impl AgenticLoop {
                     });
                 }
 
-                let result = if tool_call.name == "schedule_task" {
+                let result = if !Self::is_tool_allowed(run_context.as_ref(), &tool_call.name) {
+                    tracing::warn!(
+                        tool = %tool_call.name,
+                        "Rejecting tool call: not in run's allowed_tool_names (policy violation)"
+                    );
+                    ToolResult {
+                        content: format!(
+                            "Tool '{}' is not allowed by the current profile's tools policy.",
+                            tool_call.name
+                        ),
+                        is_error: true,
+                    }
+                } else if tool_call.name == "schedule_task" {
                     self.execute_schedule_task(&tool_call, run_context.as_ref()).await
                 } else if tool_call.name == "cancel_scheduled_task" {
                     self.execute_cancel_scheduled_task(&tool_call).await

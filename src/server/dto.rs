@@ -129,6 +129,12 @@ pub enum ServerEvent {
     StreamingStopped {
         conversation_id: String,
     },
+    /// Sent when the memory RAG system injected a fresh memory block for this turn.
+    /// Lets the UI surface "recalled X memories" without scraping the prompt.
+    MemoriesRecalled {
+        conversation_id: String,
+        memory_ids: Vec<i64>,
+    },
 }
 
 #[derive(Debug, Serialize, Clone)]

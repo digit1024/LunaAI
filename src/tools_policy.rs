@@ -2,6 +2,11 @@
 //!
 //! Pattern matching uses the `globset` crate (glob syntax: `*`, `?`, `**`).
 //! Empty `enabled_mcp` => no MCP servers in scope; empty `enabled_tools` => no tools allowed.
+//!
+//! Policy is **pure**: it never mutates the shared `MCPServerRegistry`. The resulting
+//! `allowed_tool_names` set is the single source of truth for filtering tools per run
+//! (see `RunContext.allowed_tool_names` and `loop_engine::build_available_tools`).
+//! Multiple sessions/profiles can therefore coexist without trampling each other.
 
 use crate::config::{AppConfig, LlmProfile, ToolsPolicy};
 use agentic_loop::mcp_servers_registry::MCPServerRegistry;
@@ -20,15 +25,6 @@ pub const INTERNAL_TOOL_NAMES: &[&str] = &[
     "search_attachment_chunks",
     "search_history",
 ];
-
-/// Result of applying a tools policy: tool names to set on the registry (MCP only) and full allowed set (for internal tool filtering in loop_engine).
-#[derive(Debug, Clone)]
-pub struct AppliedToolsPolicy {
-    /// MCP tool names to set as registry allow-list (tools_white_list).
-    pub registry_tool_names: Vec<String>,
-    /// All allowed tool names (MCP + internal); use when building available_tools to filter internal tools.
-    pub allowed_tool_names: HashSet<String>,
-}
 
 /// Returns true if `name` matches any of the glob `patterns`. Uses globset; empty patterns = no match.
 /// Logs a warning for invalid glob patterns.
@@ -55,12 +51,12 @@ fn name_matches_any(name: &str, patterns: &[String]) -> bool {
     false
 }
 
-/// Pure policy computation: given registry guard and policy, returns (registry_tool_names, allowed_tool_names).
-/// Shared by compute_allowed_tool_names and apply_tools_policy.
+/// Pure policy computation: given registry guard and policy, returns the full allowed tool name set
+/// (MCP tools + internal tools, after enabled_mcp / enabled_tools / disabled_tools filtering).
 async fn compute_policy_result(
     guard: &MCPServerRegistry,
     policy: &ToolsPolicy,
-) -> Result<(Vec<String>, HashSet<String>)> {
+) -> Result<HashSet<String>> {
     let server_names: Vec<String> = guard.servers.keys().cloned().collect();
     let allowed_servers: Vec<String> = if policy.enabled_mcp.is_empty() {
         Vec::new()
@@ -82,7 +78,7 @@ async fn compute_policy_result(
         }
     }
 
-    let mut candidates: HashSet<String> = mcp_tool_names.iter().cloned().collect();
+    let mut candidates: HashSet<String> = mcp_tool_names.into_iter().collect();
     for &name in INTERNAL_TOOL_NAMES {
         candidates.insert(name.to_string());
     }
@@ -101,15 +97,14 @@ async fn compute_policy_result(
         .filter(|name| !name_matches_any(name, &policy.disabled_tools))
         .collect();
 
-    let registry_tool_names: Vec<String> = mcp_tool_names
-        .into_iter()
-        .filter(|name| allowed_tool_names.contains(name))
-        .collect();
-
-    Ok((registry_tool_names, allowed_tool_names))
+    Ok(allowed_tool_names)
 }
 
-/// Compute allowed tool names for a profile without modifying the registry (e.g. for scheduled jobs that share the registry).
+/// Compute the allow-set of tool names for a profile. Pure — does **not** mutate the registry.
+///
+/// This is the single source of truth for "what can this run call?". The resulting set is
+/// snapshotted into `RunContext.allowed_tool_names` and used by `loop_engine` to filter
+/// both MCP tools and internal tools at message-build and tool-execution time.
 pub async fn compute_allowed_tool_names(
     registry: &RwLock<MCPServerRegistry>,
     app_config: &AppConfig,
@@ -121,38 +116,5 @@ pub async fn compute_allowed_tool_names(
         .cloned()
         .unwrap_or_else(ToolsPolicy::default);
     let guard = registry.read().await;
-    let (_, allowed_tool_names) = compute_policy_result(&*guard, &policy).await?;
-    Ok(allowed_tool_names)
-}
-
-/// Apply the profile's tools_policy: filter MCP servers by enabled_mcp, then tools by enabled_tools and disabled_tools.
-/// Registry must already be initialized (servers connected). Sets registry state to the allowed MCP tools only.
-pub async fn apply_tools_policy(
-    registry: &RwLock<MCPServerRegistry>,
-    app_config: &AppConfig,
-    profile: &LlmProfile,
-) -> Result<AppliedToolsPolicy> {
-    let policy = app_config
-        .tools_policies
-        .get(&profile.tools_policy)
-        .cloned()
-        .unwrap_or_else(ToolsPolicy::default);
-
-    let (registry_tool_names, allowed_tool_names) = {
-        let guard = registry.read().await;
-        compute_policy_result(&*guard, &policy).await?
-    };
-
-    {
-        let mut guard = registry.write().await;
-        guard.disable_all_tools().await;
-        for name in &registry_tool_names {
-            guard.enable_tool(name).await;
-        }
-    }
-
-    Ok(AppliedToolsPolicy {
-        registry_tool_names,
-        allowed_tool_names,
-    })
+    compute_policy_result(&*guard, &policy).await
 }

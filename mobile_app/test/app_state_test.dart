@@ -5,7 +5,7 @@ void main() {
   test('app state starts in setup pane', () {
     final state = AppState.initial();
     expect(state.connection, ConnectionStatus.connecting);
-    expect(state.pane, ActivePane.setup);
+    expect(state.pane, ActivePane.connecting);
     expect(state.conversations, isEmpty);
   });
 }

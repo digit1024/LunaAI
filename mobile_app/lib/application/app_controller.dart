@@ -6,7 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/config/server_config.dart';
-import '../data/http/file_client.dart';
+import '../data/http/file_client.dart'
+    show FileAttachment, FileClient, mimeTypeFromExtension;
 import '../data/ws/luna_ws_client.dart';
 import '../data/ws/ws_dto.dart';
 import '../services/foreground_guard.dart';
@@ -69,6 +70,7 @@ class AppController extends Notifier<AppState> {
   bool _initialized = false;
   bool _waitingForResponse = false;
   bool _connecting = false;
+  bool _isUploading = false;
   
   /// Tracks current assistant bubble ID for streaming
   /// Reset when tools interrupt or new turn starts
@@ -292,14 +294,36 @@ class AppController extends Notifier<AppState> {
   }
 
   Future<void> sendPrompt(String text) async {
-    if (text.trim().isEmpty) return;
+    final trimmed = text.trim();
+    final stagedFiles = List<FileAttachment>.from(state.attachedFiles);
+    final hasText = trimmed.isNotEmpty;
+    final hasFiles = stagedFiles.isNotEmpty;
+
+    if (!hasText && !hasFiles) return;
+
+    // Build the display content for the optimistic user bubble.
+    final String displayContent;
+    if (hasText && hasFiles) {
+      final names = stagedFiles.map((f) => '📎 ${f.fileName}').join('  ');
+      displayContent = '$trimmed\n$names';
+    } else if (hasText) {
+      displayContent = trimmed;
+    } else {
+      displayContent = stagedFiles.map((f) => '📎 ${f.fileName}').join('\n');
+    }
+
+    _appendUserMessage(displayContent);
+
+    // Clear staged files immediately so the chips disappear on send.
+    state = state.copyWith(attachedFiles: []);
+
     final conversationId = state.activeConversation?.id;
-    _appendUserMessage(text.trim());
     await guard.ensureStarted('Streaming reply');
     _waitingForResponse = true;
     wsClient.send(ClientCommand.sendMessage(
       conversationId: conversationId,
-      content: text.trim(),
+      content: hasText ? trimmed : stagedFiles.map((f) => f.fileName).join(', '),
+      attachmentIds: hasFiles ? stagedFiles.map((f) => f.fileId).toList() : null,
     ));
   }
 
@@ -320,8 +344,21 @@ class AppController extends Notifier<AppState> {
     );
   }
 
-  /// Attach a file: upload, then send upload-notification message and continue.
+  /// Stage a file: upload it and add an attachment chip.
+  /// The file is NOT sent until the user taps Send (via [sendPrompt]).
   Future<void> attachFile(File file) async {
+    if (state.activeConversation == null) {
+      state = state.copyWith(
+        infoMessage: 'Please start or select a conversation before attaching a file.',
+      );
+      return;
+    }
+    if (_isUploading) {
+      state = state.copyWith(infoMessage: 'Upload already in progress, please wait.');
+      return;
+    }
+
+    _isUploading = true;
     try {
       final config = ref.read(serverConfigProvider);
       final fileClient = FileClient(config);
@@ -329,20 +366,29 @@ class AppController extends Notifier<AppState> {
         file,
         conversationId: state.activeConversation?.id,
       );
-      final label = result.originalName;
-      _appendUserMessage('📎 $label');
-      await guard.ensureStarted('Streaming reply');
-      _waitingForResponse = true;
-      wsClient.send(ClientCommand.sendMessage(
-        conversationId: state.activeConversation?.id,
-        content: label,
-        attachmentIds: [result.uid],
-      ));
+
+      final ext = file.path.split('.').last.toLowerCase();
+      final mimeType = mimeTypeFromExtension(ext);
+      final fileSize = await file.length();
+
+      final attachment = FileAttachment(
+        fileId: result.uid,
+        fileName: result.originalName,
+        mimeType: mimeType,
+        fileSize: fileSize,
+        file: file,
+      );
+
+      state = state.copyWith(
+        attachedFiles: [...state.attachedFiles, attachment],
+      );
     } catch (e) {
       debugPrint('Error attaching file: $e');
       state = state.copyWith(
-        error: 'Failed to attach file: ${e.toString()}',
+        infoMessage: 'Failed to attach file: ${e.toString()}',
       );
+    } finally {
+      _isUploading = false;
     }
   }
 
@@ -479,16 +525,28 @@ class AppController extends Notifier<AppState> {
         wsClient.send(ClientCommand.listConversations(limit: 10));
       }
     } else if (event is ErrorEvent) {
-      // Real errors only – conversation-breaking (model error, invalid command, etc.)
       if (state.streaming) {
         wsClient.setStreaming(false);
       }
-      state = state.copyWith(
-        connection: ConnectionStatus.error,
-        error: event.message,
-        pane: ActivePane.setup,
-        streaming: false,
-      );
+      // If the user is already in a conversation, treat this as a non-fatal
+      // toast (info message) so we don't yank them to the setup screen.
+      // Only navigate to setup when we're on the connecting/setup pane
+      // (i.e. auth or connection bootstrap failed).
+      final isChatActive = state.pane == ActivePane.chat &&
+          state.activeConversation != null;
+      if (isChatActive) {
+        state = state.copyWith(
+          streaming: false,
+          infoMessage: event.message,
+        );
+      } else {
+        state = state.copyWith(
+          connection: ConnectionStatus.error,
+          error: event.message,
+          pane: ActivePane.setup,
+          streaming: false,
+        );
+      }
     } else if (event is InfoEvent) {
       // Informational (e.g. context truncation) – show as toast, stay on current screen
       state = state.copyWith(infoMessage: event.message);

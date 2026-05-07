@@ -297,6 +297,14 @@ fn default_min_importance() -> Option<i32> {
     None
 }
 
+fn default_max_memory_tokens() -> Option<usize> {
+    Some(800)
+}
+
+fn default_query_history_turns() -> usize {
+    2
+}
+
 #[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct EmbeddingConfig {
     #[serde(default = "default_embedding_enabled")]
@@ -319,6 +327,12 @@ pub struct EmbeddingConfig {
     /// Minimum importance score (1-5). None = no filter.
     #[serde(default = "default_min_importance")]
     pub min_importance: Option<i32>,
+    /// Maximum tokens spent on the injected memory block. None = no token cap (only count cap applies).
+    #[serde(default = "default_max_memory_tokens")]
+    pub max_memory_tokens: Option<usize>,
+    /// Number of prior user turns (in addition to the current one) included when building the recall query.
+    #[serde(default = "default_query_history_turns")]
+    pub query_history_turns: usize,
 }
 
 impl Default for EmbeddingConfig {
@@ -332,6 +346,8 @@ impl Default for EmbeddingConfig {
             max_memories: default_max_memories(),
             max_distance: None,
             min_importance: default_min_importance(),
+            max_memory_tokens: default_max_memory_tokens(),
+            query_history_turns: default_query_history_turns(),
         }
     }
 }

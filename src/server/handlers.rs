@@ -44,8 +44,6 @@ pub struct ServerContext {
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
     pub subscriptions: Arc<crate::server::conversation_subscriptions::ConversationSubscriptions>,
     pub schedule_service: Arc<ScheduleService>,
-    /// Tracks which memory IDs have been injected per conversation (dedup for Memory RAG)
-    pub memory_dedup: Mutex<HashMap<Uuid, HashSet<i64>>>,
     /// Allowed tool names for the default profile (from tools policy); used when creating new sessions.
     pub default_allowed_tool_names: HashSet<String>,
     /// Embedding provider for memory vector search. None when embedding is disabled.
@@ -97,14 +95,13 @@ impl SessionState {
             .context("Profile or its model preset not found")?;
         self.profile_name = profile_name.to_string();
         self.llm_client = llm::build_llm_client(resolved.preset());
-        let applied = crate::tools_policy::apply_tools_policy(
+        self.allowed_tool_names = crate::tools_policy::compute_allowed_tool_names(
             mcp_registry,
             config,
             resolved.profile(),
         )
         .await
-        .context("Apply tools policy for profile")?;
-        self.allowed_tool_names = applied.allowed_tool_names;
+        .context("Compute tools policy for profile")?;
         Ok(())
     }
 
@@ -564,37 +561,31 @@ impl ServerHandler {
         // Re-inject prompts after reload
         llm_messages = ContextService::inject_prompts(llm_messages, &self.ctx.prompt_manager, resolved.profile())?;
 
-        // Memory RAG: search and inject relevant memories (vector-only when embedding enabled)
+        // Memory RAG: re-run on every user turn. Strip any prior memory block and inject a
+        // fresh one based on the current query. No session-wide dedup -- a memory should appear
+        // again whenever it's still relevant. See `services/memory_rag.rs`.
         {
-            let mut dedup_guard = self.ctx.memory_dedup.lock().await;
-            let used_ids = dedup_guard.entry(conversation_uuid).or_default();
-            // Seed from DB on first use (e.g. after restart) so we don't re-inject same memories
-            if used_ids.is_empty() {
-                let storage_guard = self.ctx.storage.lock().await;
-                if let Ok(recalled) = storage_guard.get_recalled_memory_ids(&conversation_uuid.to_string()) {
-                    used_ids.extend(recalled);
-                }
-            }
-            let result = crate::services::memory_rag::retrieve_memory_context(
+            let token_counter = TokenCounter::new(resolved.preset());
+            let outcome = crate::services::memory_rag::inject_memory_block(
                 self.ctx.storage.clone(),
-                &content,
-                used_ids,
                 self.ctx.embedding_provider.as_deref(),
                 &self.ctx.config.embedding,
+                &token_counter,
+                &mut llm_messages,
             )
             .await;
-            if let Some((memory_msg, new_ids)) = result {
-                // Insert after system prompts but before conversation history
-                let insert_pos = llm_messages
-                    .iter()
-                    .position(|m| !matches!(m.role, Role::System))
-                    .unwrap_or(llm_messages.len());
-                llm_messages.insert(insert_pos, LlmMessage::new(Role::System, memory_msg));
-                // Persist recalled memories for this conversation
+            if let Some(outcome) = outcome {
                 let storage_guard = self.ctx.storage.lock().await;
-                if let Err(e) = storage_guard.record_memory_recalls(&conversation_uuid.to_string(), &new_ids) {
-                    tracing::warn!(error = %e, "Failed to record memory recalls");
+                if let Err(e) = storage_guard
+                    .record_memory_recalls(&conversation_uuid.to_string(), &outcome.ids)
+                {
+                    tracing::warn!(error = %e, "Failed to record memory recalls (analytics)");
                 }
+                drop(storage_guard);
+                let _ = self.outbound.send(ServerEvent::MemoriesRecalled {
+                    conversation_id: conversation_uuid.to_string(),
+                    memory_ids: outcome.ids,
+                });
             }
         }
 
@@ -1003,7 +994,7 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
         .ok_or_else(|| anyhow!("No profile or preset found for scheduled job"))?;
     let llm_client = llm::build_llm_client(resolved.preset());
 
-    let (conversation_id, agent_messages) = if let Some(conv_id_str) = &job.conversation_id {
+    let (conversation_id, mut agent_messages) = if let Some(conv_id_str) = &job.conversation_id {
         let conv_uuid = Uuid::parse_str(conv_id_str).context("invalid conversation_id in job")?;
         let exists = {
             let storage = ctx.storage.lock().await;
@@ -1079,6 +1070,37 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
             ContextService::inject_prompts(llm_messages, &ctx.prompt_manager, resolved.profile())?;
         (conv_id, agent_messages)
     };
+
+    // Memory RAG: same path as interactive chat.
+    {
+        let token_counter = TokenCounter::new(resolved.preset());
+        let outcome = crate::services::memory_rag::inject_memory_block(
+            ctx.storage.clone(),
+            ctx.embedding_provider.as_deref(),
+            &ctx.config.embedding,
+            &token_counter,
+            &mut agent_messages,
+        )
+        .await;
+        if let Some(outcome) = outcome {
+            let storage_guard = ctx.storage.lock().await;
+            if let Err(e) =
+                storage_guard.record_memory_recalls(&conversation_id.to_string(), &outcome.ids)
+            {
+                tracing::warn!(error = %e, "Failed to record memory recalls (analytics)");
+            }
+            drop(storage_guard);
+            ctx.subscriptions
+                .broadcast(
+                    conversation_id,
+                    ServerEvent::MemoriesRecalled {
+                        conversation_id: conversation_id.to_string(),
+                        memory_ids: outcome.ids,
+                    },
+                )
+                .await;
+        }
+    }
 
     let allowed_tool_names = match crate::tools_policy::compute_allowed_tool_names(
         &ctx.mcp_registry,

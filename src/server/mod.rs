@@ -97,7 +97,6 @@ async fn launch(options: ServerOptions) -> Result<()> {
         mcp_registry,
         subscriptions,
         schedule_service,
-        memory_dedup: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         default_allowed_tool_names,
         embedding_provider,
     });
@@ -180,13 +179,15 @@ async fn initialize_mcp_registry(
         }
     }
 
-    // Apply default profile's tools policy (empty enabled_mcp / enabled_tools = deny all; no fallback)
+    // Compute default profile's tools policy. This is just a snapshot of the allow-set for
+    // the initial SessionState; nothing is mutated on the registry. Per-session profile changes
+    // recompute their own allow-set independently — sessions can no longer trample each other.
     let default_allowed = match app_config.resolve_default_profile() {
         Some(resolved) => {
-            match crate::tools_policy::apply_tools_policy(registry, app_config, resolved.profile()).await {
-                Ok(applied) => applied.allowed_tool_names,
+            match crate::tools_policy::compute_allowed_tool_names(registry, app_config, resolved.profile()).await {
+                Ok(set) => set,
                 Err(e) => {
-                    tracing::warn!("Tools policy apply failed: {}; no tools allowed", e);
+                    tracing::warn!("Tools policy compute failed: {}; no tools allowed", e);
                     std::collections::HashSet::new()
                 }
             }
@@ -205,8 +206,9 @@ async fn initialize_mcp_registry(
                 let connection_guard = server_connection.read().await;
                 let tools = connection_guard.tools();
                 let tool_names: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
-                let enabled_count = tool_names.iter()
-                    .filter(|name| guard.tools_white_list.contains(name))
+                let enabled_count = tool_names
+                    .iter()
+                    .filter(|name| default_allowed.contains(name.as_str()))
                     .count();
                 drop(connection_guard);
                 tracing::info!(
