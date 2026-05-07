@@ -1167,15 +1167,17 @@ impl SqliteStorage {
             None => None,
         };
 
+        // sqlite-vec's vec0 KNN requires `k = ?` (or a literal LIMIT). When we add a
+        // `distance <= ?` filter, the planner does NOT pick up a parameterised `LIMIT ?` as
+        // the k constraint and bails with: "A LIMIT or 'k = ?' constraint is required on vec0
+        // knn queries.". Always use `k = ?2` so both code paths work.
         let sql = match validated_max_distance {
-            Some(max_dist) => {
-                format!(
-                    "SELECT rowid, distance FROM memory_vec WHERE embedding MATCH ?1 AND distance <= {} ORDER BY distance LIMIT ?2",
-                    max_dist
-                )
-            }
+            Some(max_dist) => format!(
+                "SELECT rowid, distance FROM memory_vec WHERE embedding MATCH ?1 AND k = ?2 AND distance <= {} ORDER BY distance",
+                max_dist
+            ),
             None => {
-                "SELECT rowid, distance FROM memory_vec WHERE embedding MATCH ?1 ORDER BY distance LIMIT ?2".to_string()
+                "SELECT rowid, distance FROM memory_vec WHERE embedding MATCH ?1 AND k = ?2 ORDER BY distance".to_string()
             }
         };
 
@@ -1299,13 +1301,15 @@ impl SqliteStorage {
         };
 
         let fetch_limit = ((limit as i64).saturating_mul(8)).max(limit as i64);
+        // See note in search_memory_by_vector: sqlite-vec needs `k = ?` (not `LIMIT ?`) when
+        // a `distance` filter is present. Use `k = ?2` for both branches for consistency.
         let sql = match validated_max_distance {
             Some(max_dist) => format!(
-                "SELECT rowid, distance FROM attachment_doc_vec WHERE embedding MATCH ?1 AND distance <= {} ORDER BY distance LIMIT ?2",
+                "SELECT rowid, distance FROM attachment_doc_vec WHERE embedding MATCH ?1 AND k = ?2 AND distance <= {} ORDER BY distance",
                 max_dist
             ),
             None => {
-                "SELECT rowid, distance FROM attachment_doc_vec WHERE embedding MATCH ?1 ORDER BY distance LIMIT ?2"
+                "SELECT rowid, distance FROM attachment_doc_vec WHERE embedding MATCH ?1 AND k = ?2 ORDER BY distance"
                     .to_string()
             }
         };
