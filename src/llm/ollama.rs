@@ -1,5 +1,7 @@
 use super::*;
 use crate::config::ModelPreset;
+use crate::llm::observability::{classify_reqwest_error, CallOutcome, LlmCallSpan};
+use crate::llm::tokenizer::TokenCounter;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
@@ -87,9 +89,18 @@ pub struct OllamaClient {
 impl OllamaClient {
     pub fn new(preset: ModelPreset) -> Self {
         Self {
-            client: Client::new(),
+            client: super::observability::shared_http_client(),
             preset,
         }
+    }
+
+    fn estimate_context_tokens(messages: &[Message]) -> Option<usize> {
+        let counter = TokenCounter::cl100k();
+        let mut total = 0usize;
+        for m in messages {
+            total = total.saturating_add(counter.count_message_tokens(m));
+        }
+        Some(total)
     }
 }
 
@@ -101,6 +112,10 @@ impl LlmClient for OllamaClient {
         temperature: Option<f32>,
         max_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>, LlmError> {
+        let mut span = LlmCallSpan::start("ollama", self.preset.model.clone(), true);
+        let context_tokens = Self::estimate_context_tokens(&messages);
+        span.set_input_shape(messages.len(), 0, context_tokens);
+
         let ollama_messages: Vec<OllamaMessage> = messages
             .into_iter()
             .map(|msg| {
@@ -165,12 +180,28 @@ impl LlmClient for OllamaClient {
                 request_builder.header("Authorization", format!("Bearer {}", self.preset.api_key));
         }
 
-        let response = request_builder.json(&request).send().await?;
+        let response = match request_builder.json(&request).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                let (outcome, kind) = classify_reqwest_error(&e);
+                span.finish_error(outcome, kind, e.to_string());
+                return Err(LlmError::Http(e));
+            }
+        };
 
-        if !response.status().is_success() {
+        let status = response.status();
+        span.set_response_headers(status.as_u16(), None);
+
+        if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::Api(format!("Ollama API error: {}", error_text)));
+            let msg = format!("Ollama API error (HTTP {}): {}", status.as_u16(), error_text);
+            span.finish_error(CallOutcome::HttpError, format!("http_{}", status.as_u16()), msg.clone());
+            return Err(LlmError::Api(msg));
         }
+
+        // Ollama's local server is the most reliable provider; close span
+        // optimistically. transport-level keepalive still applies.
+        span.finish_success();
 
         let stream = response.bytes_stream();
         let stream = futures::StreamExt::map(stream, |chunk_result| {
@@ -229,6 +260,10 @@ impl LlmClient for OllamaClient {
         temperature: Option<f32>,
         max_tokens: Option<u32>,
     ) -> Result<ChatResponse, LlmError> {
+        let mut span = LlmCallSpan::start("ollama", self.preset.model.clone(), false);
+        let context_tokens = Self::estimate_context_tokens(&messages);
+        span.set_input_shape(messages.len(), available_tools.len(), context_tokens);
+
         let ollama_messages: Vec<OllamaMessage> = messages
             .into_iter()
             .map(|msg| {
@@ -325,35 +360,62 @@ impl LlmClient for OllamaClient {
                 request_builder.header("Authorization", format!("Bearer {}", self.preset.api_key));
         }
 
-        let response = request_builder.json(&request).send().await?;
+        let response = match request_builder.json(&request).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                let (outcome, kind) = classify_reqwest_error(&e);
+                span.finish_error(outcome, kind, e.to_string());
+                return Err(LlmError::Http(e));
+            }
+        };
 
-        if !response.status().is_success() {
+        let status = response.status();
+        span.set_response_headers(status.as_u16(), None);
+
+        if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::Api(format!("Ollama API error: {}", error_text)));
+            let msg = format!("Ollama API error (HTTP {}): {}", status.as_u16(), error_text);
+            span.finish_error(CallOutcome::HttpError, format!("http_{}", status.as_u16()), msg.clone());
+            return Err(LlmError::Api(msg));
         }
 
-        let response_data: OllamaResponse = response.json().await?;
+        let response_data: OllamaResponse = match response.json().await {
+            Ok(r) => r,
+            Err(e) => {
+                let (outcome, kind) = classify_reqwest_error(&e);
+                span.finish_error(outcome, kind, e.to_string());
+                return Err(LlmError::Http(e));
+            }
+        };
 
-        let choice = response_data
-            .choices
-            .first()
-            .ok_or_else(|| LlmError::Api("No response from Ollama".to_string()))?;
+        let choice = match response_data.choices.first() {
+            Some(c) => c,
+            None => {
+                let msg = "No response from Ollama".to_string();
+                span.finish_error(CallOutcome::Parse, "empty_choices", msg.clone());
+                return Err(LlmError::Api(msg));
+            }
+        };
 
         let content = choice.message.content.clone().unwrap_or_default();
 
         let tool_calls = if let Some(tool_calls) = &choice.message.tool_calls {
             tool_calls
                 .iter()
-                .map(|tc| ToolCall {
-                    id: tc.id.clone(),
-                    name: tc.function.name.clone(),
-                    parameters: serde_json::from_str(&tc.function.arguments).unwrap_or_default(),
+                .map(|tc| {
+                    span.observe_tool_call();
+                    ToolCall {
+                        id: tc.id.clone(),
+                        name: tc.function.name.clone(),
+                        parameters: serde_json::from_str(&tc.function.arguments).unwrap_or_default(),
+                    }
                 })
                 .collect()
         } else {
             Vec::new()
         };
 
+        span.finish_success();
         Ok(ChatResponse {
             content,
             tool_calls,

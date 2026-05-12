@@ -286,6 +286,21 @@ impl AgenticLoop {
 
     pub async fn process_message(
         &mut self,
+        messages: Vec<Message>,
+        agent_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+        run_context: Option<RunContext>,
+    ) -> Result<String> {
+        // Propagate conversation_id into LLM clients via task-local so the
+        // call-span observability layer can tag every record without
+        // changing the LlmClient trait signature.
+        let conv_id = run_context.as_ref().and_then(|c| c.conversation_id);
+        crate::llm::CONVERSATION_ID
+            .scope(conv_id, self.process_message_inner(messages, agent_tx, run_context))
+            .await
+    }
+
+    async fn process_message_inner(
+        &mut self,
         mut messages: Vec<Message>,
         agent_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
         run_context: Option<RunContext>,
@@ -305,6 +320,24 @@ impl AgenticLoop {
                         e
                     );
                     return self.process_non_streaming(messages, agent_tx, run_context).await;
+                }
+                Err(LlmError::StreamTruncated { bytes_read, last_event_age_ms, reason }) => {
+                    tracing::error!(
+                        bytes_read = bytes_read,
+                        last_event_age_ms = last_event_age_ms,
+                        reason = %reason,
+                        "Provider truncated the stream mid-response; treating as a real error instead of silent completion"
+                    );
+                    if let Some(tx) = agent_tx.as_ref() {
+                        let _ = tx.send(AgentUpdate::ModelError {
+                            error: format!(
+                                "Provider closed the connection mid-stream ({reason}). Bytes received: {bytes_read}."
+                            ),
+                        });
+                    }
+                    return Err(anyhow::anyhow!(
+                        "stream truncated by provider after {bytes_read} bytes: {reason}"
+                    ));
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "LLM streaming call failed");
@@ -366,6 +399,27 @@ impl AgenticLoop {
                             });
                         }
                         planned_tools.push(tool_call);
+                    }
+                    Err(LlmError::StreamTruncated { bytes_read, last_event_age_ms, reason }) => {
+                        tracing::error!(
+                            bytes_read = bytes_read,
+                            last_event_age_ms = last_event_age_ms,
+                            reason = %reason,
+                            partial_chars = assistant_response.len(),
+                            "Stream truncated mid-response"
+                        );
+                        if let Some(tx) = agent_tx.as_ref() {
+                            let _ = tx.send(AgentUpdate::ModelError {
+                                error: format!(
+                                    "Provider dropped the connection after {} bytes ({reason}). Partial response: {} chars.",
+                                    bytes_read,
+                                    assistant_response.len()
+                                ),
+                            });
+                        }
+                        return Err(anyhow::anyhow!(
+                            "stream truncated by provider after {bytes_read} bytes: {reason}"
+                        ));
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "Streaming event error");
@@ -786,6 +840,22 @@ impl AgenticLoop {
                 .await
             {
                 Ok(resp) => resp,
+                Err(LlmError::StreamTruncated { bytes_read, last_event_age_ms, reason }) => {
+                    tracing::error!(
+                        bytes_read = bytes_read,
+                        last_event_age_ms = last_event_age_ms,
+                        reason = %reason,
+                        "Non-streaming call truncated"
+                    );
+                    if let Some(tx) = agent_tx.as_ref() {
+                        let _ = tx.send(AgentUpdate::ModelError {
+                            error: format!("Provider truncated the response ({reason})."),
+                        });
+                    }
+                    return Err(anyhow::anyhow!(
+                        "non-streaming call truncated: {reason}"
+                    ));
+                }
                 Err(e) => {
                     tracing::error!(error = %e, "Non-streaming LLM call failed");
                     if let Some(tx) = agent_tx.as_ref() {

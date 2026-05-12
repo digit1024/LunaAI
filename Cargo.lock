@@ -379,6 +379,9 @@ dependencies = [
  "serde_repr",
  "tokio",
  "url",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
  "zbus",
 ]
 
@@ -1324,6 +1327,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cosmic-client-toolkit"
+version = "0.2.0"
+source = "git+https://github.com/pop-os/cosmic-protocols?rev=160b086#160b086abe03cd34a8a375d7fbe47b24308d1f38"
+dependencies = [
+ "bitflags 2.11.0",
+ "cosmic-protocols",
+ "libc",
+ "smithay-client-toolkit",
+ "wayland-client",
+ "wayland-protocols",
+]
+
+[[package]]
 name = "cosmic-config"
 version = "1.0.0"
 source = "git+https://github.com/pop-os/libcosmic.git?branch=master#1d01054993862f615adb029379307cd5501c79f7"
@@ -1361,10 +1377,24 @@ dependencies = [
  "bstr",
  "btoi",
  "memchr",
- "memmap2",
+ "memmap2 0.9.8",
  "thiserror 2.0.18",
  "tracing",
  "xdg",
+]
+
+[[package]]
+name = "cosmic-protocols"
+version = "0.2.0"
+source = "git+https://github.com/pop-os/cosmic-protocols?rev=160b086#160b086abe03cd34a8a375d7fbe47b24308d1f38"
+dependencies = [
+ "bitflags 2.11.0",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
+ "wayland-scanner",
+ "wayland-server",
 ]
 
 [[package]]
@@ -1455,6 +1485,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "tracing-appender",
  "tracing-subscriber",
  "tungstenite 0.29.0",
  "url",
@@ -1528,6 +1559,15 @@ dependencies = [
  "once_cell",
  "phf 0.11.3",
  "winnow 0.7.13",
+]
+
+[[package]]
+name = "crossbeam-channel"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
+dependencies = [
+ "crossbeam-utils",
 ]
 
 [[package]]
@@ -2227,7 +2267,7 @@ checksum = "457e789b3d1202543297a350643cf459f836cade38934e7a4cf6a39e7cde2905"
 dependencies = [
  "fontconfig-parser",
  "log",
- "memmap2",
+ "memmap2 0.9.8",
  "slotmap",
  "tinyvec",
  "ttf-parser",
@@ -2955,6 +2995,7 @@ source = "git+https://github.com/pop-os/libcosmic.git?branch=master#1d0105499386
 dependencies = [
  "bitflags 2.11.0",
  "bytes",
+ "cosmic-client-toolkit",
  "dnd",
  "glam",
  "lilt",
@@ -3052,6 +3093,7 @@ version = "0.14.0"
 source = "git+https://github.com/pop-os/libcosmic.git?branch=master#1d01054993862f615adb029379307cd5501c79f7"
 dependencies = [
  "bytes",
+ "cosmic-client-toolkit",
  "dnd",
  "iced_core",
  "iced_futures",
@@ -3085,6 +3127,7 @@ dependencies = [
  "as-raw-xcb-connection",
  "bitflags 2.11.0",
  "bytemuck",
+ "cosmic-client-toolkit",
  "cryoglyph",
  "futures",
  "glam",
@@ -3112,6 +3155,7 @@ name = "iced_widget"
 version = "0.14.2"
 source = "git+https://github.com/pop-os/libcosmic.git?branch=master#1d01054993862f615adb029379307cd5501c79f7"
 dependencies = [
+ "cosmic-client-toolkit",
  "dnd",
  "iced_highlighter",
  "iced_renderer",
@@ -3131,6 +3175,7 @@ name = "iced_winit"
 version = "0.14.0"
 source = "git+https://github.com/pop-os/libcosmic.git?branch=master#1d01054993862f615adb029379307cd5501c79f7"
 dependencies = [
+ "cosmic-client-toolkit",
  "cursor-icon",
  "dnd",
  "iced_debug",
@@ -3139,16 +3184,22 @@ dependencies = [
  "iced_program",
  "iced_runtime",
  "log",
+ "raw-window-handle",
  "rustc-hash 2.1.1",
  "rustix 0.38.44",
  "thiserror 2.0.18",
  "wasm-bindgen-futures",
+ "wayland-backend",
  "wayland-client",
+ "wayland-protocols",
  "web-sys",
  "winapi",
  "window_clipboard",
  "winit",
  "winit-core",
+ "xkbcommon 0.7.0",
+ "xkbcommon-dl",
+ "xkeysym",
 ]
 
 [[package]]
@@ -3598,6 +3649,7 @@ dependencies = [
  "apply",
  "ashpd 0.12.3",
  "auto_enums",
+ "cosmic-client-toolkit",
  "cosmic-config",
  "cosmic-freedesktop-icons",
  "cosmic-settings-daemon",
@@ -3916,6 +3968,15 @@ name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
+
+[[package]]
+name = "memmap2"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43a5a03cefb0d953ec0be133036f14e109412fa594edc2f77227249db66cc3ed"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "memmap2"
@@ -5809,7 +5870,7 @@ checksum = "1dd3accc0f3f4bbaf2c9e1957a030dc582028130c67660d44c0a0345a22ca69b"
 dependencies = [
  "ab_glyph",
  "log",
- "memmap2",
+ "memmap2 0.9.8",
  "smithay-client-toolkit",
  "tiny-skia",
 ]
@@ -6074,12 +6135,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0512da38f5e2b31201a93524adb8d3136276fa4fe4aafab4e1f727a82b534cc0"
 dependencies = [
  "bitflags 2.11.0",
+ "bytemuck",
  "calloop",
  "calloop-wayland-source",
  "cursor-icon",
  "libc",
  "log",
- "memmap2",
+ "memmap2 0.9.8",
+ "pkg-config",
  "rustix 1.1.2",
  "thiserror 2.0.18",
  "wayland-backend",
@@ -6091,6 +6154,7 @@ dependencies = [
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "wayland-scanner",
+ "xkbcommon 0.8.0",
  "xkeysym",
 ]
 
@@ -6140,7 +6204,7 @@ dependencies = [
  "foreign-types",
  "js-sys",
  "log",
- "memmap2",
+ "memmap2 0.9.8",
  "objc",
  "raw-window-handle",
  "redox_syscall 0.5.18",
@@ -6251,6 +6315,12 @@ dependencies = [
  "yazi",
  "zeno",
 ]
+
+[[package]]
+name = "symlink"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7973cce6668464ea31f176d85b13c7ab3bba2cb3b77a2ed26abd7801688010a"
 
 [[package]]
 name = "symphonia"
@@ -6961,6 +7031,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-appender"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "050686193eb999b4bb3bc2acfa891a13da00f79734704c4b8b4ef1a10b368a3c"
+dependencies = [
+ "crossbeam-channel",
+ "symlink",
+ "thiserror 2.0.18",
+ "time",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tracing-attributes"
 version = "0.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6993,6 +7076,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-serde"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
+dependencies = [
+ "serde",
+ "tracing-core",
+]
+
+[[package]]
 name = "tracing-subscriber"
 version = "0.3.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7002,12 +7095,15 @@ dependencies = [
  "nu-ansi-term",
  "once_cell",
  "regex-automata",
+ "serde",
+ "serde_json",
  "sharded-slab",
  "smallvec",
  "thread_local",
  "tracing",
  "tracing-core",
  "tracing-log",
+ "tracing-serde",
 ]
 
 [[package]]
@@ -7539,6 +7635,7 @@ dependencies = [
  "wayland-backend",
  "wayland-client",
  "wayland-scanner",
+ "wayland-server",
 ]
 
 [[package]]
@@ -7591,6 +7688,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "wayland-scanner",
+ "wayland-server",
 ]
 
 [[package]]
@@ -7602,6 +7700,19 @@ dependencies = [
  "proc-macro2",
  "quick-xml 0.37.5",
  "quote",
+]
+
+[[package]]
+name = "wayland-server"
+version = "0.31.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcbd4f3aba6c9fba70445ad2a484c0ef0356c1a9459b1e8e435bedc1971a6222"
+dependencies = [
+ "bitflags 2.11.0",
+ "downcast-rs",
+ "rustix 1.1.2",
+ "wayland-backend",
+ "wayland-scanner",
 ]
 
 [[package]]
@@ -8503,7 +8614,7 @@ name = "winit-common"
 version = "0.31.0-beta.2"
 source = "git+https://github.com/pop-os/winit.git?tag=cosmic-0.14#a610ac9c7a72b39ff102ed4d946291618dc725b6"
 dependencies = [
- "memmap2",
+ "memmap2 0.9.8",
  "objc2 0.6.3",
  "objc2-core-foundation",
  "smol_str",
@@ -8574,7 +8685,7 @@ dependencies = [
  "cursor-icon",
  "dpi",
  "libc",
- "memmap2",
+ "memmap2 0.9.8",
  "raw-window-handle",
  "rustix 1.1.2",
  "sctk-adwaita",
@@ -8821,6 +8932,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2fb433233f2df9344722454bc7e96465c9d03bff9d77c248f9e7523fe79585b5"
 
 [[package]]
+name = "xkbcommon"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13867d259930edc7091a6c41b4ce6eee464328c6ff9659b7e4c668ca20d4c91e"
+dependencies = [
+ "libc",
+ "memmap2 0.8.0",
+ "xkeysym",
+]
+
+[[package]]
+name = "xkbcommon"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d66ca9352cbd4eecbbc40871d8a11b4ac8107cfc528a6e14d7c19c69d0e1ac9"
+dependencies = [
+ "libc",
+ "memmap2 0.9.8",
+ "xkeysym",
+]
+
+[[package]]
 name = "xkbcommon-dl"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8838,6 +8971,9 @@ name = "xkeysym"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "xml-rs"

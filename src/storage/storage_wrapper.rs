@@ -584,6 +584,11 @@ impl Storage {
         self.sqlite.insert_scheduled_job(job)
     }
 
+    /// Insert one row into the LLM call audit log.
+    pub fn insert_llm_call(&self, rec: &crate::llm::LlmCallRecord) -> SqliteResult<()> {
+        self.sqlite.insert_llm_call(rec)
+    }
+
     /// Get due scheduled jobs
     pub fn get_due_scheduled_jobs(
         &self,

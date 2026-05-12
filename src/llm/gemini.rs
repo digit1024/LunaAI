@@ -1,5 +1,7 @@
 use super::*;
 use crate::config::ModelPreset;
+use crate::llm::observability::{classify_reqwest_error, CallOutcome, LlmCallSpan};
+use crate::llm::tokenizer::TokenCounter;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
@@ -84,12 +86,27 @@ struct GeminiFunctionDeclaration {
 
 #[derive(Debug, Deserialize)]
 struct GeminiResponse {
+    #[serde(default)]
     candidates: Vec<GeminiCandidate>,
+    #[serde(rename = "usageMetadata", default)]
+    usage_metadata: Option<GeminiUsageMetadata>,
 }
 
 #[derive(Debug, Deserialize)]
 struct GeminiCandidate {
     content: GeminiContent,
+    #[serde(rename = "finishReason", default)]
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct GeminiUsageMetadata {
+    #[serde(rename = "promptTokenCount", default)]
+    prompt_token_count: Option<u32>,
+    #[serde(rename = "candidatesTokenCount", default)]
+    candidates_token_count: Option<u32>,
+    #[serde(rename = "totalTokenCount", default)]
+    total_token_count: Option<u32>,
 }
 
 pub struct GeminiClient {
@@ -100,9 +117,26 @@ pub struct GeminiClient {
 impl GeminiClient {
     pub fn new(preset: ModelPreset) -> Self {
         Self {
-            client: Client::new(),
+            client: super::observability::shared_http_client(),
             preset,
         }
+    }
+
+    fn estimate_context_tokens(messages: &[Message]) -> Option<usize> {
+        let counter = TokenCounter::cl100k();
+        let mut total = 0usize;
+        for m in messages {
+            total = total.saturating_add(counter.count_message_tokens(m));
+        }
+        Some(total)
+    }
+
+    fn extract_request_id(resp: &reqwest::Response) -> Option<String> {
+        resp.headers()
+            .get("x-request-id")
+            .or_else(|| resp.headers().get("x-goog-request-id"))
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
     }
 
     /// Build the Gemini API endpoint URL for a given method
@@ -282,6 +316,10 @@ impl LlmClient for GeminiClient {
         temperature: Option<f32>,
         max_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>, LlmError> {
+        let mut span = LlmCallSpan::start("gemini", self.preset.model.clone(), true);
+        let context_tokens = Self::estimate_context_tokens(&messages);
+        span.set_input_shape(messages.len(), 0, context_tokens);
+
         let contents = self.convert_messages_to_gemini(messages);
 
         let generation_config = GeminiGenerationConfig {
@@ -298,31 +336,48 @@ impl LlmClient for GeminiClient {
         // Build endpoint with model
         let endpoint = self.build_endpoint("streamGenerateContent");
 
-        let response = self
+        let response = match self
             .client
             .post(&endpoint)
             .header("Content-Type", "application/json")
             .header("x-goog-api-key", &self.preset.api_key)
             .json(&request)
             .send()
-            .await?;
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let (outcome, kind) = classify_reqwest_error(&e);
+                span.finish_error(outcome, kind, e.to_string());
+                return Err(LlmError::Http(e));
+            }
+        };
 
-        if !response.status().is_success() {
-            let status = response.status();
+        let status = response.status();
+        let request_id = Self::extract_request_id(&response);
+        span.set_response_headers(status.as_u16(), request_id);
+
+        if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            if error_text.is_empty() {
-                return Err(LlmError::Api(format!(
+            let msg = if error_text.is_empty() {
+                format!(
                     "Gemini API error: HTTP {} {}",
                     status.as_u16(),
                     status.canonical_reason().unwrap_or("Unknown")
-                )));
-            }
-            return Err(LlmError::Api(format!(
-                "Gemini API error (HTTP {}): {}",
-                status.as_u16(),
-                error_text
-            )));
+                )
+            } else {
+                format!("Gemini API error (HTTP {}): {}", status.as_u16(), error_text)
+            };
+            span.finish_error(CallOutcome::HttpError, format!("http_{}", status.as_u16()), msg.clone());
+            return Err(LlmError::Api(msg));
         }
+
+        // Stream succeeded to first byte. Gemini's streaming chunk parser
+        // below uses the high-level Stream API, so we cannot easily detect
+        // a truncated stream here without restructuring. Mark span as
+        // successful at the headers stage; transport-level keepalive will
+        // turn silent drops into reqwest errors that subscribers see.
+        span.finish_success();
 
         let stream = response.bytes_stream();
         let stream = futures::StreamExt::map(stream, |chunk_result| {
@@ -377,6 +432,10 @@ impl LlmClient for GeminiClient {
         temperature: Option<f32>,
         max_tokens: Option<u32>,
     ) -> Result<ChatResponse, LlmError> {
+        let mut span = LlmCallSpan::start("gemini", self.preset.model.clone(), false);
+        let context_tokens = Self::estimate_context_tokens(&messages);
+        span.set_input_shape(messages.len(), available_tools.len(), context_tokens);
+
         let contents = self.convert_messages_to_gemini(messages);
 
         let generation_config = GeminiGenerationConfig {
@@ -417,38 +476,67 @@ impl LlmClient for GeminiClient {
         // Build endpoint with model
         let endpoint = self.build_endpoint("generateContent");
 
-        let response = self
+        let response = match self
             .client
             .post(&endpoint)
             .header("Content-Type", "application/json")
             .header("x-goog-api-key", &self.preset.api_key)
             .json(&request)
             .send()
-            .await?;
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let (outcome, kind) = classify_reqwest_error(&e);
+                span.finish_error(outcome, kind, e.to_string());
+                return Err(LlmError::Http(e));
+            }
+        };
 
-        if !response.status().is_success() {
-            let status = response.status();
+        let status = response.status();
+        let request_id = Self::extract_request_id(&response);
+        span.set_response_headers(status.as_u16(), request_id);
+
+        if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            if error_text.is_empty() {
-                return Err(LlmError::Api(format!(
+            let msg = if error_text.is_empty() {
+                format!(
                     "Gemini API error: HTTP {} {}",
                     status.as_u16(),
                     status.canonical_reason().unwrap_or("Unknown")
-                )));
-            }
-            return Err(LlmError::Api(format!(
-                "Gemini API error (HTTP {}): {}",
-                status.as_u16(),
-                error_text
-            )));
+                )
+            } else {
+                format!("Gemini API error (HTTP {}): {}", status.as_u16(), error_text)
+            };
+            span.finish_error(CallOutcome::HttpError, format!("http_{}", status.as_u16()), msg.clone());
+            return Err(LlmError::Api(msg));
         }
 
-        let response_data: GeminiResponse = response.json().await?;
+        let response_data: GeminiResponse = match response.json().await {
+            Ok(r) => r,
+            Err(e) => {
+                let (outcome, kind) = classify_reqwest_error(&e);
+                span.finish_error(outcome, kind, e.to_string());
+                return Err(LlmError::Http(e));
+            }
+        };
 
-        let candidate = response_data
-            .candidates
-            .first()
-            .ok_or_else(|| LlmError::Api("No response from Gemini".to_string()))?;
+        if let Some(u) = response_data.usage_metadata.as_ref() {
+            span.set_usage(u.prompt_token_count, u.candidates_token_count, u.total_token_count);
+        }
+
+        let candidate = match response_data.candidates.first() {
+            Some(c) => c,
+            None => {
+                let msg = "No response from Gemini".to_string();
+                span.finish_error(CallOutcome::Parse, "empty_candidates", msg.clone());
+                return Err(LlmError::Api(msg));
+            }
+        };
+
+        if let Some(reason) = candidate.finish_reason.clone() {
+            span.set_finish_reason(reason);
+        }
 
         let mut content = String::new();
         let mut tool_calls = Vec::new();
@@ -459,6 +547,7 @@ impl LlmClient for GeminiClient {
                     content.push_str(text);
                 }
                 GeminiPart::FunctionCall { function_call } => {
+                    span.observe_tool_call();
                     tool_calls.push(ToolCall {
                         id: uuid::Uuid::new_v4().to_string(),
                         name: function_call.name.clone(),
@@ -469,6 +558,7 @@ impl LlmClient for GeminiClient {
             }
         }
 
+        span.finish_success();
         Ok(ChatResponse {
             content,
             tool_calls,

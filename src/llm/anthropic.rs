@@ -1,5 +1,7 @@
 use super::*;
 use crate::config::ModelPreset;
+use crate::llm::observability::{classify_reqwest_error, CallOutcome, LlmCallSpan};
+use crate::llm::tokenizer::TokenCounter;
 use futures::Stream;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -66,6 +68,18 @@ enum AnthropicContentBlock {
 #[derive(Debug, Deserialize)]
 struct AnthropicResponse {
     content: Vec<AnthropicResponseBlock>,
+    #[serde(default)]
+    usage: Option<AnthropicUsage>,
+    #[serde(default)]
+    stop_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct AnthropicUsage {
+    #[serde(default)]
+    input_tokens: Option<u32>,
+    #[serde(default)]
+    output_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,9 +121,26 @@ pub struct AnthropicClient {
 impl AnthropicClient {
     pub fn new(preset: ModelPreset) -> Self {
         Self {
-            client: Client::new(),
+            client: super::observability::shared_http_client(),
             preset,
         }
+    }
+
+    fn estimate_context_tokens(messages: &[Message]) -> Option<usize> {
+        let counter = TokenCounter::cl100k();
+        let mut total = 0usize;
+        for m in messages {
+            total = total.saturating_add(counter.count_message_tokens(m));
+        }
+        Some(total)
+    }
+
+    fn extract_request_id(resp: &reqwest::Response) -> Option<String> {
+        resp.headers()
+            .get("x-request-id")
+            .or_else(|| resp.headers().get("request-id"))
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
     }
 
     fn push_user_attachments(blocks: &mut Vec<AnthropicContentBlock>, attachments: Vec<Attachment>) {
@@ -154,6 +185,10 @@ impl LlmClient for AnthropicClient {
         temperature: Option<f32>,
         max_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>, LlmError> {
+        let mut span = LlmCallSpan::start("anthropic", self.preset.model.clone(), true);
+        let context_tokens = Self::estimate_context_tokens(&messages);
+        span.set_input_shape(messages.len(), 0, context_tokens);
+
         // Extract first system prompt if present; Anthropic expects it separately
         let mut system_prompt: Option<String> = None;
         let mut user_assistant: Vec<Message> = Vec::new();
@@ -214,7 +249,7 @@ impl LlmClient for AnthropicClient {
             stream: true,
         };
 
-        let response = self
+        let response = match self
             .client
             .post(&self.preset.endpoint)
             .header("x-api-key", &self.preset.api_key)
@@ -222,15 +257,35 @@ impl LlmClient for AnthropicClient {
             .header("Content-Type", "application/json")
             .json(&request)
             .send()
-            .await?;
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let (outcome, kind) = classify_reqwest_error(&e);
+                span.finish_error(outcome, kind, e.to_string());
+                return Err(LlmError::Http(e));
+            }
+        };
 
-        if !response.status().is_success() {
+        let status = response.status();
+        let request_id = Self::extract_request_id(&response);
+        span.set_response_headers(status.as_u16(), request_id);
+
+        if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::Api(format!(
-                "Anthropic API error: {}",
-                error_text
-            )));
+            let msg = format!("Anthropic API error (HTTP {}): {}", status.as_u16(), error_text);
+            span.finish_error(CallOutcome::HttpError, format!("http_{}", status.as_u16()), msg.clone());
+            return Err(LlmError::Api(msg));
         }
+
+        // NOTE: This streaming path doesn't currently parse Anthropic's
+        // `message_stop` / final `usage` event, so it can't observe
+        // truncation as precisely as OpenAI. The shared client's
+        // tcp_keepalive + http2 ping configuration ensures dead
+        // connections at least surface as a transport error rather than
+        // a silent close. Finishing the span on stream end is good
+        // enough until we add full SSE event parsing here.
+        span.finish_success();
 
         let stream = response.bytes_stream();
         let stream = futures::StreamExt::map(stream, |chunk_result| {
@@ -283,6 +338,10 @@ impl LlmClient for AnthropicClient {
         temperature: Option<f32>,
         max_tokens: Option<u32>,
     ) -> Result<ChatResponse, LlmError> {
+        let mut span = LlmCallSpan::start("anthropic", self.preset.model.clone(), false);
+        let context_tokens = Self::estimate_context_tokens(&messages);
+        span.set_input_shape(messages.len(), available_tools.len(), context_tokens);
+
         // Extract first system prompt if present
         let mut system_prompt: Option<String> = None;
         let mut user_assistant: Vec<Message> = Vec::new();
@@ -413,7 +472,7 @@ impl LlmClient for AnthropicClient {
             stream: false,
         };
 
-        let response = self
+        let response = match self
             .client
             .post(&self.preset.endpoint)
             .header("x-api-key", &self.preset.api_key)
@@ -421,23 +480,54 @@ impl LlmClient for AnthropicClient {
             .header("Content-Type", "application/json")
             .json(&request)
             .send()
-            .await?;
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let (outcome, kind) = classify_reqwest_error(&e);
+                span.finish_error(outcome, kind, e.to_string());
+                return Err(LlmError::Http(e));
+            }
+        };
 
-        if !response.status().is_success() {
+        let status = response.status();
+        let request_id = Self::extract_request_id(&response);
+        span.set_response_headers(status.as_u16(), request_id);
+
+        if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::Api(format!(
-                "Anthropic API error: {}",
-                error_text
-            )));
+            let msg = format!("Anthropic API error (HTTP {}): {}", status.as_u16(), error_text);
+            span.finish_error(CallOutcome::HttpError, format!("http_{}", status.as_u16()), msg.clone());
+            return Err(LlmError::Api(msg));
         }
 
-        let response_data: AnthropicResponse = response.json().await?;
+        let response_data: AnthropicResponse = match response.json().await {
+            Ok(r) => r,
+            Err(e) => {
+                let (outcome, kind) = classify_reqwest_error(&e);
+                span.finish_error(outcome, kind, e.to_string());
+                return Err(LlmError::Http(e));
+            }
+        };
+
+        if let Some(u) = response_data.usage.as_ref() {
+            let total = match (u.input_tokens, u.output_tokens) {
+                (Some(a), Some(b)) => Some(a + b),
+                _ => None,
+            };
+            span.set_usage(u.input_tokens, u.output_tokens, total);
+        }
+        if let Some(reason) = response_data.stop_reason {
+            span.set_finish_reason(reason);
+        }
+
         let mut content = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         for block in response_data.content.into_iter() {
             match block {
                 AnthropicResponseBlock::Text { text } => content.push_str(&text),
                 AnthropicResponseBlock::ToolUse { id, name, input } => {
+                    span.observe_tool_call();
                     tool_calls.push(ToolCall {
                         id,
                         name,
@@ -447,6 +537,7 @@ impl LlmClient for AnthropicClient {
             }
         }
 
+        span.finish_success();
         Ok(ChatResponse {
             content,
             tool_calls,

@@ -97,8 +97,9 @@ pub fn history_page(app: &LunaThinApp) -> Element<'static, Message> {
                 .last_message_preview
                 .clone()
                 .unwrap_or_else(|| "No messages".to_string());
-            let truncated = if preview.len() > 100 {
-                format!("{}...", &preview[..100])
+            let truncated = if preview.chars().count() > 100 {
+                let head: String = preview.chars().take(100).collect();
+                format!("{}...", head)
             } else {
                 preview
             };

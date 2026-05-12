@@ -37,21 +37,87 @@ struct Cli {
     reorganize_memories: bool,
 }
 
-pub fn tracing() {
+/// Log file directory: `$XDG_STATE_HOME/luna/logs`, falling back to
+/// `~/.local/state/luna/logs` per XDG basedir spec.
+fn log_dir() -> std::path::PathBuf {
+    if let Ok(state_home) = std::env::var("XDG_STATE_HOME") {
+        if !state_home.is_empty() {
+            return std::path::PathBuf::from(state_home).join("luna").join("logs");
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home)
+        .join(".local")
+        .join("state")
+        .join("luna")
+        .join("logs")
+}
+
+/// Holds the non-blocking file appender's worker guard. Must be kept
+/// alive for the lifetime of the process or the file layer drops events.
+pub struct LoggingGuard {
+    _file_guard: tracing_appender::non_blocking::WorkerGuard,
+}
+
+pub fn tracing() -> Option<LoggingGuard> {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
     use tracing_subscriber::EnvFilter;
-    let base = EnvFilter::from_default_env();
-    // Suppress noisy logs: hyper_util DEBUG (connection pooling), mcp_stderr WARN (MCP subprocess stderr)
-    let filter = base
-        .add_directive("hyper_util=info".parse().unwrap())
-        .add_directive("mcp_stderr=error".parse().unwrap());
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .init();
+
+    // Default filter:
+    // - info everywhere
+    // - llm_call at debug (so we get every per-call event by default)
+    // - llm.body silenced (raw payloads only when explicitly requested)
+    // - hyper_util/h2/reqwest/mcp_stderr clamped down
+    // RUST_LOG overrides everything when set.
+    let default_directives = "info,llm_call=debug,llm.body=off,hyper_util=info,h2=info,reqwest=info,mcp_stderr=error";
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(default_directives));
+
+    // Stderr layer (pretty, what we used to have).
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_target(true)
+        .with_writer(std::io::stderr);
+
+    // File layer (JSON, daily-rotated) — only enabled if we can create the dir.
+    let dir = log_dir();
+    let file_layer_result = std::fs::create_dir_all(&dir).map(|_| {
+        let file_appender = tracing_appender::rolling::daily(&dir, "luna.log");
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+        let layer = tracing_subscriber::fmt::layer()
+            .with_target(true)
+            .with_thread_ids(false)
+            .with_ansi(false)
+            .with_writer(non_blocking)
+            .json();
+        (layer, guard)
+    });
+
+    match file_layer_result {
+        Ok((file_layer, guard)) => {
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(stderr_layer)
+                .with(file_layer)
+                .init();
+            tracing::info!(log_dir = %dir.display(), "File logging enabled");
+            Some(LoggingGuard { _file_guard: guard })
+        }
+        Err(err) => {
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(stderr_layer)
+                .init();
+            tracing::warn!(error = %err, log_dir = %dir.display(), "File logging disabled; stderr only");
+            None
+        }
+    }
 }
 
 pub fn main() {
-    // Initialize logging
-    tracing();
+    // Hold this guard for the whole process lifetime — dropping it stops
+    // the non-blocking file appender's flush thread.
+    let _logging_guard = tracing();
 
     let cli = Cli::parse();
 

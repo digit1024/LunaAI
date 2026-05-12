@@ -450,6 +450,94 @@ impl SqliteStorage {
             }
         }
 
+        // Audit table for every LLM call (one row per HTTP round-trip).
+        // Used by the UI / debugging to answer "why did this conversation
+        // stop?" — see llm/observability.rs::LlmCallSpan.
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS llm_calls (
+                call_id TEXT PRIMARY KEY,
+                conversation_id TEXT,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                streaming INTEGER NOT NULL,
+                started_at INTEGER NOT NULL,
+                finished_at INTEGER NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                ttfb_ms INTEGER,
+                http_status INTEGER,
+                request_id TEXT,
+                messages_in INTEGER,
+                tool_count INTEGER,
+                context_tokens_estimate INTEGER,
+                prompt_tokens INTEGER,
+                completion_tokens INTEGER,
+                total_tokens INTEGER,
+                finish_reason TEXT,
+                tool_calls_emitted INTEGER,
+                bytes_in INTEGER,
+                outcome TEXT NOT NULL,
+                error_kind TEXT,
+                error_message TEXT
+            )",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_llm_calls_started_at ON llm_calls(started_at)",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_llm_calls_conv ON llm_calls(conversation_id, started_at)",
+            [],
+        )?;
+
+        Ok(())
+    }
+
+    /// Insert one row into the LLM call audit log. Errors are logged but
+    /// not propagated — the audit log must never break the LLM flow.
+    pub fn insert_llm_call(&self, rec: &crate::llm::LlmCallRecord) -> SqliteResult<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO llm_calls (
+                call_id, conversation_id, provider, model, streaming,
+                started_at, finished_at, duration_ms, ttfb_ms,
+                http_status, request_id, messages_in, tool_count,
+                context_tokens_estimate, prompt_tokens, completion_tokens,
+                total_tokens, finish_reason, tool_calls_emitted, bytes_in,
+                outcome, error_kind, error_message
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5,
+                ?6, ?7, ?8, ?9,
+                ?10, ?11, ?12, ?13,
+                ?14, ?15, ?16,
+                ?17, ?18, ?19, ?20,
+                ?21, ?22, ?23
+            )",
+            rusqlite::params![
+                rec.call_id.to_string(),
+                rec.conversation_id.map(|u| u.to_string()),
+                rec.provider,
+                rec.model,
+                rec.streaming as i32,
+                rec.started_at,
+                rec.finished_at,
+                rec.duration_ms as i64,
+                rec.ttfb_ms.map(|v| v as i64),
+                rec.http_status.map(|s| s as i64),
+                rec.request_id,
+                rec.messages_in as i64,
+                rec.tool_count as i64,
+                rec.context_tokens_estimate.map(|v| v as i64),
+                rec.prompt_tokens.map(|v| v as i64),
+                rec.completion_tokens.map(|v| v as i64),
+                rec.total_tokens.map(|v| v as i64),
+                rec.finish_reason,
+                rec.tool_calls_emitted as i64,
+                rec.bytes_in as i64,
+                rec.outcome.as_str(),
+                rec.error_kind,
+                rec.error_message,
+            ],
+        )?;
         Ok(())
     }
 

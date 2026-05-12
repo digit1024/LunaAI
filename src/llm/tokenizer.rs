@@ -42,6 +42,16 @@ impl TokenCounter {
         counter
     }
 
+    /// Cheap counter for observability where we don't have a preset handy.
+    /// Uses cl100k_base which is a decent enough estimate for any
+    /// OpenAI-compatible provider (DeepSeek, OpenRouter, etc).
+    pub fn cl100k() -> Self {
+        Self {
+            tokenizer_type: TokenizerType::Cl100kBase,
+            cl100k_encoder: tiktoken_rs::cl100k_base().ok(),
+        }
+    }
+
     /// Detect the appropriate tokenizer for a given preset
     fn detect_tokenizer(preset: &ModelPreset) -> TokenizerType {
         match preset.backend.as_str() {

@@ -549,8 +549,12 @@ impl LunaThinApp {
 
         // Recent conversations (max to match original)
         for conv in self.conversations.iter().take(MAX_NAV_CONVERSATIONS) {
-            let title = if conv.title.len() > CONVERSATION_TITLE_MAX_LEN {
-                format!("{}...", &conv.title[..CONVERSATION_TITLE_TRUNCATE_LEN])
+            let title = if conv.title.chars().count() > CONVERSATION_TITLE_MAX_LEN {
+                let truncated: String = conv.title
+                    .chars()
+                    .take(CONVERSATION_TITLE_TRUNCATE_LEN)
+                    .collect();
+                format!("{}...", truncated)
             } else {
                 conv.title.clone()
             };

@@ -1,4 +1,14 @@
 pub mod attachment_limits;
+pub mod observability;
+
+// Re-export the public observability surface so callers can `use crate::llm::*`.
+// `set_llm_observer` and `LlmCallRecord`/`LlmObserver` are used by the
+// server wiring; the rest are used by LLM provider modules directly.
+#[allow(unused_imports)]
+pub use observability::{
+    llm_observer, set_llm_observer, shared_http_client, LlmCallRecord, LlmCallSpan,
+    LlmObserver,
+};
 
 use crate::config::LlmProfile;
 use anyhow::Result;
@@ -8,6 +18,13 @@ use futures::Stream;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::sync::Arc;
+
+tokio::task_local! {
+    /// Conversation ID propagated from the agentic loop into LLM clients via
+    /// task-locals so they can tag observability events without changing
+    /// every call site. Set with `CONVERSATION_ID.scope(id, fut).await`.
+    pub static CONVERSATION_ID: Option<uuid::Uuid>;
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub enum Role {
@@ -144,6 +161,17 @@ pub enum LlmError {
     Api(String),
     #[error("Configuration error: {0}")]
     Config(String),
+    /// Stream was severed before the provider signalled completion. Carries
+    /// what we observed so the agentic loop can distinguish this from a clean
+    /// finish (which is what was silently masking DeepSeek drops).
+    #[error(
+        "Stream truncated by provider after {bytes_read} bytes (last activity {last_event_age_ms}ms ago): {reason}"
+    )]
+    StreamTruncated {
+        bytes_read: usize,
+        last_event_age_ms: u128,
+        reason: String,
+    },
 }
 
 // Tool-related types

@@ -83,6 +83,12 @@ async fn launch(options: ServerOptions) -> Result<()> {
         });
 
     let storage = Arc::new(Mutex::new(storage));
+
+    // Wire up the LLM call audit log. Every LlmCallSpan finish forwards a
+    // record into this channel; the writer below drains it asynchronously
+    // so the LLM hot path never blocks on SQLite.
+    spawn_llm_call_audit_writer(storage.clone());
+
     let mcp_registry = Arc::new(RwLock::new(MCPServerRegistry::new()));
     let subscriptions = Arc::new(conversation_subscriptions::ConversationSubscriptions::new());
     let schedule_service = Arc::new(ScheduleService::new(storage.clone()));
@@ -348,6 +354,44 @@ fn spawn_deep_sleep_loop(ctx: Arc<ServerContext>) {
                 tracing::error!(error = %e, "Deep Sleep: cycle failed");
             }
         }
+    });
+}
+
+/// Background writer for the LLM call audit log.
+///
+/// `LlmCallSpan` finishes are synchronous (they fire from `Drop` too),
+/// so we cannot acquire a `tokio::Mutex` lock from inside `record()`.
+/// Instead, every record is pushed to an unbounded channel and a single
+/// background task drains it into SQLite. Audit log failures are warned
+/// but never propagated — the LLM hot path must not depend on this.
+struct LlmCallAuditObserver {
+    tx: tokio::sync::mpsc::UnboundedSender<crate::llm::LlmCallRecord>,
+}
+
+impl crate::llm::LlmObserver for LlmCallAuditObserver {
+    fn record(&self, record: crate::llm::LlmCallRecord) {
+        if let Err(err) = self.tx.send(record) {
+            tracing::warn!(error = %err, "LLM audit log receiver dropped; record lost");
+        }
+    }
+}
+
+fn spawn_llm_call_audit_writer(storage: Arc<Mutex<Storage>>) {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::llm::LlmCallRecord>();
+    crate::llm::set_llm_observer(Arc::new(LlmCallAuditObserver { tx }));
+
+    tokio::spawn(async move {
+        while let Some(record) = rx.recv().await {
+            let storage_guard = storage.lock().await;
+            if let Err(e) = storage_guard.insert_llm_call(&record) {
+                tracing::warn!(
+                    error = %e,
+                    call_id = %record.call_id,
+                    "Failed to persist llm_call audit row"
+                );
+            }
+        }
+        tracing::debug!("LLM audit writer channel closed; exiting");
     });
 }
 

@@ -37,7 +37,8 @@ thiserror = "2.0"
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
 
 # WebSocket support for MCP
 tokio-tungstenite = "0.29"
