@@ -161,6 +161,33 @@ pub enum LlmError {
     Api(String),
     #[error("Configuration error: {0}")]
     Config(String),
+    /// 429 from the provider. Transient — the agentic loop should back off
+    /// (honoring `retry_after` when present) and try again. DeepSeek and
+    /// most OpenAI-compatible providers use this for dynamic concurrency
+    /// limits and short-window quotas.
+    #[error("Rate limited by provider (retry_after={retry_after:?}): {message}")]
+    RateLimited {
+        retry_after: Option<std::time::Duration>,
+        message: String,
+    },
+    /// 500 / 503 — provider internal error or overload. Transient: the
+    /// agentic loop should back off and retry. DeepSeek docs explicitly
+    /// recommend retrying after a brief wait for both codes.
+    #[error("Provider server busy (HTTP {status}, retry_after={retry_after:?}): {message}")]
+    ServerBusy {
+        status: u16,
+        retry_after: Option<std::time::Duration>,
+        message: String,
+    },
+    /// Model hit `finish_reason: "length"` (max_tokens exhausted) *and* did
+    /// not emit any usable content or completed tool call. Distinct from a
+    /// successful-but-truncated response so the UI can show a precise
+    /// "raise your max_tokens" hint instead of a generic empty turn.
+    #[error("Model output truncated by length limit before any usable output (partial_tool_calls={partial_tool_calls})")]
+    LengthTruncated {
+        partial_tool_calls: usize,
+        content_chars: usize,
+    },
     /// Stream was severed before the provider signalled completion. Carries
     /// what we observed so the agentic loop can distinguish this from a clean
     /// finish (which is what was silently masking DeepSeek drops).
@@ -172,6 +199,21 @@ pub enum LlmError {
         last_event_age_ms: u128,
         reason: String,
     },
+}
+
+impl LlmError {
+    /// `Some(retry_after)` if the error is a transient 429/5xx the agentic
+    /// loop should back off and retry. `None` if the error is terminal
+    /// (auth, malformed request, parse failure, truncation mid-stream, ...).
+    /// The inner `Option<Duration>` is the provider's `Retry-After` hint
+    /// when it sent one; otherwise the caller picks its own backoff.
+    pub fn transient_retry_after(&self) -> Option<Option<std::time::Duration>> {
+        match self {
+            LlmError::RateLimited { retry_after, .. } => Some(*retry_after),
+            LlmError::ServerBusy { retry_after, .. } => Some(*retry_after),
+            _ => None,
+        }
+    }
 }
 
 // Tool-related types

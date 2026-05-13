@@ -661,10 +661,28 @@ impl LlmClient for OpenAIClient {
                 .iter()
                 .map(|tc| {
                     span.observe_tool_call();
+                    // P1: don't silently fall back to `{}` when the model
+                    // returned malformed arguments JSON. Log a warning so
+                    // the bad call shows up in the audit trail instead of
+                    // executing a tool with empty params.
+                    let parameters = match serde_json::from_str::<serde_json::Value>(
+                        &tc.function.arguments,
+                    ) {
+                        Ok(v) => v,
+                        Err(parse_err) => {
+                            tracing::warn!(
+                                tool_name = %tc.function.name,
+                                argument_chars = tc.function.arguments.len(),
+                                error = %parse_err,
+                                "Tool call arguments JSON failed to parse; defaulting to empty params"
+                            );
+                            serde_json::Value::Object(Default::default())
+                        }
+                    };
                     ToolCall {
                         id: tc.id.clone(),
                         name: tc.function.name.clone(),
-                        parameters: serde_json::from_str(&tc.function.arguments).unwrap_or_default(),
+                        parameters,
                     }
                 })
                 .collect()
@@ -673,6 +691,21 @@ impl LlmClient for OpenAIClient {
         };
 
         let reasoning_content = choice.message.reasoning_content.clone();
+
+        // P1: same length-truncated guard as the streaming path. If the
+        // provider tells us max_tokens stopped generation and we have
+        // nothing usable to show, return LengthTruncated so the loop can
+        // surface a specific error instead of an empty assistant turn.
+        let finish_reason_str = choice.finish_reason.as_deref();
+        if finish_reason_str == Some("length") && content.is_empty() && tool_calls.is_empty() {
+            let msg = "model hit max_tokens before producing usable output".to_string();
+            span.finish_error(CallOutcome::StreamTruncated, "length_truncated", msg);
+            return Err(LlmError::LengthTruncated {
+                partial_tool_calls: 0,
+                content_chars: 0,
+            });
+        }
+
         span.finish_success();
 
         Ok(ChatResponse {

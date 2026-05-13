@@ -181,6 +181,38 @@ impl MCPServerRegistry {
         ))
     }
 
+    /// Find the name of the MCP server that owns a tool, if any.
+    pub async fn find_server_for_tool(&self, tool_name: &str) -> Option<String> {
+        for (server_name, server_connection) in self.servers.iter() {
+            if server_connection
+                .read()
+                .await
+                .tools()
+                .iter()
+                .any(|tool| tool.name == tool_name)
+            {
+                return Some(server_name.clone());
+            }
+        }
+        None
+    }
+
+    /// Restart a registered MCP server by name.
+    ///
+    /// Best-effort shuts down the existing child process, re-spawns it, and
+    /// re-discovers tools. Returns an error if the server is not registered
+    /// or if the reconnect/tool-discovery fails.
+    pub async fn restart_server(&self, server_name: &str) -> Result<()> {
+        let server_connection = self.servers.get(server_name).ok_or_else(|| {
+            AgenticLoopError::MCPConnectionError(format!(
+                "Server '{}' not found in registry",
+                server_name
+            ))
+        })?;
+        server_connection.write().await.restart().await?;
+        Ok(())
+    }
+
 
 }
 #[cfg(test)]

@@ -9,6 +9,68 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 
+/// Bounded exponential backoff for transient LLM errors (DeepSeek 429 / 500
+/// / 503 per their docs). Honors `Retry-After` when the provider sent one;
+/// otherwise grows the wait as `BASE * 2^(attempt-1)` capped at `MAX`, with
+/// up to 25% jitter sourced from the system clock so we don't synchronise
+/// retries across concurrent runs.
+const LLM_RETRY_MAX_ATTEMPTS: u32 = 4;
+const LLM_RETRY_BASE_MS: u64 = 1_000;
+const LLM_RETRY_MAX_MS: u64 = 30_000;
+
+fn backoff_delay(attempt: u32, retry_after: Option<Duration>) -> Duration {
+    if let Some(hint) = retry_after {
+        // Cap any provider hint so a misbehaving server can't park us for
+        // hours. 60s is more than enough for any realistic rate-limit
+        // window we'd want to wait through inline.
+        return hint.min(Duration::from_secs(60));
+    }
+    let shift = attempt.saturating_sub(1).min(16);
+    let exp = LLM_RETRY_BASE_MS.saturating_mul(1u64 << shift);
+    let capped = exp.min(LLM_RETRY_MAX_MS);
+    let jitter_window = (capped / 4).max(1);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    let jitter_ms = nanos % jitter_window;
+    Duration::from_millis(capped.saturating_add(jitter_ms))
+}
+
+/// Run `op` with bounded exponential-backoff retries on transient LLM
+/// errors. Terminal errors (auth, malformed request, parse, truncation)
+/// bubble up immediately so we don't burn retries on something that will
+/// never succeed.
+async fn with_llm_retry<T, F, Fut>(mut op: F) -> Result<T, LlmError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, LlmError>>,
+{
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        match op().await {
+            Ok(v) => return Ok(v),
+            Err(e) => match e.transient_retry_after() {
+                Some(retry_after) if attempt < LLM_RETRY_MAX_ATTEMPTS => {
+                    let delay = backoff_delay(attempt, retry_after);
+                    tracing::warn!(
+                        attempt = attempt,
+                        max_attempts = LLM_RETRY_MAX_ATTEMPTS,
+                        backoff_ms = delay.as_millis() as u64,
+                        retry_after_hint_ms = retry_after.map(|d| d.as_millis() as u64).unwrap_or(0),
+                        error = %e,
+                        "LLM call hit transient error; backing off before retry"
+                    );
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+                _ => return Err(e),
+            },
+        }
+    }
+}
+
 /// Merge tool definitions by `name`. Later entries replace earlier ones (internal tools win over MCP).
 fn upsert_tool_definition(defs: &mut Vec<ToolDefinition>, tool: ToolDefinition) {
     if let Some(i) = defs.iter().position(|d| d.name == tool.name) {
@@ -308,11 +370,27 @@ impl AgenticLoop {
         loop {
             let available_tools = self.build_available_tools(&run_context).await?;
 
-            let mut stream = match self
-                .llm_client
-                .send_message_stream_with_tools(messages.clone(), available_tools, None, None)
-                .await
-            {
+            // P0c: wrap the initial call in bounded backoff so DeepSeek
+            // rate-limit / overload responses (429 / 500 / 503) don't kill
+            // the conversation. We retry the *call setup* only — once
+            // streaming has started and content has been delta'd to the
+            // UI, retrying would re-emit content and confuse the user.
+            let llm_client = self.llm_client.clone();
+            let tools_for_call = available_tools.clone();
+            let messages_for_call = messages.clone();
+            let stream_result = with_llm_retry(|| {
+                let messages = messages_for_call.clone();
+                let tools = tools_for_call.clone();
+                let client = llm_client.clone();
+                async move {
+                    client
+                        .send_message_stream_with_tools(messages, tools, None, None)
+                        .await
+                }
+            })
+            .await;
+
+            let mut stream = match stream_result {
                 Ok(stream) => stream,
                 Err(LlmError::Config(e)) => {
                     tracing::warn!(
@@ -337,6 +415,46 @@ impl AgenticLoop {
                     }
                     return Err(anyhow::anyhow!(
                         "stream truncated by provider after {bytes_read} bytes: {reason}"
+                    ));
+                }
+                Err(LlmError::LengthTruncated { partial_tool_calls, .. }) => {
+                    tracing::error!(
+                        partial_tool_calls = partial_tool_calls,
+                        "Model hit max_tokens before producing any usable output"
+                    );
+                    if let Some(tx) = agent_tx.as_ref() {
+                        let _ = tx.send(AgentUpdate::ModelError {
+                            error: format!(
+                                "Model hit max_tokens before producing any usable output ({} partial tool call(s) dropped). Consider raising max_tokens.",
+                                partial_tool_calls
+                            ),
+                        });
+                    }
+                    return Err(anyhow::anyhow!(
+                        "model output truncated by length limit before any usable output"
+                    ));
+                }
+                Err(LlmError::RateLimited { retry_after, message })
+                | Err(LlmError::ServerBusy { retry_after, message, .. }) => {
+                    // We're here because retries were exhausted; surface
+                    // the final transient error as a terminal one for this
+                    // turn so the UI doesn't hang silently.
+                    tracing::error!(
+                        retry_after_ms = retry_after.map(|d| d.as_millis() as u64).unwrap_or(0),
+                        "LLM call exhausted retries on transient error: {}",
+                        message
+                    );
+                    if let Some(tx) = agent_tx.as_ref() {
+                        let _ = tx.send(AgentUpdate::ModelError {
+                            error: format!(
+                                "Provider rate-limited / overloaded and didn't recover after {} retries: {}",
+                                LLM_RETRY_MAX_ATTEMPTS, message
+                            ),
+                        });
+                    }
+                    return Err(anyhow::anyhow!(
+                        "LLM call exhausted retries on transient error: {}",
+                        message
                     ));
                 }
                 Err(e) => {
@@ -421,6 +539,28 @@ impl AgenticLoop {
                             "stream truncated by provider after {bytes_read} bytes: {reason}"
                         ));
                     }
+                    Err(LlmError::LengthTruncated { partial_tool_calls, .. }) => {
+                        // Reached end-of-stream with finish_reason=length
+                        // and no usable output. Surface as a specific
+                        // error rather than letting the loop terminate
+                        // with an empty assistant turn.
+                        tracing::error!(
+                            partial_tool_calls = partial_tool_calls,
+                            partial_chars = assistant_response.len(),
+                            "Model hit max_tokens before producing usable output"
+                        );
+                        if let Some(tx) = agent_tx.as_ref() {
+                            let _ = tx.send(AgentUpdate::ModelError {
+                                error: format!(
+                                    "Model hit max_tokens before producing usable output ({} partial tool call(s) dropped). Consider raising max_tokens.",
+                                    partial_tool_calls
+                                ),
+                            });
+                        }
+                        return Err(anyhow::anyhow!(
+                            "model output truncated by length limit before any usable output"
+                        ));
+                    }
                     Err(e) => {
                         tracing::error!(error = %e, "Streaming event error");
                         if let Some(tx) = agent_tx.as_ref() {
@@ -441,7 +581,37 @@ impl AgenticLoop {
             }
 
             if planned_tools.is_empty() {
-                
+                // P0b: guard against "reasoning-only" / empty completions.
+                // DeepSeek-reasoner sometimes emits reasoning_content but
+                // no text and no tool calls; previously this was reported
+                // as ConversationComplete with an empty final_text and
+                // the conversation silently died. Now we surface it as a
+                // real ModelError so the user actually sees the failure.
+                if assistant_response.is_empty() {
+                    let reason = if !reasoning_content.is_empty() {
+                        "reasoning-only output with no text or tool calls"
+                    } else {
+                        "no text and no tool calls"
+                    };
+                    tracing::error!(
+                        reasoning_chars = reasoning_content.len(),
+                        "Model produced empty completion: {}",
+                        reason
+                    );
+                    if let Some(tx) = agent_tx.as_ref() {
+                        let _ = tx.send(AgentUpdate::ModelError {
+                            error: format!(
+                                "Model produced no actionable output ({}). The conversation has been stopped.",
+                                reason
+                            ),
+                        });
+                    }
+                    return Err(anyhow::anyhow!(
+                        "model produced empty completion: {}",
+                        reason
+                    ));
+                }
+
                 if let Some(tx) = agent_tx.as_ref() {
                     let _ = tx.send(AgentUpdate::ConversationComplete {
                         final_text: assistant_response.clone(),
@@ -805,7 +975,44 @@ impl AgenticLoop {
                     }
                 }
                 Err(_) => {
-                    let err_msg = format!("Timeout after {:?}", per_call_timeout);
+                    // The tool call timed out. The MCP child process is very
+                    // likely wedged (mid-request, stdio buffers stale, etc.),
+                    // so restart the server hosting this tool before either
+                    // retrying or returning the timeout to the caller.
+                    let restart_note = {
+                        let registry = self.mcp_registry.read().await;
+                        match registry.find_server_for_tool(&tool_call.name).await {
+                            Some(server_name) => match registry.restart_server(&server_name).await {
+                                Ok(()) => {
+                                    tracing::warn!(
+                                        server = %server_name,
+                                        tool = %tool_call.name,
+                                        timeout_secs = self.tool_call_timeout_secs,
+                                        "MCP tool call timed out; restarted server"
+                                    );
+                                    format!(" (restarted MCP server '{}')", server_name)
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        server = %server_name,
+                                        tool = %tool_call.name,
+                                        error = %e,
+                                        "Failed to restart MCP server after tool-call timeout"
+                                    );
+                                    format!(" (failed to restart MCP server '{}': {})", server_name, e)
+                                }
+                            },
+                            None => {
+                                tracing::warn!(
+                                    tool = %tool_call.name,
+                                    "Tool-call timeout: owning MCP server not found in registry"
+                                );
+                                String::new()
+                            }
+                        }
+                    };
+
+                    let err_msg = format!("Timeout after {:?}{}", per_call_timeout, restart_note);
                     if let Some(tx) = agent_tx {
                         let _ = tx.send(AgentUpdate::ToolError {
                             tool_call_id: tool_call.id.clone(),
@@ -816,7 +1023,7 @@ impl AgenticLoop {
                     }
                     if attempt > max_retries {
                         return ToolResult {
-                            content: "Timeout".to_string(),
+                            content: format!("Timeout{}", restart_note),
                             is_error: true,
                         };
                     }
@@ -834,11 +1041,23 @@ impl AgenticLoop {
         loop {
             let available_tools = self.build_available_tools(&run_context).await?;
 
-            let response = match self
-                .llm_client
-                .send_message_with_tools(messages.clone(), available_tools, None, None)
-                .await
-            {
+            // P0c: same bounded-backoff retry as the streaming path.
+            let llm_client = self.llm_client.clone();
+            let tools_for_call = available_tools.clone();
+            let messages_for_call = messages.clone();
+            let response_result = with_llm_retry(|| {
+                let messages = messages_for_call.clone();
+                let tools = tools_for_call.clone();
+                let client = llm_client.clone();
+                async move {
+                    client
+                        .send_message_with_tools(messages, tools, None, None)
+                        .await
+                }
+            })
+            .await;
+
+            let response = match response_result {
                 Ok(resp) => resp,
                 Err(LlmError::StreamTruncated { bytes_read, last_event_age_ms, reason }) => {
                     tracing::error!(
@@ -854,6 +1073,42 @@ impl AgenticLoop {
                     }
                     return Err(anyhow::anyhow!(
                         "non-streaming call truncated: {reason}"
+                    ));
+                }
+                Err(LlmError::LengthTruncated { partial_tool_calls, .. }) => {
+                    tracing::error!(
+                        partial_tool_calls = partial_tool_calls,
+                        "Model hit max_tokens before producing any usable output (non-streaming)"
+                    );
+                    if let Some(tx) = agent_tx.as_ref() {
+                        let _ = tx.send(AgentUpdate::ModelError {
+                            error: format!(
+                                "Model hit max_tokens before producing any usable output. Consider raising max_tokens."
+                            ),
+                        });
+                    }
+                    return Err(anyhow::anyhow!(
+                        "model output truncated by length limit before any usable output"
+                    ));
+                }
+                Err(LlmError::RateLimited { retry_after, message })
+                | Err(LlmError::ServerBusy { retry_after, message, .. }) => {
+                    tracing::error!(
+                        retry_after_ms = retry_after.map(|d| d.as_millis() as u64).unwrap_or(0),
+                        "Non-streaming LLM call exhausted retries on transient error: {}",
+                        message
+                    );
+                    if let Some(tx) = agent_tx.as_ref() {
+                        let _ = tx.send(AgentUpdate::ModelError {
+                            error: format!(
+                                "Provider rate-limited / overloaded and didn't recover after {} retries: {}",
+                                LLM_RETRY_MAX_ATTEMPTS, message
+                            ),
+                        });
+                    }
+                    return Err(anyhow::anyhow!(
+                        "LLM call exhausted retries on transient error: {}",
+                        message
                     ));
                 }
                 Err(e) => {
@@ -882,7 +1137,41 @@ impl AgenticLoop {
             }
 
             if response.tool_calls.is_empty() {
-                
+                // P0b: same empty-completion guard as the streaming path.
+                if response.content.is_empty() {
+                    let reason = if response
+                        .reasoning_content
+                        .as_ref()
+                        .map(|s| !s.is_empty())
+                        .unwrap_or(false)
+                    {
+                        "reasoning-only output with no text or tool calls"
+                    } else {
+                        "no text and no tool calls"
+                    };
+                    tracing::error!(
+                        reasoning_chars = response
+                            .reasoning_content
+                            .as_ref()
+                            .map(|s| s.len())
+                            .unwrap_or(0),
+                        "Model produced empty completion (non-streaming): {}",
+                        reason
+                    );
+                    if let Some(tx) = agent_tx.as_ref() {
+                        let _ = tx.send(AgentUpdate::ModelError {
+                            error: format!(
+                                "Model produced no actionable output ({}). The conversation has been stopped.",
+                                reason
+                            ),
+                        });
+                    }
+                    return Err(anyhow::anyhow!(
+                        "model produced empty completion: {}",
+                        reason
+                    ));
+                }
+
                 if let Some(tx) = agent_tx.as_ref() {
                     let _ = tx.send(AgentUpdate::ConversationComplete {
                         final_text: response.content.clone(),

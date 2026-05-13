@@ -5,8 +5,9 @@ pub mod model;
 mod no_stderr_transport;
 
 use std::sync::Arc;
+use std::time::Duration;
 use rust_mcp_sdk::schema::{CallToolRequestParams, CallToolResult};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::error::{AgenticLoopError, Result};
 use crate::mcp_config::model::MCPServerConfig;
@@ -120,6 +121,38 @@ impl MCPConnection {
         Ok(())
     }
 
+    /// Restart the MCP server: best-effort shutdown of the existing child,
+    /// then reconnect and rediscover tools.
+    ///
+    /// The shutdown phase is bounded by a short timeout so a wedged child
+    /// process (e.g. one that timed out mid tool-call) cannot stall the
+    /// reconnect indefinitely.
+    pub async fn restart(&mut self) -> Result<&mut Self> {
+        info!(server = %self.server_name, "Restarting MCP server");
+
+        // Best-effort disconnect; ignore errors and timeouts so a hung server
+        // cannot block the reconnect.
+        if self.client.is_some() {
+            match tokio::time::timeout(Duration::from_secs(2), self.disconnect()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    warn!(server = %self.server_name, error = %e, "disconnect during restart failed; continuing");
+                }
+                Err(_) => {
+                    warn!(server = %self.server_name, "disconnect during restart timed out; dropping client");
+                }
+            }
+        }
+        // Make sure state is clean even if disconnect timed out / failed.
+        self.client = None;
+        self.tools.clear();
+
+        self.connect().await?;
+        self.update_tools().await?;
+        info!(server = %self.server_name, "MCP server restarted");
+        Ok(self)
+    }
+
     /// Get a reference to the MCP client (if connected)
     pub fn client(&self) -> Option<&Arc<dyn McpClient + Send + Sync>> {
         self.client.as_ref()
@@ -132,7 +165,13 @@ impl MCPConnection {
     }
     //get the tools list from the MCP server
     pub async fn update_tools(&mut self) -> Result<&mut Self> {
-        match self.client().unwrap().request_tool_list(None).await {
+        let client = self.client.as_ref().ok_or_else(|| {
+            AgenticLoopError::MCPConnectionError(format!(
+                "MCP server '{}' is not connected",
+                self.server_name
+            ))
+        })?;
+        match client.request_tool_list(None).await {
             Ok(tools_list_result) => {
                 self.tools = tools_list_result.tools;
                 Ok(self)
@@ -151,8 +190,14 @@ impl MCPConnection {
     }
 //call a tool
 pub async fn call_tool(&self, name: String, arguments: serde_json::Map<String, serde_json::Value>) -> Result<CallToolResult> {
+    let client = self.client.as_ref().ok_or_else(|| {
+        AgenticLoopError::MCPConnectionError(format!(
+            "MCP server '{}' is not connected",
+            self.server_name
+        ))
+    })?;
     let tool_call = CallToolRequestParams {name, arguments:Some(arguments), meta: None, task: None};
-    let tool_result = self.client().unwrap().request_tool_call(tool_call).await.map_err(|e| AgenticLoopError::MCPConnectionError(
+    let tool_result = client.request_tool_call(tool_call).await.map_err(|e| AgenticLoopError::MCPConnectionError(
         format!("Failed to call tool: {}", e)
     ))?;
     Ok(tool_result)
