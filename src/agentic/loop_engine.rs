@@ -18,6 +18,12 @@ const LLM_RETRY_MAX_ATTEMPTS: u32 = 4;
 const LLM_RETRY_BASE_MS: u64 = 1_000;
 const LLM_RETRY_MAX_MS: u64 = 30_000;
 
+/// Maximum number of times we'll re-roll a streaming turn when the
+/// provider returns `EmptyToolCallsCompletion` (DeepSeek's phantom
+/// tool-calls bug). Cap kept low so a genuinely stuck model doesn't
+/// ping-pong forever — one extra attempt fixes it virtually every time.
+const MAX_EMPTY_COMPLETION_RETRIES: u32 = 2;
+
 fn backoff_delay(attempt: u32, retry_after: Option<Duration>) -> Duration {
     if let Some(hint) = retry_after {
         // Cap any provider hint so a misbehaving server can't park us for
@@ -367,7 +373,13 @@ impl AgenticLoop {
         agent_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
         run_context: Option<RunContext>,
     ) -> Result<String> {
-        loop {
+        // Fix 3: counter of consecutive empty-tool-calls completions for
+        // *this* turn. Resets to 0 whenever a turn streams to completion
+        // (regardless of outcome) so a long conversation that hits an
+        // occasional empty completion much later doesn't run out of
+        // retries.
+        let mut empty_completion_retries: u32 = 0;
+        'turn: loop {
             let available_tools = self.build_available_tools(&run_context).await?;
 
             // P0c: wrap the initial call in bounded backoff so DeepSeek
@@ -455,6 +467,26 @@ impl AgenticLoop {
                     return Err(anyhow::anyhow!(
                         "LLM call exhausted retries on transient error: {}",
                         message
+                    ));
+                }
+                Err(LlmError::EmptyToolCallsCompletion { partial_tool_calls }) => {
+                    // Reachable only for backends where the initial
+                    // `.await` itself yields this error (currently only
+                    // the non-streaming path; defensive here for symmetry).
+                    tracing::error!(
+                        partial_tool_calls = partial_tool_calls,
+                        "Initial LLM call exhausted retries on empty tool-calls completion"
+                    );
+                    if let Some(tx) = agent_tx.as_ref() {
+                        let _ = tx.send(AgentUpdate::ModelError {
+                            error: format!(
+                                "Provider returned empty tool-calls completion ({} partial tool call(s) dropped) and didn't recover after retries.",
+                                partial_tool_calls
+                            ),
+                        });
+                    }
+                    return Err(anyhow::anyhow!(
+                        "empty tool-calls completion not recovered after retries"
                     ));
                 }
                 Err(e) => {
@@ -561,6 +593,50 @@ impl AgenticLoop {
                             "model output truncated by length limit before any usable output"
                         ));
                     }
+                    Err(LlmError::EmptyToolCallsCompletion { partial_tool_calls }) => {
+                        // Fix 3: DeepSeek's phantom-tool-calls bug. The
+                        // provider claimed it would call a tool but
+                        // emitted no usable output. Re-roll the turn iff
+                        // we haven't sent any content / tool plan to the
+                        // UI yet (otherwise retrying would duplicate UI).
+                        let nothing_sent_to_ui =
+                            assistant_response.is_empty() && planned_tools.is_empty();
+                        if nothing_sent_to_ui
+                            && empty_completion_retries < MAX_EMPTY_COMPLETION_RETRIES
+                        {
+                            empty_completion_retries += 1;
+                            let delay = backoff_delay(empty_completion_retries, None);
+                            tracing::warn!(
+                                attempt = empty_completion_retries,
+                                max_attempts = MAX_EMPTY_COMPLETION_RETRIES,
+                                partial_tool_calls = partial_tool_calls,
+                                backoff_ms = delay.as_millis() as u64,
+                                reasoning_chars = reasoning_content.len(),
+                                "Provider returned empty tool-calls completion; re-rolling the turn"
+                            );
+                            tokio::time::sleep(delay).await;
+                            continue 'turn;
+                        }
+
+                        tracing::error!(
+                            partial_tool_calls = partial_tool_calls,
+                            attempts_used = empty_completion_retries,
+                            nothing_sent_to_ui = nothing_sent_to_ui,
+                            "Empty tool-calls completion not recovered (retries exhausted or content/tools already streamed)"
+                        );
+                        if let Some(tx) = agent_tx.as_ref() {
+                            let _ = tx.send(AgentUpdate::ModelError {
+                                error: format!(
+                                    "Provider returned empty tool-calls completion ({} partial tool call(s) dropped) and didn't recover after {} retries. Check llm_call logs with target=llm.body for the captured response body.",
+                                    partial_tool_calls, empty_completion_retries
+                                ),
+                            });
+                        }
+                        return Err(anyhow::anyhow!(
+                            "empty tool-calls completion not recovered after {} retries",
+                            empty_completion_retries
+                        ));
+                    }
                     Err(e) => {
                         tracing::error!(error = %e, "Streaming event error");
                         if let Some(tx) = agent_tx.as_ref() {
@@ -572,6 +648,11 @@ impl AgenticLoop {
                     }
                 }
             }
+
+            // Stream finished without an EmptyToolCallsCompletion retry —
+            // any further empty completion on a *later* turn deserves its
+            // own fresh retry budget, so reset here.
+            empty_completion_retries = 0;
 
             if let Some(tx) = agent_tx.as_ref() {
                 let _ = tx.send(AgentUpdate::AssistantComplete {
@@ -1109,6 +1190,30 @@ impl AgenticLoop {
                     return Err(anyhow::anyhow!(
                         "LLM call exhausted retries on transient error: {}",
                         message
+                    ));
+                }
+                Err(LlmError::EmptyToolCallsCompletion { partial_tool_calls }) => {
+                    // Fix 3 / non-streaming: with_llm_retry already
+                    // retried this up to LLM_RETRY_MAX_ATTEMPTS via
+                    // transient_retry_after. If we're here, the provider
+                    // is genuinely stuck and we should surface a clear
+                    // error to the user.
+                    tracing::error!(
+                        partial_tool_calls = partial_tool_calls,
+                        max_attempts = LLM_RETRY_MAX_ATTEMPTS,
+                        "Non-streaming LLM call exhausted retries on empty tool-calls completion"
+                    );
+                    if let Some(tx) = agent_tx.as_ref() {
+                        let _ = tx.send(AgentUpdate::ModelError {
+                            error: format!(
+                                "Provider returned empty tool-calls completion ({} partial tool call(s) dropped) and didn't recover after {} retries. Check llm_call logs with target=llm.body for the captured response body.",
+                                partial_tool_calls, LLM_RETRY_MAX_ATTEMPTS
+                            ),
+                        });
+                    }
+                    return Err(anyhow::anyhow!(
+                        "empty tool-calls completion not recovered after {} retries",
+                        LLM_RETRY_MAX_ATTEMPTS
                     ));
                 }
                 Err(e) => {

@@ -7,7 +7,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -138,6 +138,100 @@ struct StreamedToolCallState {
     id: Option<String>,
     name: Option<String>,
     arguments: String,
+}
+
+/// Bounded byte-buffer that keeps the most recent N bytes of an SSE
+/// response. We log a snippet of this on every degraded outcome
+/// (stream-truncated / length-truncated / empty-tool-calls) so we can
+/// forensically determine what the provider actually sent without having
+/// to repro the bug. 32 KB is plenty for one assistant turn.
+const SSE_BODY_CAPTURE_CAP: usize = 32 * 1024;
+
+struct SseBodyCapture {
+    buf: Vec<u8>,
+    cap: usize,
+    /// Total bytes seen (not just retained). Useful to tell users
+    /// "the snippet you're looking at is the tail of N total bytes".
+    total: usize,
+}
+
+impl SseBodyCapture {
+    fn new(cap: usize) -> Self {
+        Self {
+            buf: Vec::with_capacity(cap.min(8 * 1024)),
+            cap,
+            total: 0,
+        }
+    }
+
+    fn append(&mut self, bytes: &[u8]) {
+        self.total = self.total.saturating_add(bytes.len());
+        if bytes.len() >= self.cap {
+            self.buf.clear();
+            self.buf.extend_from_slice(&bytes[bytes.len() - self.cap..]);
+            return;
+        }
+        let overflow = (self.buf.len() + bytes.len()).saturating_sub(self.cap);
+        if overflow > 0 {
+            self.buf.drain(..overflow);
+        }
+        self.buf.extend_from_slice(bytes);
+    }
+
+    fn snapshot_lossy(&self) -> String {
+        String::from_utf8_lossy(&self.buf).into_owned()
+    }
+}
+
+/// Trim a long body snapshot to `head` + `tail` chars with an elision
+/// marker in the middle, so degraded-outcome logs don't flood when the
+/// captured tail is 32 KB. Keep `head` and `tail` smallish (≤4 KB total
+/// is plenty for figuring out which provider quirk hit).
+fn body_snippet(body: &str, head: usize, tail: usize) -> String {
+    let chars: Vec<char> = body.chars().collect();
+    if chars.len() <= head + tail + 64 {
+        return body.to_string();
+    }
+    let head_str: String = chars.iter().take(head).collect();
+    let tail_str: String = chars.iter().skip(chars.len() - tail).collect();
+    format!(
+        "{head_str}\n...[elided {} chars]...\n{tail_str}",
+        chars.len() - head - tail
+    )
+}
+
+/// Log a captured response body on a degraded outcome. The full body
+/// goes to `target: "llm.body"` at DEBUG (so users can opt in via
+/// `RUST_LOG=llm.body=debug`); a head/tail snippet goes to the main
+/// `target: "llm_call"` at WARN with the call_id so it always shows up
+/// in the audit trail.
+fn log_response_body_on_failure(
+    capture: &SseBodyCapture,
+    call_id: uuid::Uuid,
+    provider: &str,
+    model: &str,
+    reason: &str,
+) {
+    let body = capture.snapshot_lossy();
+    let snippet = body_snippet(&body, 1024, 1024);
+    tracing::warn!(
+        target: "llm_call",
+        call_id = %call_id,
+        provider = provider,
+        model = %model,
+        reason = reason,
+        captured_bytes = capture.buf.len(),
+        total_bytes = capture.total,
+        body_snippet = %snippet,
+        "Captured response body snippet on degraded outcome"
+    );
+    tracing::debug!(
+        target: "llm.body",
+        call_id = %call_id,
+        reason = reason,
+        body = %body,
+        "Full captured response body on degraded outcome"
+    );
 }
 
 impl StreamedToolCallState {
@@ -377,6 +471,77 @@ impl OpenAIClient {
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string())
     }
+
+    /// Parse `Retry-After`. Per RFC 7231 it may be seconds OR an HTTP-date;
+    /// every LLM provider we talk to uses the seconds form so that's all
+    /// we honor. Returns `None` when missing or unparseable.
+    fn extract_retry_after(resp: &reqwest::Response) -> Option<Duration> {
+        let raw = resp.headers().get("retry-after")?.to_str().ok()?;
+        let trimmed = raw.trim();
+        if let Ok(seconds) = trimmed.parse::<u64>() {
+            return Some(Duration::from_secs(seconds));
+        }
+        if let Ok(seconds_f) = trimmed.parse::<f64>() {
+            if seconds_f.is_finite() && seconds_f >= 0.0 {
+                return Some(Duration::from_millis((seconds_f * 1000.0) as u64));
+            }
+        }
+        None
+    }
+
+    /// Map a non-2xx response to a properly classified `LlmError`. 429 and
+    /// 500/503 (the codes DeepSeek docs explicitly mark retryable) become
+    /// transient variants the agentic loop can retry. Everything else stays
+    /// terminal so we never burn retries on bad auth / malformed requests.
+    fn classify_http_error(
+        status: reqwest::StatusCode,
+        retry_after: Option<Duration>,
+        body: String,
+    ) -> (LlmError, CallOutcome, String) {
+        let code = status.as_u16();
+        let message = format!("OpenAI API error (HTTP {}): {}", code, body);
+        match code {
+            429 => (
+                LlmError::RateLimited {
+                    retry_after,
+                    message,
+                },
+                CallOutcome::HttpError,
+                "http_429_rate_limited".to_string(),
+            ),
+            500 | 503 => (
+                LlmError::ServerBusy {
+                    status: code,
+                    retry_after,
+                    message,
+                },
+                CallOutcome::HttpError,
+                format!("http_{}_server_busy", code),
+            ),
+            _ => (
+                LlmError::Api(message),
+                CallOutcome::HttpError,
+                format!("http_{}", code),
+            ),
+        }
+    }
+
+    /// True if this chunk has any line that proves the provider is alive:
+    /// an SSE comment (`:` prefix, includes DeepSeek's `: keep-alive`) or
+    /// a `data:` line. Used to bump `last_event` so a long-queued DeepSeek
+    /// request doesn't show "last activity hours ago" in truncation logs.
+    fn chunk_has_liveness_signal(chunk: &str) -> bool {
+        for line in chunk.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed.starts_with(':') || trimmed.starts_with("data:") {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 /// OpenAI allows max_tokens in [1, 65536]. Return None for 0 or out-of-range so we omit the field.
@@ -439,19 +604,22 @@ impl LlmClient for OpenAIClient {
 
         let status = response.status();
         let request_id = Self::extract_request_id(&response);
+        let retry_after = Self::extract_retry_after(&response);
         span.set_response_headers(status.as_u16(), request_id);
 
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            let msg = format!("OpenAI API error (HTTP {}): {}", status.as_u16(), error_text);
-            span.finish_error(CallOutcome::HttpError, format!("http_{}", status.as_u16()), msg.clone());
-            return Err(LlmError::Api(msg));
+            let (err, outcome, kind) = Self::classify_http_error(status, retry_after, error_text);
+            span.finish_error(outcome, kind, err.to_string());
+            return Err(err);
         }
 
         // Stream into a channel so we can run truncation detection out-of-band.
         let mut bytes_stream = response.bytes_stream();
         let (tx, rx) = mpsc::unbounded_channel::<Result<String, LlmError>>();
 
+        let call_id = span.call_id();
+        let model_for_log = self.preset.model.clone();
         tokio::spawn(async move {
             let mut saw_done = false;
             let mut bytes_in: usize = 0;
@@ -459,21 +627,36 @@ impl LlmClient for OpenAIClient {
             let mut finish_reason: Option<String> = None;
             let mut usage: Option<OpenAIUsage> = None;
             let mut tool_states: HashMap<usize, StreamedToolCallState> = HashMap::new();
+            let mut content_chars: usize = 0;
+            let mut body_capture = SseBodyCapture::new(SSE_BODY_CAPTURE_CAP);
 
             while let Some(chunk_result) = bytes_stream.next().await {
                 match chunk_result {
                     Ok(chunk) => {
                         bytes_in += chunk.len();
                         span.observe_bytes(chunk.len());
+                        body_capture.append(&chunk);
                         let chunk_str = match String::from_utf8(chunk.to_vec()) {
                             Ok(s) => s,
                             Err(e) => {
                                 let msg = format!("Invalid UTF-8 in stream: {}", e);
+                                log_response_body_on_failure(
+                                    &body_capture,
+                                    call_id,
+                                    "openai",
+                                    &model_for_log,
+                                    "utf8",
+                                );
                                 span.finish_error(CallOutcome::Parse, "utf8", msg.clone());
                                 let _ = tx.send(Err(LlmError::Api(msg)));
                                 return;
                             }
                         };
+
+                        // P2: count SSE comment / data lines as liveness.
+                        if Self::chunk_has_liveness_signal(&chunk_str) {
+                            last_event = Instant::now();
+                        }
 
                         let mut content = String::new();
                         let events = OpenAIClient::parse_stream_chunk(
@@ -489,13 +672,20 @@ impl LlmClient for OpenAIClient {
                             }
                         }
                         if !content.is_empty() {
-                            last_event = Instant::now();
+                            content_chars += content.chars().count();
                             if tx.send(Ok(content)).is_err() {
                                 return;
                             }
                         }
                     }
                     Err(e) => {
+                        log_response_body_on_failure(
+                            &body_capture,
+                            call_id,
+                            "openai",
+                            &model_for_log,
+                            "transport_error",
+                        );
                         let (outcome, kind) = classify_reqwest_error(&e);
                         span.finish_error(outcome, kind, e.to_string());
                         let _ = tx.send(Err(LlmError::Http(e)));
@@ -511,6 +701,13 @@ impl LlmClient for OpenAIClient {
                     "no [DONE] sentinel and no terminal usage frame received after {} bytes",
                     bytes_in
                 );
+                log_response_body_on_failure(
+                    &body_capture,
+                    call_id,
+                    "openai",
+                    &model_for_log,
+                    "stream_truncated",
+                );
                 span.finish_error(
                     CallOutcome::StreamTruncated,
                     "stream_truncated",
@@ -520,6 +717,28 @@ impl LlmClient for OpenAIClient {
                     bytes_read: bytes_in,
                     last_event_age_ms: age,
                     reason,
+                }));
+                return;
+            }
+
+            // P1: finish_reason=length with no content is degraded.
+            if finish_reason.as_deref() == Some("length") && content_chars == 0 {
+                let reason = "model hit max_tokens before emitting any content".to_string();
+                log_response_body_on_failure(
+                    &body_capture,
+                    call_id,
+                    "openai",
+                    &model_for_log,
+                    "length_truncated",
+                );
+                span.finish_error(
+                    CallOutcome::StreamTruncated,
+                    "length_truncated",
+                    reason,
+                );
+                let _ = tx.send(Err(LlmError::LengthTruncated {
+                    partial_tool_calls: 0,
+                    content_chars: 0,
                 }));
                 return;
             }
@@ -605,13 +824,14 @@ impl LlmClient for OpenAIClient {
 
         let status = response.status();
         let request_id = Self::extract_request_id(&response);
+        let retry_after = Self::extract_retry_after(&response);
         span.set_response_headers(status.as_u16(), request_id);
 
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            let msg = format!("OpenAI API error (HTTP {}): {}", status.as_u16(), error_text);
-            span.finish_error(CallOutcome::HttpError, format!("http_{}", status.as_u16()), msg.clone());
-            return Err(LlmError::Api(msg));
+            let (err, outcome, kind) = Self::classify_http_error(status, retry_after, error_text);
+            span.finish_error(outcome, kind, err.to_string());
+            return Err(err);
         }
 
         let response_data: OpenAIResponse = match response.json().await {
@@ -692,11 +912,36 @@ impl LlmClient for OpenAIClient {
 
         let reasoning_content = choice.message.reasoning_content.clone();
 
+        let finish_reason_str = choice.finish_reason.as_deref();
+
+        // Fix 1/4 — non-streaming twin of EmptyToolCallsCompletion.
+        // DeepSeek's phantom-tool-calls bug also shows up here: response
+        // body has finish_reason="tool_calls" with zero tool_calls and
+        // empty content. Surface as transient so the loop can retry once.
+        if finish_reason_str == Some("tool_calls")
+            && content.is_empty()
+            && tool_calls.is_empty()
+        {
+            let msg = "provider signalled tool-call intent (finish_reason=tool_calls) but emitted no tool_calls or content".to_string();
+            tracing::warn!(
+                target: "llm.body",
+                response = ?response_data,
+                "Empty tool-calls completion captured (non-streaming)"
+            );
+            span.finish_error(
+                CallOutcome::StreamTruncated,
+                "empty_tool_calls_completion",
+                msg,
+            );
+            return Err(LlmError::EmptyToolCallsCompletion {
+                partial_tool_calls: 0,
+            });
+        }
+
         // P1: same length-truncated guard as the streaming path. If the
         // provider tells us max_tokens stopped generation and we have
         // nothing usable to show, return LengthTruncated so the loop can
         // surface a specific error instead of an empty assistant turn.
-        let finish_reason_str = choice.finish_reason.as_deref();
         if finish_reason_str == Some("length") && content.is_empty() && tool_calls.is_empty() {
             let msg = "model hit max_tokens before producing usable output".to_string();
             span.finish_error(CallOutcome::StreamTruncated, "length_truncated", msg);
@@ -785,18 +1030,21 @@ impl LlmClient for OpenAIClient {
 
         let status = response.status();
         let request_id = Self::extract_request_id(&response);
+        let retry_after = Self::extract_retry_after(&response);
         span.set_response_headers(status.as_u16(), request_id);
 
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            let msg = format!("OpenAI API error (HTTP {}): {}", status.as_u16(), error_text);
-            span.finish_error(CallOutcome::HttpError, format!("http_{}", status.as_u16()), msg.clone());
-            return Err(LlmError::Api(msg));
+            let (err, outcome, kind) = Self::classify_http_error(status, retry_after, error_text);
+            span.finish_error(outcome, kind, err.to_string());
+            return Err(err);
         }
 
         let mut bytes_stream = response.bytes_stream();
         let (tx, rx) = mpsc::unbounded_channel();
 
+        let call_id = span.call_id();
+        let model_for_log = self.preset.model.clone();
         tokio::spawn(async move {
             let mut tool_states: HashMap<usize, StreamedToolCallState> = HashMap::new();
             let mut saw_done = false;
@@ -804,14 +1052,25 @@ impl LlmClient for OpenAIClient {
             let mut last_event = Instant::now();
             let mut finish_reason: Option<String> = None;
             let mut usage: Option<OpenAIUsage> = None;
+            let mut content_chars: usize = 0;
+            let mut completed_tool_calls: usize = 0;
+            let mut body_capture = SseBodyCapture::new(SSE_BODY_CAPTURE_CAP);
 
             while let Some(chunk_result) = bytes_stream.next().await {
                 match chunk_result {
                     Ok(chunk) => {
                         bytes_in += chunk.len();
                         span.observe_bytes(chunk.len());
+                        body_capture.append(&chunk);
                         match String::from_utf8(chunk.to_vec()) {
                             Ok(chunk_str) => {
+                                // P2: SSE comment lines (DeepSeek emits
+                                // `: keep-alive` while a request is queued)
+                                // are evidence of provider liveness too.
+                                if Self::chunk_has_liveness_signal(&chunk_str) {
+                                    last_event = Instant::now();
+                                }
+
                                 let events = OpenAIClient::parse_stream_chunk(
                                     &chunk_str,
                                     &mut tool_states,
@@ -820,10 +1079,16 @@ impl LlmClient for OpenAIClient {
                                     &mut saw_done,
                                 );
                                 for event in events {
-                                    if matches!(event, ChatStreamEvent::ToolCallDelta(_)) {
-                                        span.observe_tool_call();
+                                    match &event {
+                                        ChatStreamEvent::ToolCallDelta(_) => {
+                                            span.observe_tool_call();
+                                            completed_tool_calls += 1;
+                                        }
+                                        ChatStreamEvent::ContentDelta(c) => {
+                                            content_chars += c.chars().count();
+                                        }
+                                        ChatStreamEvent::ReasoningContentDelta(_) => {}
                                     }
-                                    last_event = Instant::now();
                                     if tx.send(Ok(event)).is_err() {
                                         return;
                                     }
@@ -831,6 +1096,13 @@ impl LlmClient for OpenAIClient {
                             }
                             Err(err) => {
                                 let msg = format!("Invalid UTF-8 in stream: {}", err);
+                                log_response_body_on_failure(
+                                    &body_capture,
+                                    call_id,
+                                    "openai",
+                                    &model_for_log,
+                                    "utf8",
+                                );
                                 span.finish_error(CallOutcome::Parse, "utf8", msg.clone());
                                 let _ = tx.send(Err(LlmError::Api(msg)));
                                 return;
@@ -838,6 +1110,13 @@ impl LlmClient for OpenAIClient {
                         }
                     }
                     Err(e) => {
+                        log_response_body_on_failure(
+                            &body_capture,
+                            call_id,
+                            "openai",
+                            &model_for_log,
+                            "transport_error",
+                        );
                         let (outcome, kind) = classify_reqwest_error(&e);
                         span.finish_error(outcome, kind, e.to_string());
                         let _ = tx.send(Err(LlmError::Http(e)));
@@ -855,6 +1134,13 @@ impl LlmClient for OpenAIClient {
                     "no [DONE] sentinel and no terminal usage frame received after {} bytes",
                     bytes_in
                 );
+                log_response_body_on_failure(
+                    &body_capture,
+                    call_id,
+                    "openai",
+                    &model_for_log,
+                    "stream_truncated",
+                );
                 span.finish_error(
                     CallOutcome::StreamTruncated,
                     "stream_truncated",
@@ -864,6 +1150,87 @@ impl LlmClient for OpenAIClient {
                     bytes_read: bytes_in,
                     last_event_age_ms: age,
                     reason,
+                }));
+                return;
+            }
+
+            // P1: warn for partial tool-call states that never produced a
+            // valid JSON. With the old code they vanished silently.
+            let partial_tool_calls: usize = tool_states
+                .values()
+                .filter(|s| s.name.is_some() || !s.arguments.is_empty())
+                .count();
+            if partial_tool_calls > 0 {
+                for state in tool_states.values() {
+                    if state.name.is_none() && state.arguments.is_empty() {
+                        continue;
+                    }
+                    tracing::warn!(
+                        call_id = %call_id,
+                        tool_name = state.name.as_deref().unwrap_or("?"),
+                        argument_chars = state.arguments.len(),
+                        finish_reason = finish_reason.as_deref().unwrap_or(""),
+                        "Dropping partial tool call: argument JSON was incomplete when the stream ended"
+                    );
+                }
+            }
+
+            // Fix 1 + Fix 3 (DeepSeek phantom-tool-calls bug): the provider
+            // signalled tool-call intent (finish_reason=tool_calls or
+            // partial deltas in tool_states) but we never emitted a single
+            // fully-parsed tool call and no text content. Mark transient
+            // so the loop can re-roll the turn.
+            let intent_to_call_tools = finish_reason.as_deref() == Some("tool_calls")
+                || partial_tool_calls > 0;
+            if intent_to_call_tools && content_chars == 0 && completed_tool_calls == 0 {
+                let reason = format!(
+                    "provider signalled tool-call intent (finish_reason={:?}, {} partial tool call(s)) but emitted no usable output",
+                    finish_reason.as_deref().unwrap_or("?"),
+                    partial_tool_calls
+                );
+                log_response_body_on_failure(
+                    &body_capture,
+                    call_id,
+                    "openai",
+                    &model_for_log,
+                    "empty_tool_calls_completion",
+                );
+                span.finish_error(
+                    CallOutcome::StreamTruncated,
+                    "empty_tool_calls_completion",
+                    reason,
+                );
+                let _ = tx.send(Err(LlmError::EmptyToolCallsCompletion {
+                    partial_tool_calls,
+                }));
+                return;
+            }
+
+            // P1: finish_reason=length with no usable output is a degraded
+            // outcome too; tell the user instead of returning an empty turn.
+            if finish_reason.as_deref() == Some("length")
+                && content_chars == 0
+                && completed_tool_calls == 0
+            {
+                let reason = format!(
+                    "model hit max_tokens before producing usable output ({} partial tool call(s) dropped)",
+                    partial_tool_calls
+                );
+                log_response_body_on_failure(
+                    &body_capture,
+                    call_id,
+                    "openai",
+                    &model_for_log,
+                    "length_truncated",
+                );
+                span.finish_error(
+                    CallOutcome::StreamTruncated,
+                    "length_truncated",
+                    reason,
+                );
+                let _ = tx.send(Err(LlmError::LengthTruncated {
+                    partial_tool_calls,
+                    content_chars: 0,
                 }));
                 return;
             }

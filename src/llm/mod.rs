@@ -188,6 +188,18 @@ pub enum LlmError {
         partial_tool_calls: usize,
         content_chars: usize,
     },
+    /// Provider signalled intent to call tools (`finish_reason: "tool_calls"`
+    /// or streamed partial tool-call deltas) yet emitted **no** fully-parsed
+    /// tool call and **no** text content. The canonical DeepSeek-chat
+    /// "phantom tool calls" failure mode. Marked transient so the loop can
+    /// re-roll the turn — empirically one re-roll fixes it almost every
+    /// time. Distinct from `LengthTruncated` (those won't recover on
+    /// retry — they need a bigger max_tokens) and from a genuine
+    /// stop-with-empty-output (which is the model's decision, not a bug).
+    #[error("Provider produced empty completion despite tool-call intent ({partial_tool_calls} partial tool call(s) dropped)")]
+    EmptyToolCallsCompletion {
+        partial_tool_calls: usize,
+    },
     /// Stream was severed before the provider signalled completion. Carries
     /// what we observed so the agentic loop can distinguish this from a clean
     /// finish (which is what was silently masking DeepSeek drops).
@@ -211,6 +223,9 @@ impl LlmError {
         match self {
             LlmError::RateLimited { retry_after, .. } => Some(*retry_after),
             LlmError::ServerBusy { retry_after, .. } => Some(*retry_after),
+            // No `Retry-After` hint applies here — this fires only after the
+            // stream has been consumed, so the provider didn't include one.
+            LlmError::EmptyToolCallsCompletion { .. } => Some(None),
             _ => None,
         }
     }
