@@ -19,7 +19,7 @@ fn is_assistant_like(msg: &ChatMessage) -> bool {
 /// Build the message list view
 pub fn message_list<'a>(app: &'a LunaThinApp) -> Element<'a, Message> {
     // Empty state
-    if app.messages.is_empty() && !app.is_streaming {
+    if app.messages.is_empty() && !app.is_current_streaming() {
         return container(
             Column::new()
                 .push(text("🪄").size(48))
@@ -82,7 +82,7 @@ pub fn message_list<'a>(app: &'a LunaThinApp) -> Element<'a, Message> {
     }
 
     // Typing indicator when streaming but no content yet
-    if app.is_streaming {
+    if app.is_current_streaming() {
         let has_running_tools = app.messages.iter().any(|m| {
             m.bubble_type == BubbleType::ToolRequest &&
             m.tool_status.as_deref() == Some("running")

@@ -1,0 +1,39 @@
+name: Deploy LunaAI (RPi)
+
+on:
+  push:
+    branches: [ master ]
+
+
+concurrency:
+  group: lunaai-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Update repo in ~/proj/LunaAI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$HOME/proj/LunaAI"
+
+          git fetch origin
+          git checkout master
+          git reset --hard origin/master
+
+
+      - name: Build release (Rust)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$HOME/proj/LunaAI"
+          cargo build --release
+
+      - name: Restart luna.service (user)
+        shell: bash
+        run: |
+          set -euo pipefail
+          systemctl --user restart luna.service

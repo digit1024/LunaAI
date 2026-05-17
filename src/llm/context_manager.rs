@@ -291,8 +291,9 @@ impl SmartContextManager {
                 Role::System => "System",
                 Role::Tool => "Tool",
             };
-            let content = if msg.role == Role::Tool && msg.content.len() > TOOL_CONTENT_MAX_CHARS {
-                format!("{}... [truncated]", &msg.content[..TOOL_CONTENT_MAX_CHARS])
+            let content = if msg.role == Role::Tool && msg.content.chars().count() > TOOL_CONTENT_MAX_CHARS {
+                let truncated: String = msg.content.chars().take(TOOL_CONTENT_MAX_CHARS).collect();
+                format!("{truncated}... [truncated]")
             } else {
                 msg.content.clone()
             };

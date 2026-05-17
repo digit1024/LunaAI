@@ -62,7 +62,7 @@ pub fn input_area(app: &LunaThinApp) -> Element<Message> {
                         .push(Space::new().width(Length::Fill));
 
                     // Send/Stop button with icons
-                    if app.is_streaming {
+                    if app.is_current_streaming() {
                         bottom_row = bottom_row.push(
                             button::icon(crate::ui::icons::get_handle("process-stop-symbolic", 16))
                                 .on_press(Message::StopMessage)

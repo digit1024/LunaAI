@@ -24,9 +24,13 @@ pub fn handle_chat_messages(
         }
         Message::SendMessage => handle_send_message(app),
         Message::StopMessage => {
-            app.send_command(crate::server::dto::ClientCommand::StopStreaming {
-                conversation_id: app.current_conversation_id.clone(),
-            });
+            if app.is_current_streaming() {
+                if let Some(cid) = app.current_conversation_id.clone() {
+                    app.send_command(crate::server::dto::ClientCommand::StopStreaming {
+                        conversation_id: Some(cid),
+                    });
+                }
+            }
             None
         }
         Message::AttachFile => handle_attach_file(app),

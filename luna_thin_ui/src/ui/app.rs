@@ -9,6 +9,7 @@ use cosmic::{
     Application, Element,
 };
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -53,6 +54,7 @@ pub enum Message {
     // Connection
     Connect,
     Disconnect,
+    AutoReconnect,
 
     // Settings
     HostChanged(String),
@@ -371,8 +373,8 @@ pub struct LunaThinApp {
     pub current_profile: String,
     pub mcp_servers: Vec<crate::server::dto::MCPServerInfo>,
 
-    // Streaming state
-    pub is_streaming: bool,
+    // Streaming state — conversations with an active agent loop on the server
+    pub streaming_conversations: HashSet<String>,
     pub streaming_content: String,
     pub reasoning_content: String,
     /// Tracks current assistant bubble ID for streaming (like mobile app)
@@ -403,6 +405,8 @@ pub struct LunaThinApp {
     pub current_tts_message_id: Option<String>, // ID of message being spoken
     pub pending_auto_connect: bool, // True if we need to auto-connect after TTS init
     pub pending_retry_input: Option<String>, // Input text to restore after conversation reload
+    pub user_disconnect_flag: Arc<AtomicBool>,
+    pub reconnect_in_progress: bool,
 
     // Error display
     pub inline_error: Option<String>,
@@ -455,7 +459,7 @@ impl LunaThinApp {
             profiles: Vec::new(),
             current_profile: String::new(),
             mcp_servers: Vec::new(),
-            is_streaming: false,
+            streaming_conversations: HashSet::new(),
             streaming_content: String::new(),
             reasoning_content: String::new(),
             current_assistant_bubble_id: None,
@@ -474,6 +478,8 @@ impl LunaThinApp {
             current_tts_message_id: None,
             pending_auto_connect: false,
             pending_retry_input: None,
+            user_disconnect_flag: Arc::new(AtomicBool::new(false)),
+            reconnect_in_progress: false,
             inline_error: None,
             inline_info: None,
             pending_attachment_ids: Vec::new(),
@@ -753,6 +759,42 @@ impl LunaThinApp {
         });
     }
 
+    pub(crate) fn set_ws_streaming(&self, streaming: bool) {
+        let ws_client = self.ws_client.clone();
+        tokio::spawn(async move {
+            let client = ws_client.read().await;
+            client.set_streaming(streaming);
+        });
+    }
+
+    /// True when the conversation currently open in the chat UI has an active stream.
+    pub fn is_current_streaming(&self) -> bool {
+        match &self.current_conversation_id {
+            Some(id) => self.streaming_conversations.contains(id),
+            None => false,
+        }
+    }
+
+    fn is_viewing_conversation(&self, conversation_id: &str) -> bool {
+        self.current_conversation_id.as_deref() == Some(conversation_id)
+    }
+
+    fn mark_conversation_streaming(&mut self, conversation_id: String) {
+        if self.streaming_conversations.insert(conversation_id) {
+            self.sync_ws_streaming();
+        }
+    }
+
+    fn unmark_conversation_streaming(&mut self, conversation_id: &str) {
+        if self.streaming_conversations.remove(conversation_id) {
+            self.sync_ws_streaming();
+        }
+    }
+
+    fn sync_ws_streaming(&self) {
+        self.set_ws_streaming(!self.streaming_conversations.is_empty());
+    }
+
     /// Helper: List conversations with default parameters
     pub(crate) fn list_conversations(&self) {
         self.send_command(ClientCommand::ListConversations {
@@ -923,9 +965,9 @@ impl LunaThinApp {
     /// Complete assistant message.
     /// Returns a Task for any image fetches triggered by the final content.
     ///
-    /// NOTE: Do NOT set is_streaming = false here. In an agentic loop, AssistantComplete
-    /// fires before tool execution begins. The global is_streaming flag must stay true
-    /// so the stop button remains visible during tool execution.
+    /// NOTE: Do not remove the conversation from `streaming_conversations` here.
+    /// In an agentic loop, AssistantComplete fires before tool execution begins;
+    /// the per-conversation streaming flag must stay set so stop/typing remain visible.
     fn complete_assistant(
         &mut self,
         content: &str,
@@ -1020,12 +1062,16 @@ impl LunaThinApp {
     pub(crate) fn handle_server_event(&mut self, event: ServerEvent) -> app::Task<Message> {
         match event {
             ServerEvent::HealthOk { profile, .. } => {
-                tracing::info!("📥 HealthOk received! Profile: {}", profile);
+                tracing::debug!("HealthOk received, profile: {}", profile);
                 self.connection_status = ConnectionStatus::Connected;
                 self.current_profile = profile;
-                self.current_page = Page::Chat;
             }
             ServerEvent::Error { message } => {
+                if let Some(id) = self.current_conversation_id.clone() {
+                    if self.streaming_conversations.contains(&id) {
+                        self.unmark_conversation_streaming(&id);
+                    }
+                }
                 self.inline_error = Some(message);
             }
             ServerEvent::Info { message } => {
@@ -1086,58 +1132,104 @@ impl LunaThinApp {
             ServerEvent::MessageAccepted { .. } => {
                 // Input already cleared when SendMessage was triggered
             }
-            ServerEvent::StreamingStarted { .. } => {
-                self.current_assistant_bubble_id = None; // Reset for new streaming session
-                self.is_streaming = true;
-                self.streaming_content.clear();
-                self.reasoning_content.clear();
-                // Play typing sound
-                crate::ui::audio::AudioService::play_sound("typing.mp3");
+            ServerEvent::StreamingStarted { conversation_id } => {
+                self.mark_conversation_streaming(conversation_id.clone());
+                if self.is_viewing_conversation(&conversation_id) {
+                    self.current_assistant_bubble_id = None;
+                    self.streaming_content.clear();
+                    self.reasoning_content.clear();
+                    crate::ui::audio::AudioService::play_sound("typing.mp3");
+                }
             }
-            ServerEvent::AssistantDelta { chunk, .. } => {
-                self.apply_assistant_delta(&chunk);
+            ServerEvent::AssistantDelta { conversation_id, chunk, .. } => {
+                if self.is_viewing_conversation(&conversation_id) {
+                    self.apply_assistant_delta(&chunk);
+                }
             }
-            ServerEvent::ReasoningContentDelta { chunk, .. } => {
-                self.apply_reasoning_delta(&chunk);
+            ServerEvent::ReasoningContentDelta { conversation_id, chunk } => {
+                if self.is_viewing_conversation(&conversation_id) {
+                    self.apply_reasoning_delta(&chunk);
+                }
             }
-            ServerEvent::AssistantComplete { content, reasoning_content, .. } => {
-                return self.complete_assistant(&content, reasoning_content.as_deref());
+            ServerEvent::AssistantComplete {
+                conversation_id,
+                content,
+                reasoning_content,
+                ..
+            } => {
+                if self.is_viewing_conversation(&conversation_id) {
+                    return self.complete_assistant(&content, reasoning_content.as_deref());
+                }
             }
-            ServerEvent::ToolPlanned { tools, .. } => {
-                // Tools interrupt assistant stream - reset so next delta creates new bubble
-                self.current_assistant_bubble_id = None;
-                self.add_tool_request_bubbles(&tools);
+            ServerEvent::ToolPlanned {
+                conversation_id,
+                tools,
+                ..
+            } => {
+                if self.is_viewing_conversation(&conversation_id) {
+                    self.current_assistant_bubble_id = None;
+                    self.add_tool_request_bubbles(&tools);
+                }
             }
-            ServerEvent::ToolStarted { tool_call_id, name, params_json, .. } => {
-                let params = serde_json::to_string_pretty(&params_json).unwrap_or_default();
-                self.update_tool_request(&tool_call_id, "running", &name, &params);
+            ServerEvent::ToolStarted {
+                conversation_id,
+                tool_call_id,
+                name,
+                params_json,
+                ..
+            } => {
+                if self.is_viewing_conversation(&conversation_id) {
+                    let params = serde_json::to_string_pretty(&params_json).unwrap_or_default();
+                    self.update_tool_request(&tool_call_id, "running", &name, &params);
+                }
             }
-            ServerEvent::ToolResult { tool_call_id, name, result_json, .. } => {
-                let result = serde_json::to_string_pretty(&result_json).unwrap_or_default();
-                self.add_tool_result_bubble(&tool_call_id, &name, &result, false);
-                // Play tool completion sound
-                crate::ui::audio::AudioService::play_sound("tool.mp3");
+            ServerEvent::ToolResult {
+                conversation_id,
+                tool_call_id,
+                name,
+                result_json,
+                ..
+            } => {
+                if self.is_viewing_conversation(&conversation_id) {
+                    let result = serde_json::to_string_pretty(&result_json).unwrap_or_default();
+                    self.add_tool_result_bubble(&tool_call_id, &name, &result, false);
+                    crate::ui::audio::AudioService::play_sound("tool.mp3");
+                }
             }
-            ServerEvent::ToolError { tool_call_id, name, error, .. } => {
-                self.add_tool_result_bubble(&tool_call_id, &name, &error, true);
+            ServerEvent::ToolError {
+                conversation_id,
+                tool_call_id,
+                name,
+                error,
+                ..
+            } => {
+                if self.is_viewing_conversation(&conversation_id) {
+                    self.add_tool_result_bubble(&tool_call_id, &name, &error, true);
+                }
             }
-            ServerEvent::ConversationComplete { .. } => {
-                self.is_streaming = false;
-                // Play completion sound
-                crate::ui::audio::AudioService::play_sound("done.mp3");
-                // Tool calls are already moved to messages, just refresh list
-                self.list_conversations();
+            ServerEvent::ConversationComplete { conversation_id } => {
+                self.unmark_conversation_streaming(&conversation_id);
+                if self.is_viewing_conversation(&conversation_id) {
+                    self.current_assistant_bubble_id = None;
+                    crate::ui::audio::AudioService::play_sound("done.mp3");
+                    self.list_conversations();
+                }
             }
             ServerEvent::ConversationDeleted { conversation_id } => {
+                self.unmark_conversation_streaming(&conversation_id);
                 if self.current_conversation_id.as_ref() == Some(&conversation_id) {
                     self.current_conversation_id = None;
                     self.messages.clear();
+                    self.current_assistant_bubble_id = None;
                 }
                 self.conversations.retain(|c| c.id != conversation_id);
                 self.update_nav_model();
             }
-            ServerEvent::StreamingStopped { .. } => {
-                self.is_streaming = false;
+            ServerEvent::StreamingStopped { conversation_id } => {
+                self.unmark_conversation_streaming(&conversation_id);
+                if self.is_viewing_conversation(&conversation_id) {
+                    self.current_assistant_bubble_id = None;
+                }
             }
             _ => {}
         }
@@ -1448,7 +1540,7 @@ impl Application for LunaThinApp {
         // For now, status is updated via TtsStatusChanged messages from TTS operations
 
         // Typing indicator tick when streaming
-        if self.is_streaming {
+        if self.is_current_streaming() {
             subscriptions.push(
                 cosmic::iced::time::every(std::time::Duration::from_millis(TYPING_INDICATOR_INTERVAL_MS))
                     .map(Message::Tick),
