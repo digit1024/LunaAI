@@ -913,6 +913,7 @@ impl SqliteStorage {
         conversation_id: &str,
         messages_to_summarize: &[Message],
         summary_content: &str,
+        summary_created_at: i64,
     ) -> SqliteResult<()> {
         let transaction = self.conn.unchecked_transaction()?;
 
@@ -924,7 +925,6 @@ impl SqliteStorage {
             return Ok(());
         }
 
-        // Timestamp for the summary message and conversation update (time of summarization)
         let now = Utc::now().timestamp();
 
         // Mark messages as summarized instead of deleting them
@@ -950,7 +950,7 @@ impl SqliteStorage {
                 conversation_id,
                 "system",
                 summary_content,
-                now,
+                summary_created_at,
                 1, // is_summary = true
                 0, // is_summarized = false (summary messages are not themselves summarized)
                 summarized_ids_json,

@@ -411,9 +411,14 @@ impl Storage {
         conversation_id: &str,
         messages_to_summarize: &[super::sqlite_storage_simple::Message],
         summary_content: &str,
+        summary_created_at: i64,
     ) -> SqliteResult<()> {
-        self.sqlite
-            .perform_summarization(conversation_id, messages_to_summarize, summary_content)
+        self.sqlite.perform_summarization(
+            conversation_id,
+            messages_to_summarize,
+            summary_content,
+            summary_created_at,
+        )
     }
 
     // ── Long-term memory methods ──

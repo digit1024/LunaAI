@@ -15,6 +15,22 @@ use tracing::{debug, warn};
 pub struct MessageConverter;
 
 impl MessageConverter {
+    /// Messages to send to the LLM after summarization: latest rolling summary (if any), then
+    /// every non-summarized message in chronological order. The summary is ordered before the
+    /// recent tail even when its DB row sorts after kept messages.
+    pub fn llm_context_messages(db_messages: &[StorageMessage]) -> Vec<&StorageMessage> {
+        let mut out = Vec::new();
+        if let Some(summary) = db_messages.iter().rfind(|m| m.is_summary) {
+            out.push(summary);
+        }
+        for msg in db_messages {
+            if !msg.is_summarized && !msg.is_summary {
+                out.push(msg);
+            }
+        }
+        out
+    }
+
     /// Convert storage messages to LLM messages
     ///
     /// This is the single implementation that replaces duplicated logic in:
@@ -311,6 +327,83 @@ mod tests {
         assert_eq!(llm_messages.len(), 1);
         assert_eq!(llm_messages[0].role, Role::Assistant);
         assert!(llm_messages[0].content.contains("Summary"));
+    }
+
+    #[test]
+    fn llm_context_messages_summary_then_kept_tail() {
+        let db_messages = vec![
+            StorageMessage {
+                id: 1,
+                conversation_id: "test".to_string(),
+                role: "user".to_string(),
+                content: "old".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                tool_name: None,
+                tool_status: None,
+                tool_params_json: None,
+                tool_result_json: None,
+                embedding: None,
+                created_at: 1,
+                reasoning_content: None,
+                is_summary: false,
+                is_summarized: true,
+                summarized_message_ids: None,
+                summarized_count: None,
+                attachments: None,
+            },
+            StorageMessage {
+                id: 2,
+                conversation_id: "test".to_string(),
+                role: "system".to_string(),
+                content: "[Previous conversation summary]: facts".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                tool_name: None,
+                tool_status: None,
+                tool_params_json: None,
+                tool_result_json: None,
+                embedding: None,
+                created_at: 2,
+                reasoning_content: None,
+                is_summary: true,
+                is_summarized: false,
+                summarized_message_ids: None,
+                summarized_count: Some(1),
+                attachments: None,
+            },
+            StorageMessage {
+                id: 3,
+                conversation_id: "test".to_string(),
+                role: "user".to_string(),
+                content: "latest question".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                tool_name: None,
+                tool_status: None,
+                tool_params_json: None,
+                tool_result_json: None,
+                embedding: None,
+                created_at: 3,
+                reasoning_content: None,
+                is_summary: false,
+                is_summarized: false,
+                summarized_message_ids: None,
+                summarized_count: None,
+                attachments: None,
+            },
+        ];
+
+        let context: Vec<_> = MessageConverter::llm_context_messages(&db_messages)
+            .into_iter()
+            .cloned()
+            .collect();
+        let llm_messages = MessageConverter::db_to_llm(&context, true);
+
+        assert_eq!(llm_messages.len(), 2);
+        assert!(llm_messages[0].content.contains("summary"));
+        assert_eq!(llm_messages[1].role, Role::User);
+        assert_eq!(llm_messages[1].content, "latest question");
     }
 }
 

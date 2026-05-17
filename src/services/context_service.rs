@@ -16,28 +16,53 @@ use anyhow::Result;
 use tracing::debug;
 
 /// Returns the range of `db_messages` (ordered by created_at ASC) to summarize:
-/// - If there is **no previous summary**, returns a range covering **all messages** (first summarization).
-/// - If there **is** a previous summary, returns a range starting **at the last summary message (inclusive)**
-///   through to the end, so the new summary re-summarizes the prior summary **plus** all newer messages.
-/// - Returns `None` if there are no messages after the last summary (i.e. nothing new to summarize).
-///
-/// This ensures each new summary represents the **entire conversation so far** in one rolling summary,
-/// while still only summarizing each raw message once.
+/// - The **last message is always excluded** so it stays verbatim for the next LLM call.
+/// - If there is **no previous summary**, returns a range covering all messages except the last.
+/// - If there **is** a previous summary, returns a range starting **at the last summary (inclusive)**
+///   through the message before the last, so the new summary re-summarizes the prior summary **plus**
+///   intervening messages.
+/// - Returns `None` when there is nothing left to summarize (e.g. only one message, or only a
+///   summary plus the kept tail).
 fn range_to_summarize(db_messages: &[StorageMessage]) -> Option<std::ops::Range<usize>> {
     if db_messages.is_empty() {
         return None;
     }
 
+    // Never summarize the latest message — it is kept verbatim for the LLM.
+    let summarize_end = db_messages.len().saturating_sub(1);
+    if summarize_end == 0 {
+        return None;
+    }
+
     if let Some(last_summary_idx) = db_messages.iter().rposition(|m| m.is_summary) {
-        // If there is nothing after the last summary, there's nothing new to summarize.
-        if last_summary_idx + 1 >= db_messages.len() {
+        if last_summary_idx >= summarize_end {
             return None;
         }
-        // Re-summarize: include the last summary itself plus all newer messages.
-        Some(last_summary_idx..db_messages.len())
+        if last_summary_idx + 1 >= summarize_end {
+            return None;
+        }
+        Some(last_summary_idx..summarize_end)
     } else {
-        // No previous summary: summarize the full history.
-        Some(0..db_messages.len())
+        Some(0..summarize_end)
+    }
+}
+
+/// `created_at` for a newly inserted summary row: after the last summarized message and before
+/// any kept tail so chronological DB order matches LLM context order (summary, then tail).
+fn summary_created_at(db_messages: &[StorageMessage], summarize_range: &std::ops::Range<usize>) -> i64 {
+    use chrono::Utc;
+
+    let now = Utc::now().timestamp();
+    let Some(last_summarized) = db_messages.get(summarize_range.end.saturating_sub(1)) else {
+        return now;
+    };
+    let Some(kept) = db_messages.get(summarize_range.end) else {
+        return last_summarized.created_at;
+    };
+    if kept.created_at > last_summarized.created_at {
+        kept.created_at.saturating_sub(1).max(last_summarized.created_at)
+    } else {
+        last_summarized.created_at
     }
 }
 
@@ -147,11 +172,11 @@ impl ContextService {
                 return Err(anyhow::anyhow!("No messages to summarize").context("Summarization skipped"));
             }
         };
-        let msgs_to_summarize: Vec<_> = db_messages[range].to_vec();
+        let msgs_to_summarize: Vec<_> = db_messages[range.clone()].to_vec();
         tracing::debug!(
             conversation_id = %conv_id,
             messages_to_summarize = msgs_to_summarize.len(),
-            "Will summarize all messages after last summary"
+            "Will summarize messages (last message kept verbatim)"
         );
         
         // Convert to LlmMessage for summarization using MessageConverter (single source of truth)
@@ -179,12 +204,14 @@ impl ContextService {
         
         // Perform database summarization
         {
+            let summary_created_at = summary_created_at(&db_messages, &range);
             let storage_guard = storage.lock().await;
             storage_guard
                 .perform_summarization(
                     &conv_id.to_string(),
                     &msgs_to_summarize,
                     &summary_msg.content,
+                    summary_created_at,
                 )
                 .context("Failed to save summary to DB")?;
         }
@@ -293,7 +320,7 @@ impl ContextService {
                 .context("failed to load conversation for summarization")?
         };
 
-        // All messages after last summary (or all if first time). Includes tool calls. No "keep recent".
+        // Summarize history except the last message (kept verbatim for the LLM).
         let range = match range_to_summarize(&db_messages) {
             Some(r) => r,
             None => {
@@ -304,11 +331,11 @@ impl ContextService {
                 return Ok(());
             }
         };
-        let msgs_to_summarize: Vec<_> = db_messages[range].to_vec();
+        let msgs_to_summarize: Vec<_> = db_messages[range.clone()].to_vec();
         tracing::debug!(
             conversation_id = %conv_id,
             messages_to_summarize = msgs_to_summarize.len(),
-            "Will summarize all messages after last summary"
+            "Will summarize messages (last message kept verbatim)"
         );
 
         // Convert to LlmMessage for summarization using MessageConverter
@@ -338,12 +365,14 @@ impl ContextService {
 
         // Perform database summarization (marks all msgs_to_summarize as summarized, including tools)
         {
+            let summary_created_at = summary_created_at(&db_messages, &range);
             let storage_guard = storage.lock().await;
             storage_guard
                 .perform_summarization(
                     &conv_id.to_string(),
                     &msgs_to_summarize,
                     &summary_msg.content,
+                    summary_created_at,
                 )
                 .context("failed to save summary to database")?;
         }
@@ -399,7 +428,7 @@ impl ContextService {
             .load_conversation_messages(&conv_id.to_string())
             .context("failed to load conversation for summarization")?;
 
-        // All messages after last summary (or all if first time). Includes tool calls. No "keep recent".
+        // Summarize history except the last message (kept verbatim for the LLM).
         let range = match range_to_summarize(&db_messages) {
             Some(r) => r,
             None => {
@@ -410,11 +439,11 @@ impl ContextService {
                 return Ok(());
             }
         };
-        let msgs_to_summarize: Vec<_> = db_messages[range].to_vec();
+        let msgs_to_summarize: Vec<_> = db_messages[range.clone()].to_vec();
         tracing::debug!(
             conversation_id = %conv_id,
             messages_to_summarize = msgs_to_summarize.len(),
-            "Will summarize all messages after last summary"
+            "Will summarize messages (last message kept verbatim)"
         );
 
         // Convert to LlmMessage for summarization using MessageConverter
@@ -443,11 +472,13 @@ impl ContextService {
         );
 
         // Perform database summarization
+        let summary_created_at = summary_created_at(&db_messages, &range);
         storage
             .perform_summarization(
                 &conv_id.to_string(),
                 &msgs_to_summarize,
                 &summary_msg.content,
+                summary_created_at,
             )
             .context("failed to save summary to database")?;
 
@@ -480,6 +511,73 @@ impl ContextService {
 
         final_messages.append(&mut history);
         Ok(final_messages)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::sqlite_storage_simple::Message as StorageMessage;
+
+    fn msg(id: i64, role: &str, is_summary: bool, is_summarized: bool) -> StorageMessage {
+        StorageMessage {
+            id,
+            conversation_id: "c".to_string(),
+            role: role.to_string(),
+            content: format!("m{id}"),
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_status: None,
+            tool_params_json: None,
+            tool_result_json: None,
+            embedding: None,
+            created_at: id,
+            reasoning_content: None,
+            is_summary,
+            is_summarized,
+            summarized_message_ids: None,
+            summarized_count: None,
+            attachments: None,
+        }
+    }
+
+    #[test]
+    fn range_to_summarize_excludes_last_message() {
+        let db = vec![msg(1, "user", false, false), msg(2, "user", false, false)];
+        assert_eq!(range_to_summarize(&db), Some(0..1));
+
+        let db = vec![msg(1, "user", false, false)];
+        assert_eq!(range_to_summarize(&db), None);
+    }
+
+    #[test]
+    fn range_to_summarize_reroll_includes_prior_summary() {
+        let db = vec![
+            msg(1, "system", true, false),
+            msg(2, "assistant", false, false),
+            msg(3, "user", false, false),
+        ];
+        assert_eq!(range_to_summarize(&db), Some(0..2));
+    }
+
+    #[test]
+    fn range_to_summarize_only_summary_and_tail_is_none() {
+        let db = vec![
+            msg(1, "system", true, false),
+            msg(2, "user", false, false),
+        ];
+        assert_eq!(range_to_summarize(&db), None);
+    }
+
+    #[test]
+    fn summary_created_at_sorts_before_kept_tail() {
+        let db = vec![
+            msg(1, "user", false, true),
+            msg(2, "user", false, false),
+        ];
+        let range = 0..1;
+        assert_eq!(summary_created_at(&db, &range), 1);
     }
 }
 
