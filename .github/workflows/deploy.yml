@@ -37,3 +37,32 @@ jobs:
         run: |
           set -euo pipefail
           systemctl --user restart luna.service
+      
+      # ✅ Telegram notification (always runs, success/fail message differs)
+      - name: Telegram notify (success)
+        if: ${{ success() }}
+        uses: cbrgm/telegram-github-action@v1
+        with:
+          token: ${{ secrets.TELEGRAM_TOKEN }}
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          message: |
+            ✅ LunaAI deploy OK
+            Repo: ${{ github.repository }}
+            Branch: ${{ github.ref_name }}
+            Commit: ${{ github.sha }}
+            By: ${{ github.actor }}
+
+      - name: Telegram notify (failure)
+        if: ${{ failure() }}
+        uses: cbrgm/telegram-github-action@v1
+        with:
+          token: ${{ secrets.TELEGRAM_TOKEN }}
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          message: |
+            ❌ LunaAI deploy FAILED
+            Repo: ${{ github.repository }}
+            Branch: ${{ github.ref_name }}
+            Commit: ${{ github.sha }}
+            By: ${{ github.actor }}
+            Check logs in GitHub Actions.
+
