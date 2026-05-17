@@ -38,7 +38,6 @@ jobs:
           set -euo pipefail
           
           sudo -u digit1024 \
-          XDG_RUNTIME_DIR=/run/user/$(id -u digit1024) \
           systemctl --user restart luna.service
 
       
