@@ -36,7 +36,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          
+          sudo -u digit1024 \
+          XDG_RUNTIME_DIR=/run/user/$(id -u digit1024) \
           systemctl --user restart luna.service
+
       
       # ✅ Telegram notification (always runs, success/fail message differs)
       - name: Telegram notify (success)
