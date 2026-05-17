@@ -37,8 +37,7 @@ jobs:
         run: |
           set -euo pipefail
           
-          sudo -u digit1024 \
-          systemctl --user restart luna.service
+          sudo -iu digit1024 systemctl --user restart luna.service
 
       
       # ✅ Telegram notification (always runs, success/fail message differs)
