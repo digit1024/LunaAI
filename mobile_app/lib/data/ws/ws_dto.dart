@@ -95,6 +95,23 @@ sealed class ServerEvent {
         return ConversationCompleteEvent(json['conversation_id'] as String);
       case 'conversation_deleted':
         return ConversationDeletedEvent(json['conversation_id'] as String);
+      case 'conversation_renamed':
+        return ConversationRenamedEvent(
+          conversationId: json['conversation_id'] as String,
+          title: json['title'] as String? ?? '',
+        );
+      case 'memories_list':
+        return MemoriesListEvent(
+          (json['memories'] as List<dynamic>? ?? [])
+              .map((e) => MemoryView.fromJson(e as Map<String, dynamic>))
+              .toList(),
+        );
+      case 'memory_updated':
+        return MemoryUpdatedEvent(
+          MemoryView.fromJson(json['memory'] as Map<String, dynamic>),
+        );
+      case 'memory_deleted':
+        return MemoryDeletedEvent(json['id'] as int);
       case 'streaming_stopped':
         return StreamingStoppedEvent(json['conversation_id'] as String);
       default:
@@ -254,6 +271,34 @@ class StreamingStoppedEvent extends ServerEvent {
   const StreamingStoppedEvent(this.conversationId);
 }
 
+class ConversationRenamedEvent extends ServerEvent {
+  final String conversationId;
+  final String title;
+
+  const ConversationRenamedEvent({
+    required this.conversationId,
+    required this.title,
+  });
+}
+
+class MemoriesListEvent extends ServerEvent {
+  final List<MemoryView> memories;
+
+  const MemoriesListEvent(this.memories);
+}
+
+class MemoryUpdatedEvent extends ServerEvent {
+  final MemoryView memory;
+
+  const MemoryUpdatedEvent(this.memory);
+}
+
+class MemoryDeletedEvent extends ServerEvent {
+  final int id;
+
+  const MemoryDeletedEvent(this.id);
+}
+
 /// Emitted when the WebSocket connection is lost.
 /// UI should handle this by showing reconnect option or trying to reconnect.
 class DisconnectedEvent extends ServerEvent {
@@ -285,12 +330,14 @@ class ConversationSummary {
 
 class SearchResult {
   final String conversationId;
+  final String conversationTitle;
   final String snippet;
   final int timestamp;
   final double rank;
 
   SearchResult({
     required this.conversationId,
+    this.conversationTitle = '',
     required this.snippet,
     required this.timestamp,
     required this.rank,
@@ -299,9 +346,39 @@ class SearchResult {
   factory SearchResult.fromJson(Map<String, dynamic> json) {
     return SearchResult(
       conversationId: json['conversation_id'] as String,
+      conversationTitle: json['conversation_title'] as String? ?? '',
       snippet: json['snippet'] as String? ?? '',
       timestamp: json['timestamp'] as int? ?? 0,
       rank: (json['rank'] as num?)?.toDouble() ?? 0,
+    );
+  }
+}
+
+class MemoryView {
+  final int id;
+  final String content;
+  final String? category;
+  final int importance;
+  final int createdAt;
+  final int updatedAt;
+
+  MemoryView({
+    required this.id,
+    required this.content,
+    this.category,
+    required this.importance,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  factory MemoryView.fromJson(Map<String, dynamic> json) {
+    return MemoryView(
+      id: json['id'] as int,
+      content: json['content'] as String? ?? '',
+      category: json['category'] as String?,
+      importance: json['importance'] as int? ?? 5,
+      createdAt: json['created_at'] as int? ?? 0,
+      updatedAt: json['updated_at'] as int? ?? 0,
     );
   }
 }
@@ -462,6 +539,35 @@ class ClientCommand {
       ClientCommand('summarize_conversation', {
         'conversation_id': conversationId,
       });
+
+  static ClientCommand renameConversation(String conversationId, String title) =>
+      ClientCommand('rename_conversation', {
+        'conversation_id': conversationId,
+        'title': title,
+      });
+
+  static ClientCommand listMemories({String? query, int? limit, int? offset}) =>
+      ClientCommand('list_memories', {
+        if (query != null) 'query': query,
+        if (limit != null) 'limit': limit,
+        if (offset != null) 'offset': offset,
+      });
+
+  static ClientCommand updateMemory({
+    required int id,
+    String? content,
+    String? category,
+    int? importance,
+  }) =>
+      ClientCommand('update_memory', {
+        'id': id,
+        if (content != null) 'content': content,
+        if (category != null) 'category': category,
+        if (importance != null) 'importance': importance,
+      });
+
+  static ClientCommand deleteMemory(int id) =>
+      ClientCommand('delete_memory', {'id': id});
 }
 
 

@@ -9,6 +9,7 @@ import '../../core/config/stt_preferences.dart';
 import '../../services/tts_service.dart';
 import '../../data/ws/ws_dto.dart';
 import '../widgets/conversation_card.dart';
+import '../widgets/rename_conversation_dialog.dart';
 
 class ConversationsScreen extends ConsumerStatefulWidget {
   const ConversationsScreen({super.key});
@@ -128,12 +129,14 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
         },
         onStartNew: controller.startNewConversation,
         onHistory: controller.openConversations,
+        onMemories: controller.openMemories,
         onSetup: controller.openSetup,
       ),
       body: Column(
         children: [
           _Header(
             status: state.connection,
+            onMemories: controller.openMemories,
             onRefresh: () {
               setState(() {
                 _currentOffset = 0;
@@ -151,12 +154,14 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                 prefixIcon: Icon(Icons.search),
                 hintText: 'Search history…',
               ),
-              onSubmitted: controller.search,
+              onChanged: controller.search,
             ),
           ),
           Expanded(
             child: _items(state).isEmpty
-                ? const _EmptyPlaceholder()
+                ? (_isSearchActive(state)
+                    ? const _SearchEmptyPlaceholder()
+                    : const _EmptyPlaceholder())
                 : ListView.separated(
                     controller: _scrollController,
                     itemCount: _items(state).length + (_hasMore && !state.searchQuery.isNotEmpty ? 1 : 0),
@@ -175,32 +180,36 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                         summary: (summary) {
                           final selected =
                               state.activeConversation?.id == summary.id;
-                          return Dismissible(
-                            key: Key(summary.id),
-                            direction: DismissDirection.endToStart,
-                            background: Container(
-                              color: Colors.red,
-                              alignment: Alignment.centerRight,
-                              padding: const EdgeInsets.only(right: 20),
-                              child: const Icon(Icons.delete, color: Colors.white),
+                          return ConversationCard(
+                            summary: summary,
+                            isSelected: selected,
+                            onTap: () => controller.selectConversation(summary.id),
+                            onEdit: () => showRenameConversationDialog(
+                              context: context,
+                              ref: ref,
+                              conversationId: summary.id,
+                              currentTitle: summary.title,
                             ),
-                            onDismissed: (direction) {
-                              controller.deleteConversation(summary.id);
-                            },
-                            child: ConversationCard(
-                              summary: summary,
-                              isSelected: selected,
-                              onTap: () => controller.selectConversation(summary.id),
+                            onDelete: () => controller.deleteConversation(summary.id),
+                          );
+                        },
+                        searchResult: (result) {
+                          final title = result.conversationTitle.isNotEmpty
+                              ? result.conversationTitle
+                              : 'Untitled';
+                          return ListTile(
+                            leading: const Icon(Icons.history),
+                            title: Text(title),
+                            subtitle: Text(
+                              result.snippet,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            onTap: () => controller.selectConversation(
+                              result.conversationId,
                             ),
                           );
                         },
-                        searchResult: (result) => ListTile(
-                          leading: const Icon(Icons.history),
-                          title: Text(result.snippet),
-                          subtitle: Text('Conversation ${result.conversationId}'),
-                          onTap: () =>
-                              controller.selectConversation(result.conversationId),
-                        ),
                       );
                     },
                   ),
@@ -217,10 +226,15 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({required this.status, required this.onRefresh});
+  const _Header({
+    required this.status,
+    required this.onRefresh,
+    required this.onMemories,
+  });
 
   final ConnectionStatus status;
   final VoidCallback onRefresh;
+  final VoidCallback onMemories;
 
   @override
   Widget build(BuildContext context) {
@@ -254,11 +268,46 @@ class _Header extends StatelessWidget {
               ],
             ),
           ),
+          PopupMenuButton<String>(
+            onSelected: (value) {
+              if (value == 'memories') onMemories();
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'memories',
+                child: ListTile(
+                  leading: Icon(Icons.psychology_outlined),
+                  title: Text('Memories'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ],
+          ),
           IconButton(
             tooltip: 'Refresh',
             onPressed: onRefresh,
             icon: const Icon(Icons.refresh),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SearchEmptyPlaceholder extends StatelessWidget {
+  const _SearchEmptyPlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.search_off, size: 48),
+          SizedBox(height: 8),
+          Text('No matching conversations'),
+          SizedBox(height: 8),
+          Text('Try a different search term'),
         ],
       ),
     );
@@ -288,8 +337,10 @@ class _EmptyPlaceholder extends StatelessWidget {
   }
 }
 
+bool _isSearchActive(AppState state) => state.searchQuery.isNotEmpty;
+
 List<_ConversationItem> _items(AppState state) {
-  if (state.searchQuery.isNotEmpty && state.searchResults.isNotEmpty) {
+  if (_isSearchActive(state)) {
     return state.searchResults
         .map<_ConversationItem>(_ConversationItem.searchResult)
         .toList();
@@ -344,6 +395,7 @@ class _ChatDrawer extends ConsumerStatefulWidget {
     required this.onProfileChanged,
     required this.onStartNew,
     required this.onHistory,
+    required this.onMemories,
     required this.onSetup,
   });
 
@@ -352,6 +404,7 @@ class _ChatDrawer extends ConsumerStatefulWidget {
   final Function(String) onProfileChanged;
   final VoidCallback onStartNew;
   final VoidCallback onHistory;
+  final VoidCallback onMemories;
   final VoidCallback onSetup;
 
   @override
@@ -564,6 +617,15 @@ class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
             title: const Text('History'),
             onTap: () {
               widget.onHistory();
+              Navigator.pop(context);
+            },
+          ),
+          // Memories
+          ListTile(
+            leading: const Icon(Icons.psychology_outlined),
+            title: const Text('Memories'),
+            onTap: () {
+              widget.onMemories();
               Navigator.pop(context);
             },
           ),

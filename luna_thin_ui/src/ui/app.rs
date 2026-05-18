@@ -59,6 +59,7 @@ pub enum Message {
 
     // Memories
     LoadMemories,
+    LoadMoreMemories,
     MemoriesSearchChanged(String),
     BeginEditMemory(i64),
     MemoryDraftContentChanged(String),
@@ -414,6 +415,9 @@ pub struct LunaThinApp {
     // Memories page
     pub memories: Vec<MemoryView>,
     pub memories_search: String,
+    pub memories_has_more: bool,
+    /// Offset used for the in-flight `ListMemories` request (0 = replace list).
+    memories_fetch_offset: u32,
     pub editing_memory: Option<MemoryDraft>,
 
     // Streaming state — conversations with an active agent loop on the server
@@ -508,6 +512,8 @@ impl LunaThinApp {
             renaming_conversation: None,
             memories: Vec::new(),
             memories_search: String::new(),
+            memories_has_more: false,
+            memories_fetch_offset: 0,
             editing_memory: None,
             streaming_conversations: HashSet::new(),
             streaming_content: String::new(),
@@ -869,13 +875,18 @@ impl LunaThinApp {
         });
     }
 
-    /// List or search long-term memories.
-    pub(crate) fn list_memories(&self, query: Option<String>) {
+    /// List or search long-term memories (`offset` 0 replaces the list; higher appends).
+    pub(crate) fn list_memories(&mut self, query: Option<String>, offset: u32) {
+        self.memories_fetch_offset = offset;
         self.send_command(ClientCommand::ListMemories {
             query,
             limit: Some(MEMORIES_LIST_LIMIT),
-            offset: None,
+            offset: Some(offset),
         });
+    }
+
+    fn sort_memories_by_updated(memories: &mut [MemoryView]) {
+        memories.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(b.id.cmp(&a.id)));
     }
 
     /// Helper: On connection established - send initial commands.
@@ -1319,7 +1330,20 @@ impl LunaThinApp {
                 self.history_search_results = results;
             }
             ServerEvent::MemoriesList { memories } => {
-                self.memories = memories;
+                let batch_len = memories.len();
+                if self.memories_fetch_offset == 0 {
+                    self.memories = memories;
+                } else {
+                    let existing_ids: std::collections::HashSet<i64> =
+                        self.memories.iter().map(|m| m.id).collect();
+                    for memory in memories {
+                        if !existing_ids.contains(&memory.id) {
+                            self.memories.push(memory);
+                        }
+                    }
+                }
+                Self::sort_memories_by_updated(&mut self.memories);
+                self.memories_has_more = batch_len >= MEMORIES_LIST_LIMIT as usize;
             }
             ServerEvent::MemoryUpdated { memory } => {
                 if let Some(entry) = self.memories.iter_mut().find(|m| m.id == memory.id) {
@@ -1327,6 +1351,7 @@ impl LunaThinApp {
                 } else {
                     self.memories.push(memory.clone());
                 }
+                Self::sort_memories_by_updated(&mut self.memories);
                 if self.editing_memory.as_ref().map(|d| d.id) == Some(memory.id) {
                     self.editing_memory = None;
                 }

@@ -826,7 +826,7 @@ impl ServerHandler {
                 .map(|s| s.to_string())
                 .collect();
             storage
-                .search_memory(&keywords, limit)
+                .search_memory_paginated(&keywords, limit, offset)
                 .context("memory search failed")?
         } else {
             storage

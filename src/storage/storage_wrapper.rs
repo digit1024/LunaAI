@@ -442,6 +442,16 @@ impl Storage {
         self.sqlite.search_memory(keywords, limit)
     }
 
+    /// Search memory via FTS5 with pagination.
+    pub fn search_memory_paginated(
+        &self,
+        keywords: &[String],
+        limit: usize,
+        offset: usize,
+    ) -> SqliteResult<Vec<super::sqlite_storage_simple::MemoryEntry>> {
+        self.sqlite.search_memory_paginated(keywords, limit, offset)
+    }
+
     /// Search memory by category
     pub fn search_memory_by_category(
         &self,

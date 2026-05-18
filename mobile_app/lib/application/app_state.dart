@@ -5,7 +5,7 @@ import '../data/ws/ws_dto.dart';
 
 enum ConnectionStatus { connecting, online, error }
 
-enum ActivePane { setup, connecting, conversations, chat, settings }
+enum ActivePane { setup, connecting, conversations, chat, memories, settings }
 
 enum DialogModeState { listening, processing, speaking }
 
@@ -175,6 +175,9 @@ class AppState extends Equatable {
   final bool isDialogModeActive;
   final DialogModeState dialogModeState;
   final List<FileAttachment> attachedFiles;
+  final List<MemoryView> memories;
+  final String memoriesSearch;
+  final int? editingMemoryId;
 
   const AppState({
     required this.connection,
@@ -195,6 +198,9 @@ class AppState extends Equatable {
     required this.isDialogModeActive,
     required this.dialogModeState,
     required this.attachedFiles,
+    required this.memories,
+    required this.memoriesSearch,
+    required this.editingMemoryId,
   });
 
   factory AppState.initial() => const AppState(
@@ -216,6 +222,9 @@ class AppState extends Equatable {
         isDialogModeActive: false,
         dialogModeState: DialogModeState.listening,
         attachedFiles: [],
+        memories: [],
+        memoriesSearch: '',
+        editingMemoryId: null,
       );
 
   AppState copyWith({
@@ -237,6 +246,9 @@ class AppState extends Equatable {
     bool? isDialogModeActive,
     DialogModeState? dialogModeState,
     List<FileAttachment>? attachedFiles,
+    List<MemoryView>? memories,
+    String? memoriesSearch,
+    Object? editingMemoryId = _infoMessageUnset,
   }) {
     return AppState(
       connection: connection ?? this.connection,
@@ -259,6 +271,11 @@ class AppState extends Equatable {
       isDialogModeActive: isDialogModeActive ?? this.isDialogModeActive,
       dialogModeState: dialogModeState ?? this.dialogModeState,
       attachedFiles: attachedFiles ?? this.attachedFiles,
+      memories: memories ?? this.memories,
+      memoriesSearch: memoriesSearch ?? this.memoriesSearch,
+      editingMemoryId: identical(editingMemoryId, _infoMessageUnset)
+          ? this.editingMemoryId
+          : editingMemoryId as int?,
     );
   }
 
@@ -282,5 +299,8 @@ class AppState extends Equatable {
         isDialogModeActive,
         dialogModeState,
         attachedFiles,
+        memories,
+        memoriesSearch,
+        editingMemoryId,
       ];
 }

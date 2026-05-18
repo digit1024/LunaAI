@@ -101,6 +101,17 @@ pub fn memories_page(app: &LunaThinApp) -> Element<Message> {
         for memory in &app.memories {
             list = list.push(memory_card(app, memory));
         }
+        if app.memories_has_more {
+            list = list.push(
+                container(
+                    button::standard("Load more")
+                        .width(Length::Fill)
+                        .on_press(Message::LoadMoreMemories),
+                )
+                .padding([8, 0])
+                .width(Length::Fill),
+            );
+        }
         content = content.push(scrollable(list).height(Length::Fill).width(Length::Fill));
     }
 

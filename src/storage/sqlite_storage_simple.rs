@@ -1120,6 +1120,16 @@ impl SqliteStorage {
         keywords: &[String],
         limit: usize,
     ) -> SqliteResult<Vec<MemoryEntry>> {
+        self.search_memory_paginated(keywords, limit, 0)
+    }
+
+    /// Search memory via FTS5 with pagination. Results ordered by relevance, then last modified.
+    pub fn search_memory_paginated(
+        &self,
+        keywords: &[String],
+        limit: usize,
+        offset: usize,
+    ) -> SqliteResult<Vec<MemoryEntry>> {
         let fts_query: String = keywords
             .iter()
             .filter(|s| !s.is_empty())
@@ -1134,10 +1144,12 @@ impl SqliteStorage {
              FROM memory m
              JOIN memory_fts ON m.id = memory_fts.rowid
              WHERE memory_fts MATCH ?1
-             ORDER BY bm25(memory_fts) ASC
-             LIMIT ?2",
+             ORDER BY bm25(memory_fts) ASC,
+                      COALESCE(m.updated_at, m.created_at) DESC,
+                      m.id DESC
+             LIMIT ?2 OFFSET ?3",
         )?;
-        let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
+        let rows = stmt.query_map(params![fts_query, limit as i64, offset as i64], |row| {
             Ok(MemoryEntry {
                 id: row.get(0)?,
                 content: row.get(1)?,
@@ -1440,7 +1452,7 @@ impl SqliteStorage {
         self.list_memory_paginated(limit, 0)
     }
 
-    /// List memory entries with pagination.
+    /// List memory entries with pagination (most recently modified first).
     pub fn list_memory_paginated(
         &self,
         limit: usize,
@@ -1449,7 +1461,7 @@ impl SqliteStorage {
         let mut stmt = self.conn.prepare(
             "SELECT id, content, category, importance, created_at, updated_at
              FROM memory
-             ORDER BY importance DESC, created_at DESC
+             ORDER BY COALESCE(updated_at, created_at) DESC, id DESC
              LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(params![limit as i64, offset as i64], |row| {

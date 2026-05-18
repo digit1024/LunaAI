@@ -667,6 +667,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           },
           onStartNew: controller.startNewConversation,
           onHistory: controller.openConversations,
+          onMemories: controller.openMemories,
           onSetup: controller.openSetup,
         ),
         body: Column(
@@ -912,6 +913,7 @@ class _ChatDrawer extends ConsumerStatefulWidget {
     required this.onProfileChanged,
     required this.onStartNew,
     required this.onHistory,
+    required this.onMemories,
     required this.onSetup,
   });
 
@@ -920,6 +922,7 @@ class _ChatDrawer extends ConsumerStatefulWidget {
   final Function(String) onProfileChanged;
   final VoidCallback onStartNew;
   final VoidCallback onHistory;
+  final VoidCallback onMemories;
   final VoidCallback onSetup;
 
   @override
@@ -1174,6 +1177,15 @@ class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
             title: const Text('History'),
             onTap: () {
               widget.onHistory();
+              Navigator.pop(context);
+            },
+          ),
+          // Memories
+          ListTile(
+            leading: const Icon(Icons.psychology_outlined),
+            title: const Text('Memories'),
+            onTap: () {
+              widget.onMemories();
               Navigator.pop(context);
             },
           ),

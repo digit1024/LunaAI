@@ -58,7 +58,22 @@ pub fn handle_history_memories_messages(
                 } else {
                     Some(app.memories_search.clone())
                 };
-                app.list_memories(query);
+                app.memories_has_more = false;
+                app.list_memories(query, 0);
+            }
+            None
+        }
+        Message::LoadMoreMemories => {
+            if app.connection_status == crate::ui::app::ConnectionStatus::Connected
+                && app.memories_has_more
+            {
+                let query = if app.memories_search.trim().is_empty() {
+                    None
+                } else {
+                    Some(app.memories_search.clone())
+                };
+                let offset = app.memories.len() as u32;
+                app.list_memories(query, offset);
             }
             None
         }
@@ -70,7 +85,8 @@ pub fn handle_history_memories_messages(
                 } else {
                     Some(query.trim().to_string())
                 };
-                app.list_memories(q);
+                app.memories_has_more = false;
+                app.list_memories(q, 0);
             }
             None
         }

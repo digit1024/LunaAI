@@ -85,6 +85,7 @@ class AppController extends Notifier<AppState> {
 
   static const int _maxConnectionAttempts = 3;
   static const Duration _connectionRetryDelay = Duration(seconds: 2);
+  static const int _memoriesListLimit = 100;
 
   Future<void> init() async {
     if (_initialized) return;
@@ -225,6 +226,50 @@ class AppController extends Notifier<AppState> {
   void openConversations() {
     state = state.copyWith(pane: ActivePane.conversations);
     refreshConversations();
+  }
+
+  void renameConversation(String conversationId, String title) {
+    final trimmed = title.trim();
+    if (trimmed.isEmpty) return;
+    wsClient.send(ClientCommand.renameConversation(conversationId, trimmed));
+  }
+
+  void openMemories() {
+    state = state.copyWith(pane: ActivePane.memories);
+    refreshMemories();
+  }
+
+  void refreshMemories({String? query}) {
+    final q = query ?? state.memoriesSearch;
+    final trimmed = q.trim();
+    wsClient.send(ClientCommand.listMemories(
+      query: trimmed.isEmpty ? null : trimmed,
+      limit: _memoriesListLimit,
+    ));
+  }
+
+  void searchMemories(String query) {
+    final trimmed = query.trim();
+    state = state.copyWith(memoriesSearch: trimmed);
+    refreshMemories(query: trimmed);
+  }
+
+  void updateMemory({
+    required int id,
+    String? content,
+    String? category,
+    int? importance,
+  }) {
+    wsClient.send(ClientCommand.updateMemory(
+      id: id,
+      content: content,
+      category: category,
+      importance: importance,
+    ));
+  }
+
+  void deleteMemory(int id) {
+    wsClient.send(ClientCommand.deleteMemory(id));
   }
 
   void openSetup() {
@@ -683,6 +728,53 @@ class AppController extends Notifier<AppState> {
         conversations: updated,
         activeConversation: activeConv,
         chatMessages: activeConv == null ? [] : state.chatMessages,
+      );
+    } else if (event is ConversationRenamedEvent) {
+      final updated = state.conversations.map((c) {
+        if (c.id == event.conversationId) {
+          return ConversationSummary(
+            id: c.id,
+            title: event.title,
+            lastMessagePreview: c.lastMessagePreview,
+            updatedAt: c.updatedAt,
+          );
+        }
+        return c;
+      }).toList();
+      ConversationView? activeConv = state.activeConversation;
+      if (activeConv != null && activeConv.id == event.conversationId) {
+        activeConv = ConversationView(
+          id: activeConv.id,
+          title: event.title,
+          createdAt: activeConv.createdAt,
+          updatedAt: activeConv.updatedAt,
+          messages: activeConv.messages,
+          profileName: activeConv.profileName,
+        );
+      }
+      state = state.copyWith(
+        conversations: updated,
+        activeConversation: activeConv,
+      );
+    } else if (event is MemoriesListEvent) {
+      state = state.copyWith(memories: event.memories);
+    } else if (event is MemoryUpdatedEvent) {
+      final memories = [...state.memories];
+      final index = memories.indexWhere((m) => m.id == event.memory.id);
+      if (index >= 0) {
+        memories[index] = event.memory;
+      } else {
+        memories.add(event.memory);
+      }
+      state = state.copyWith(
+        memories: memories,
+        editingMemoryId: null,
+      );
+    } else if (event is MemoryDeletedEvent) {
+      state = state.copyWith(
+        memories: state.memories.where((m) => m.id != event.id).toList(),
+        editingMemoryId:
+            state.editingMemoryId == event.id ? null : state.editingMemoryId,
       );
     } else if (event is StreamingStoppedEvent) {
       wsClient.setStreaming(false); // Resume normal health checks
