@@ -1437,13 +1437,22 @@ impl SqliteStorage {
 
     /// List all memory entries, ordered by importance then recency.
     pub fn list_memory(&self, limit: usize) -> SqliteResult<Vec<MemoryEntry>> {
+        self.list_memory_paginated(limit, 0)
+    }
+
+    /// List memory entries with pagination.
+    pub fn list_memory_paginated(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> SqliteResult<Vec<MemoryEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, content, category, importance, created_at, updated_at
              FROM memory
              ORDER BY importance DESC, created_at DESC
-             LIMIT ?1",
+             LIMIT ?1 OFFSET ?2",
         )?;
-        let rows = stmt.query_map(params![limit as i64], |row| {
+        let rows = stmt.query_map(params![limit as i64, offset as i64], |row| {
             Ok(MemoryEntry {
                 id: row.get(0)?,
                 content: row.get(1)?,
@@ -1452,6 +1461,47 @@ impl SqliteStorage {
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
             })
+        })?;
+        rows.collect()
+    }
+
+    /// Fetch a single memory entry by ID.
+    pub fn get_memory_by_id(&self, memory_id: i64) -> SqliteResult<Option<MemoryEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, content, category, importance, created_at, updated_at
+             FROM memory WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![memory_id], |row| {
+            Ok(MemoryEntry {
+                id: row.get(0)?,
+                content: row.get(1)?,
+                category: row.get(2)?,
+                importance: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })?;
+        rows.next().transpose()
+    }
+
+    /// Return (id, title) pairs for the given conversation IDs.
+    pub fn get_conversation_titles(
+        &self,
+        ids: &[String],
+    ) -> SqliteResult<Vec<(String, String)>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let sql = format!(
+            "SELECT id, title FROM conversations WHERE id IN ({})",
+            placeholders
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params.as_slice(), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
         rows.collect()
     }

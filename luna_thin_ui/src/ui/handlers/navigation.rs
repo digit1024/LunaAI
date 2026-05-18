@@ -20,6 +20,12 @@ pub fn handle_navigation_messages(
                     |msg| cosmic::Action::App(msg),
                 ));
             }
+            if page == crate::ui::app::Page::Memories && app.connection_status == crate::ui::app::ConnectionStatus::Connected {
+                return Some(app::Task::perform(
+                    async { Message::LoadMemories },
+                    |msg| cosmic::Action::App(msg),
+                ));
+            }
             None
         }
         Message::SelectConversation(conv_id) => {

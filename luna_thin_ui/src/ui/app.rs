@@ -15,11 +15,16 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::client::{FileClient, LunaWsClient, ServerConfig};
-use crate::server::dto::{ClientCommand, ConversationSummary, MessageView, ServerEvent};
-use crate::ui::pages::{chat_page, history_page, mcp_servers_page, settings_page, ChatPageState};
+use crate::server::dto::{
+    ClientCommand, ConversationSummary, MemoryView, MessageView, SearchResult, ServerEvent,
+};
+use crate::ui::pages::{
+    chat_page, history_page, memories_page, mcp_servers_page, settings_page, ChatPageState,
+};
 use crate::ui::handlers::{
     handle_connection_messages,
     handle_chat_messages,
+    handle_history_memories_messages,
     handle_navigation_messages,
     handle_settings_messages,
     handle_server_event_messages,
@@ -44,6 +49,24 @@ pub enum Message {
     SelectConversation(String),
     DeleteConversation(String),
     NewConversation,
+
+    // History search & rename
+    HistorySearchChanged(String),
+    BeginRenameConversation(String),
+    RenameDraftChanged(String),
+    ConfirmRenameConversation,
+    CancelRenameConversation,
+
+    // Memories
+    LoadMemories,
+    MemoriesSearchChanged(String),
+    BeginEditMemory(i64),
+    MemoryDraftContentChanged(String),
+    MemoryDraftCategoryChanged(String),
+    MemoryDraftImportanceChanged(String),
+    ConfirmEditMemory,
+    CancelEditMemory,
+    DeleteMemory(i64),
 
     // Server events
     ServerEvent(ServerEvent),
@@ -129,8 +152,18 @@ pub enum Message {
 pub enum Page {
     Chat,
     History,
+    Memories,
     MCPServers,
     Settings,
+}
+
+/// Draft state while editing a memory inline on the Memories page.
+#[derive(Debug, Clone)]
+pub struct MemoryDraft {
+    pub id: i64,
+    pub content: String,
+    pub category: String,
+    pub importance: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -373,6 +406,16 @@ pub struct LunaThinApp {
     pub current_profile: String,
     pub mcp_servers: Vec<crate::server::dto::MCPServerInfo>,
 
+    // History page
+    pub history_search: String,
+    pub history_search_results: Vec<SearchResult>,
+    pub renaming_conversation: Option<(String, String)>,
+
+    // Memories page
+    pub memories: Vec<MemoryView>,
+    pub memories_search: String,
+    pub editing_memory: Option<MemoryDraft>,
+
     // Streaming state — conversations with an active agent loop on the server
     pub streaming_conversations: HashSet<String>,
     pub streaming_content: String,
@@ -431,6 +474,7 @@ pub struct LunaThinApp {
 
 const MAX_NAV_CONVERSATIONS: usize = 11;
 const CONVERSATION_LIST_LIMIT: u32 = 20;
+const MEMORIES_LIST_LIMIT: u32 = 100;
 const CONVERSATION_TITLE_MAX_LEN: usize = 28;
 const CONVERSATION_TITLE_TRUNCATE_LEN: usize = 25;
 const FRAME_RATE_MS: u64 = 16; // ~60fps max
@@ -459,6 +503,12 @@ impl LunaThinApp {
             profiles: Vec::new(),
             current_profile: String::new(),
             mcp_servers: Vec::new(),
+            history_search: String::new(),
+            history_search_results: Vec::new(),
+            renaming_conversation: None,
+            memories: Vec::new(),
+            memories_search: String::new(),
+            editing_memory: None,
             streaming_conversations: HashSet::new(),
             streaming_content: String::new(),
             reasoning_content: String::new(),
@@ -576,6 +626,12 @@ impl LunaThinApp {
             .icon(widget::icon::icon(icons::get_handle("list-large-symbolic", 16)))
             .data(NavItem::Page(Page::History))
             .divider_above(true);
+
+        // Memories
+        model.insert()
+            .text("Memories")
+            .icon(widget::icon::icon(icons::get_handle("emblem-favorite-symbolic", 16)))
+            .data(NavItem::Page(Page::Memories));
 
         // MCP Servers
         model.insert()
@@ -800,6 +856,24 @@ impl LunaThinApp {
         self.send_command(ClientCommand::ListConversations {
             query: None,
             limit: Some(CONVERSATION_LIST_LIMIT),
+            offset: None,
+        });
+    }
+
+    /// Search conversation message history via FTS.
+    pub(crate) fn search_conversations(&self, query: &str) {
+        self.send_command(ClientCommand::ListConversations {
+            query: Some(query.to_string()),
+            limit: Some(CONVERSATION_LIST_LIMIT),
+            offset: None,
+        });
+    }
+
+    /// List or search long-term memories.
+    pub(crate) fn list_memories(&self, query: Option<String>) {
+        self.send_command(ClientCommand::ListMemories {
+            query,
+            limit: Some(MEMORIES_LIST_LIMIT),
             offset: None,
         });
     }
@@ -1225,13 +1299,50 @@ impl LunaThinApp {
                 self.conversations.retain(|c| c.id != conversation_id);
                 self.update_nav_model();
             }
+            ServerEvent::ConversationRenamed {
+                conversation_id,
+                title,
+            } => {
+                if let Some(conv) = self
+                    .conversations
+                    .iter_mut()
+                    .find(|c| c.id == conversation_id)
+                {
+                    conv.title = title.clone();
+                }
+                if self.renaming_conversation.as_ref().map(|(id, _)| id) == Some(&conversation_id) {
+                    self.renaming_conversation = None;
+                }
+                self.update_nav_model();
+            }
+            ServerEvent::SearchResults { results } => {
+                self.history_search_results = results;
+            }
+            ServerEvent::MemoriesList { memories } => {
+                self.memories = memories;
+            }
+            ServerEvent::MemoryUpdated { memory } => {
+                if let Some(entry) = self.memories.iter_mut().find(|m| m.id == memory.id) {
+                    *entry = memory.clone();
+                } else {
+                    self.memories.push(memory.clone());
+                }
+                if self.editing_memory.as_ref().map(|d| d.id) == Some(memory.id) {
+                    self.editing_memory = None;
+                }
+            }
+            ServerEvent::MemoryDeleted { id } => {
+                self.memories.retain(|m| m.id != id);
+                if self.editing_memory.as_ref().map(|d| d.id) == Some(id) {
+                    self.editing_memory = None;
+                }
+            }
             ServerEvent::StreamingStopped { conversation_id } => {
                 self.unmark_conversation_streaming(&conversation_id);
                 if self.is_viewing_conversation(&conversation_id) {
                     self.current_assistant_bubble_id = None;
                 }
             }
-            _ => {}
         }
         app::Task::none()
     }
@@ -1398,6 +1509,11 @@ impl Application for LunaThinApp {
         if let Some(task) = handle_navigation_messages(self, message.clone()) {
             return task;
         }
+
+        // History & memories handlers
+        if let Some(task) = handle_history_memories_messages(self, message.clone()) {
+            return task;
+        }
         
         // Try settings handlers
         if let Some(task) = handle_settings_messages(self, message.clone()) {
@@ -1562,6 +1678,7 @@ impl Application for LunaThinApp {
         match self.current_page {
             Page::Chat => chat_page(self),
             Page::History => history_page(self),
+            Page::Memories => memories_page(self),
             Page::MCPServers => mcp_servers_page(self),
             Page::Settings => settings_page(self),
         }
@@ -1607,6 +1724,12 @@ impl Application for LunaThinApp {
                     if page == Page::MCPServers && self.connection_status == ConnectionStatus::Connected {
                         return app::Task::perform(
                             async { Message::LoadMCPServers },
+                            |msg| cosmic::Action::App(msg),
+                        );
+                    }
+                    if page == Page::Memories && self.connection_status == ConnectionStatus::Connected {
+                        return app::Task::perform(
+                            async { Message::LoadMemories },
                             |msg| cosmic::Action::App(msg),
                         );
                     }

@@ -42,6 +42,24 @@ pub enum ClientCommand {
         #[serde(default)]
         attachment_ids: Option<Vec<String>>,
     },
+    RenameConversation {
+        conversation_id: String,
+        title: String,
+    },
+    ListMemories {
+        query: Option<String>,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    },
+    UpdateMemory {
+        id: i64,
+        content: Option<String>,
+        category: Option<String>,
+        importance: Option<i32>,
+    },
+    DeleteMemory {
+        id: i64,
+    },
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -126,6 +144,19 @@ pub enum ServerEvent {
     ConversationDeleted {
         conversation_id: String,
     },
+    ConversationRenamed {
+        conversation_id: String,
+        title: String,
+    },
+    MemoriesList {
+        memories: Vec<MemoryView>,
+    },
+    MemoryUpdated {
+        memory: MemoryView,
+    },
+    MemoryDeleted {
+        id: i64,
+    },
     StreamingStopped {
         conversation_id: String,
     },
@@ -148,9 +179,21 @@ pub struct ConversationSummary {
 #[derive(Debug, Serialize, Clone)]
 pub struct SearchResult {
     pub conversation_id: String,
+    #[serde(default)]
+    pub conversation_title: String,
     pub snippet: String,
     pub timestamp: i64,
     pub rank: f64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct MemoryView {
+    pub id: i64,
+    pub content: String,
+    pub category: Option<String>,
+    pub importance: i32,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Serialize, Clone)]

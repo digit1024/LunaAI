@@ -464,6 +464,31 @@ impl Storage {
         self.sqlite.list_memory(limit)
     }
 
+    /// List memory entries with pagination.
+    pub fn list_memory_paginated(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> SqliteResult<Vec<super::sqlite_storage_simple::MemoryEntry>> {
+        self.sqlite.list_memory_paginated(limit, offset)
+    }
+
+    /// Fetch a single memory entry by ID.
+    pub fn get_memory_by_id(
+        &self,
+        memory_id: i64,
+    ) -> SqliteResult<Option<super::sqlite_storage_simple::MemoryEntry>> {
+        self.sqlite.get_memory_by_id(memory_id)
+    }
+
+    /// Return (id, title) pairs for the given conversation IDs.
+    pub fn get_conversation_titles(
+        &self,
+        ids: &[String],
+    ) -> SqliteResult<Vec<(String, String)>> {
+        self.sqlite.get_conversation_titles(ids)
+    }
+
     /// Update a memory entry
     pub fn update_memory(
         &self,
