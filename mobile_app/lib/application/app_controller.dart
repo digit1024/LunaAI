@@ -208,6 +208,21 @@ class AppController extends Notifier<AppState> {
     state = state.copyWith(infoMessage: 'Compact requested.');
   }
 
+  /// Resume the agentic loop without sending a new user message.
+  void requestResumeAgent() {
+    final convId = state.activeConversation?.id;
+    if (convId == null) {
+      state = state.copyWith(infoMessage: 'No active conversation.');
+      return;
+    }
+    if (state.streaming) {
+      state = state.copyWith(infoMessage: 'Stop streaming before resuming.');
+      return;
+    }
+    wsClient.send(ClientCommand.resumeAgent(convId));
+    state = state.copyWith(infoMessage: 'Resume agent requested.');
+  }
+
   void stopStreaming({String? conversationId}) {
     wsClient.send(ClientCommand.stopStreaming(conversationId: conversationId));
   }

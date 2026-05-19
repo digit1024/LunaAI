@@ -34,6 +34,32 @@ pub fn top_panel(app: &LunaThinApp) -> Element<'static, Message> {
     let profiles_closure: Vec<String> = app.profiles.clone();
     let current_idx = profiles_display.iter().position(|p| p == &app.current_profile);
 
+    let chat_actions_enabled = app.connection_status == ConnectionStatus::Connected
+        && app.current_conversation_id.is_some();
+    let resume_enabled = chat_actions_enabled && !app.is_current_streaming();
+
+    let compact_button: Element<Message> = if chat_actions_enabled {
+        button::text("Compact")
+            .on_press(Message::SummarizeConversation)
+            .class(widget::button::ButtonClass::Standard)
+            .into()
+    } else {
+        button::text("Compact")
+            .class(widget::button::ButtonClass::Standard)
+            .into()
+    };
+
+    let resume_button: Element<Message> = if resume_enabled {
+        button::text("Resume agent")
+            .on_press(Message::ResumeAgent)
+            .class(widget::button::ButtonClass::Standard)
+            .into()
+    } else {
+        button::text("Resume agent")
+            .class(widget::button::ButtonClass::Standard)
+            .into()
+    };
+
     container(
         Column::new()
             .push(
@@ -78,6 +104,10 @@ pub fn top_panel(app: &LunaThinApp) -> Element<'static, Message> {
                             }
                         })
                     )
+                    .push(Space::new().width(8))
+                    .push(compact_button)
+                    .push(Space::new().width(8))
+                    .push(resume_button)
                     .push(Space::new().width(Length::Fill))
                     .spacing(8)
                     .align_y(cosmic::iced::Alignment::Center),

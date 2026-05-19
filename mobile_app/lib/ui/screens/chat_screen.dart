@@ -678,6 +678,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               streaming: state.streaming,
               onSettings: controller.openSetup,
               onRequestCompact: controller.requestCompactConversation,
+              onRequestResumeAgent: controller.requestResumeAgent,
             ),
             Expanded(
           child: Stack(
@@ -768,6 +769,7 @@ class _TopBar extends ConsumerWidget {
     required this.streaming,
     required this.onSettings,
     this.onRequestCompact,
+    this.onRequestResumeAgent,
   });
 
   final String title;
@@ -775,6 +777,7 @@ class _TopBar extends ConsumerWidget {
   final bool streaming;
   final VoidCallback onSettings;
   final VoidCallback? onRequestCompact;
+  final VoidCallback? onRequestResumeAgent;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -819,6 +822,8 @@ class _TopBar extends ConsumerWidget {
             connectionColor: connectionColor,
             streaming: streaming,
             onRequestCompact: onRequestCompact,
+            onRequestResumeAgent: onRequestResumeAgent,
+            streaming: streaming,
           ),
         ],
       ),
@@ -833,12 +838,14 @@ class _StatusMenuAnchor extends StatelessWidget {
     required this.connectionColor,
     required this.streaming,
     this.onRequestCompact,
+    this.onRequestResumeAgent,
   });
 
   final IconData connectionIcon;
   final Color connectionColor;
   final bool streaming;
   final VoidCallback? onRequestCompact;
+  final VoidCallback? onRequestResumeAgent;
 
   @override
   Widget build(BuildContext context) {
@@ -897,10 +904,27 @@ class _StatusMenuAnchor extends StatelessWidget {
             title: Text('Compact'),
           ),
         ),
+        PopupMenuItem<String>(
+          value: 'resume',
+          enabled: !streaming,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(
+              Icons.play_arrow,
+              color: streaming
+                  ? Theme.of(context).disabledColor
+                  : null,
+            ),
+            title: const Text('Resume agent'),
+          ),
+        ),
       ],
     ).then((value) {
-      if (value == 'compact' && context.mounted) {
+      if (!context.mounted) return;
+      if (value == 'compact') {
         onRequestCompact?.call();
+      } else if (value == 'resume') {
+        onRequestResumeAgent?.call();
       }
     });
   }

@@ -35,6 +35,10 @@ pub enum ClientCommand {
     SummarizeConversation {
         conversation_id: String,
     },
+    /// Resume the agentic loop from persisted history (no new user message).
+    ResumeAgent {
+        conversation_id: String,
+    },
     ChangeProfile {
         profile: String,
     },

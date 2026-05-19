@@ -10,7 +10,9 @@ use crate::{
     llm::tokenizer::TokenCounter,
     llm::context_manager::SmartContextManager,
     prompts::PromptManager,
-    services::{ContextService, MessageConverter, ScheduleService},
+    services::{
+        conversation_tail, ContextService, MessageConverter, ScheduleService,
+    },
     server::conversation_subscriptions::ConnectionId,
     server::dto::{
         ClientCommand, ConversationSummary, ConversationView, MemoryView, MessageView,
@@ -51,6 +53,12 @@ pub struct ServerContext {
     pub default_allowed_tool_names: HashSet<String>,
     /// Embedding provider for memory vector search. None when embedding is disabled.
     pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    /// Per-conversation agent runs (abort handles); prevents double-spawn across connections.
+    pub active_agent_runs: Arc<RwLock<HashMap<Uuid, tokio::task::AbortHandle>>>,
+}
+
+struct RunAgentOptions {
+    auto_summarize: bool,
 }
 
 pub struct SessionState {
@@ -175,6 +183,9 @@ impl ServerHandler {
             ClientCommand::SummarizeConversation { conversation_id } => {
                 self.handle_summarize_conversation(conversation_id).await
             }
+            ClientCommand::ResumeAgent { conversation_id } => {
+                self.handle_resume_agent(conversation_id).await
+            }
             ClientCommand::RenameConversation {
                 conversation_id,
                 title,
@@ -239,6 +250,363 @@ impl ServerHandler {
 
         // Reload updated conversation view for this connection
         self.handle_load_conversation(conversation_id).await
+    }
+
+    /// Resume the agentic loop from persisted history without a new user message.
+    async fn handle_resume_agent(&mut self, conversation_id: String) -> Result<()> {
+        let uuid = Uuid::parse_str(&conversation_id).context("invalid conversation id format")?;
+
+        {
+            let storage = self.ctx.storage.lock().await;
+            if storage
+                .get_conversation(&uuid)
+                .context("failed to get conversation")?
+                .is_none()
+            {
+                return Err(anyhow!("Conversation not found"));
+            }
+        }
+
+        self.session.active_conversation_id = Some(uuid);
+        self.ctx
+            .subscriptions
+            .set_viewing(
+                self.connection_id,
+                Some(uuid),
+                self.outbound.clone(),
+            )
+            .await;
+
+        if self.repair_incomplete_tool_tail(uuid).await? {
+            self.ctx
+                .subscriptions
+                .broadcast(
+                    uuid,
+                    ServerEvent::Info {
+                        message: "Removed incomplete tool turn; resuming agent.".into(),
+                    },
+                )
+                .await;
+            self.broadcast_conversation_loaded(uuid).await?;
+        }
+
+        {
+            let storage = self.ctx.storage.lock().await;
+            let db_messages = storage
+                .load_conversation_messages(&uuid.to_string())
+                .context("failed to load conversation messages")?;
+            let context = MessageConverter::llm_context_messages(&db_messages);
+            if context.is_empty() {
+                return Err(anyhow!("Nothing to resume: conversation has no messages"));
+            }
+        }
+
+        self.run_agent_for_conversation(uuid, RunAgentOptions { auto_summarize: true })
+            .await
+    }
+
+    async fn repair_incomplete_tool_tail(&self, conv_uuid: Uuid) -> Result<bool> {
+        let ids = {
+            let storage = self.ctx.storage.lock().await;
+            let db_messages = storage
+                .load_conversation_messages(&conv_uuid.to_string())
+                .context("failed to load conversation messages")?;
+            conversation_tail::ids_to_repair_incomplete_tool_tail(&db_messages)
+        };
+        if ids.is_empty() {
+            return Ok(false);
+        }
+        let storage = self.ctx.storage.lock().await;
+        storage
+            .delete_messages(&ids)
+            .context("failed to delete incomplete tool tail")?;
+        tracing::info!(
+            conversation_id = %conv_uuid,
+            deleted = ids.len(),
+            "Repaired incomplete tool tail before resume"
+        );
+        Ok(true)
+    }
+
+    async fn broadcast_conversation_loaded(&self, uuid: Uuid) -> Result<()> {
+        let storage = self.ctx.storage.lock().await;
+        let conv = storage
+            .get_conversation(&uuid)
+            .context("failed to load conversation")?
+            .ok_or_else(|| anyhow!("Conversation not found"))?;
+        let view = to_conversation_view(&conv);
+        drop(storage);
+        self.ctx
+            .subscriptions
+            .broadcast(
+                uuid,
+                ServerEvent::ConversationLoaded {
+                    conversation: view,
+                },
+            )
+            .await;
+        Ok(())
+    }
+
+    async fn try_spawn_tracked_agent(
+        &mut self,
+        conversation_uuid: Uuid,
+        agent_messages: Vec<LlmMessage>,
+    ) -> Result<()> {
+        {
+            let map = self.ctx.active_agent_runs.read().await;
+            if map.contains_key(&conversation_uuid) {
+                return Err(anyhow!("Agent already running for this conversation"));
+            }
+        }
+
+        let handle = spawn_agent_task(
+            self.ctx.clone(),
+            conversation_uuid,
+            agent_messages,
+            self.session.profile_name.clone(),
+            self.session.llm_client.clone(),
+            self.session.allowed_tool_names.clone(),
+        );
+        let abort = handle.abort_handle();
+        {
+            let mut map = self.ctx.active_agent_runs.write().await;
+            map.insert(conversation_uuid, abort);
+        }
+        self.session.track_task(handle);
+        Ok(())
+    }
+
+    async fn run_agent_for_conversation(
+        &mut self,
+        conversation_uuid: Uuid,
+        options: RunAgentOptions,
+    ) -> Result<()> {
+        let resolved = self.session.active_resolved(&self.ctx.config)?.clone();
+        let mut llm_messages = self.build_llm_messages(conversation_uuid).await?;
+        llm_messages =
+            ContextService::inject_prompts(llm_messages, &self.ctx.prompt_manager, resolved.profile())?;
+
+        if options.auto_summarize {
+            let preset = resolved.preset();
+            let token_counter = TokenCounter::new(preset);
+            let total_tokens: usize = llm_messages
+                .iter()
+                .map(|m| token_counter.count_message_tokens(m))
+                .sum();
+            let summarize_threshold =
+                token_counter.get_summarize_threshold_tokens(preset, resolved.profile());
+            let will_summarize = total_tokens > summarize_threshold;
+
+            if will_summarize {
+                self.ctx
+                    .subscriptions
+                    .broadcast(
+                        conversation_uuid,
+                        ServerEvent::Info {
+                            message: "Summarizing conversation…".into(),
+                        },
+                    )
+                    .await;
+            }
+
+            {
+                let storage = self.ctx.storage.clone();
+                let llm_client = self.session.llm_client.clone();
+
+                if let Err(e) = ContextService::check_and_trigger_summarization(
+                    &llm_messages,
+                    conversation_uuid,
+                    storage,
+                    &llm_client,
+                    &resolved,
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, "Failed to check/trigger summarization, continuing anyway");
+                } else if will_summarize {
+                    self.ctx
+                        .subscriptions
+                        .broadcast(
+                            conversation_uuid,
+                            ServerEvent::Info {
+                                message: "Conversation summarized.".into(),
+                            },
+                        )
+                        .await;
+                }
+            }
+
+            llm_messages = self.build_llm_messages(conversation_uuid).await?;
+            llm_messages = ContextService::inject_prompts(
+                llm_messages,
+                &self.ctx.prompt_manager,
+                resolved.profile(),
+            )?;
+        }
+
+        {
+            let token_counter = TokenCounter::new(resolved.preset());
+            let outcome = crate::services::memory_rag::inject_memory_block(
+                self.ctx.storage.clone(),
+                self.ctx.embedding_provider.as_deref(),
+                &self.ctx.config.embedding,
+                &token_counter,
+                &mut llm_messages,
+            )
+            .await;
+            if let Some(outcome) = outcome {
+                let storage_guard = self.ctx.storage.lock().await;
+                if let Err(e) = storage_guard
+                    .record_memory_recalls(&conversation_uuid.to_string(), &outcome.ids)
+                {
+                    tracing::warn!(error = %e, "Failed to record memory recalls (analytics)");
+                }
+                drop(storage_guard);
+                let _ = self.outbound.send(ServerEvent::MemoriesRecalled {
+                    conversation_id: conversation_uuid.to_string(),
+                    memory_ids: outcome.ids,
+                });
+            }
+        }
+
+        let preset = resolved.preset();
+        let token_counter = TokenCounter::new(preset);
+        let total_tokens: usize = llm_messages
+            .iter()
+            .map(|msg| token_counter.count_message_tokens(msg))
+            .sum();
+
+        let context_limit = token_counter.get_context_limit(preset);
+
+        let usage_percent = (total_tokens as f32 / context_limit as f32 * 100.0) as u32;
+        tracing::info!(
+            "Context usage after summarization: {} tokens / {} limit ({}%)",
+            total_tokens,
+            context_limit,
+            usage_percent
+        );
+
+        let mut agent_messages = if total_tokens > token_counter.get_safe_context_limit(preset) {
+            tracing::info!(
+                total_tokens,
+                safe_limit = token_counter.get_safe_context_limit(preset),
+                "Context still exceeds safe limit after summarization, applying smart truncation"
+            );
+
+            SmartContextManager::select_context(llm_messages, &token_counter, preset)
+        } else {
+            llm_messages
+        };
+
+        let safe_limit = token_counter.get_safe_context_limit(preset);
+        let hard_limit = token_counter.get_context_limit(preset);
+
+        if total_tokens > hard_limit {
+            tracing::warn!(
+                total_tokens,
+                hard_limit,
+                "CRITICAL: Context exceeds hard limit, forcing truncation"
+            );
+            let original_count = agent_messages.len();
+            agent_messages =
+                SmartContextManager::select_context(agent_messages, &token_counter, preset);
+            let selected_count = agent_messages.len();
+            let selected_tokens: usize = agent_messages
+                .iter()
+                .map(|msg| token_counter.count_message_tokens(msg))
+                .sum();
+
+            tracing::warn!(
+                original_count,
+                selected_count,
+                total_tokens,
+                selected_tokens,
+                "Emergency truncation: messages and tokens reduced"
+            );
+
+            let _ = self.outbound.send(ServerEvent::Info {
+                message: format!(
+                    "Context exceeded limit! Truncated: {} messages -> {} messages ({} tokens)",
+                    original_count,
+                    selected_count,
+                    selected_tokens
+                ),
+            });
+        } else if total_tokens > safe_limit {
+            tracing::info!(
+                "Context overflow detected: {} tokens > {} safe limit. Applying smart context selection.",
+                total_tokens,
+                safe_limit
+            );
+            let original_count = agent_messages.len();
+            agent_messages =
+                SmartContextManager::select_context(agent_messages, &token_counter, preset);
+            let selected_count = agent_messages.len();
+            let selected_tokens: usize = agent_messages
+                .iter()
+                .map(|msg| token_counter.count_message_tokens(msg))
+                .sum();
+
+            tracing::info!(
+                "Context selection: {} messages -> {} messages ({} tokens -> {} tokens)",
+                original_count,
+                selected_count,
+                total_tokens,
+                selected_tokens
+            );
+
+            let _ = self.outbound.send(ServerEvent::Info {
+                message: format!(
+                    "Context truncated: {} messages selected from {} ({} tokens used)",
+                    selected_count,
+                    original_count,
+                    selected_tokens
+                ),
+            });
+        }
+
+        let final_tokens: usize = agent_messages
+            .iter()
+            .map(|msg| token_counter.count_message_tokens(msg))
+            .sum();
+
+        if final_tokens > hard_limit {
+            tracing::error!(
+                total_tokens = final_tokens,
+                context_limit = hard_limit,
+                "FATAL: After truncation, still over limit (this should not happen)"
+            );
+            let system_count = agent_messages
+                .iter()
+                .take_while(|m| matches!(m.role, Role::System))
+                .count();
+            let mut emergency_messages: Vec<LlmMessage> =
+                agent_messages[..system_count].to_vec();
+            let mut emergency_tokens: usize = emergency_messages
+                .iter()
+                .map(|msg| token_counter.count_message_tokens(msg))
+                .sum();
+
+            for msg in agent_messages.iter().skip(system_count).rev() {
+                let msg_tokens = token_counter.count_message_tokens(msg);
+                if emergency_tokens + msg_tokens <= hard_limit {
+                    emergency_messages.push(msg.clone());
+                    emergency_tokens += msg_tokens;
+                } else {
+                    break;
+                }
+            }
+
+            agent_messages = emergency_messages;
+            tracing::warn!(
+                message_count = agent_messages.len(),
+                "Emergency fallback: Reduced messages"
+            );
+        }
+
+        self.try_spawn_tracked_agent(conversation_uuid, agent_messages)
+            .await
     }
 
     async fn handle_start_conversation(&mut self, title: Option<String>) -> Result<()> {
@@ -534,248 +902,13 @@ impl ServerHandler {
             )
             .await;
 
-        let resolved = self.session.active_resolved(&self.ctx.config)?.clone();
-        let llm_messages = self.build_llm_messages(conversation_uuid).await?;
-        let prompt_manager = self.ctx.prompt_manager.clone();
-
-        let agent_messages = ContextService::inject_prompts(llm_messages, &prompt_manager, resolved.profile())?;
-
-        // Check if summarization is needed and notify UI (started / finished)
-        let preset = resolved.preset();
-        let token_counter = TokenCounter::new(preset);
-        let total_tokens: usize = agent_messages
-            .iter()
-            .map(|m| token_counter.count_message_tokens(m))
-            .sum();
-        let summarize_threshold = token_counter.get_summarize_threshold_tokens(preset, resolved.profile());
-        let will_summarize = total_tokens > summarize_threshold;
-
-        if will_summarize {
-            self.ctx
-                .subscriptions
-                .broadcast(
-                    conversation_uuid,
-                    ServerEvent::Info {
-                        message: "Summarizing conversation…".into(),
-                    },
-                )
-                .await;
-        }
-
-        {
-            let storage = self.ctx.storage.clone();
-            let llm_client = self.session.llm_client.clone();
-
-            if let Err(e) = ContextService::check_and_trigger_summarization(
-                &agent_messages,
-                conversation_uuid,
-                storage,
-                &llm_client,
-                &resolved,
-            )
-            .await
-            {
-                tracing::warn!(error = %e, "Failed to check/trigger summarization, continuing anyway");
-            } else if will_summarize {
-                self.ctx
-                    .subscriptions
-                    .broadcast(
-                        conversation_uuid,
-                        ServerEvent::Info {
-                            message: "Conversation summarized.".into(),
-                        },
-                    )
-                    .await;
-            }
-        }
-        
-        // Reload messages after summarization (if it happened) and rebuild
-        let mut llm_messages = self.build_llm_messages(conversation_uuid).await?;
-        
-        // Re-inject prompts after reload
-        llm_messages = ContextService::inject_prompts(llm_messages, &self.ctx.prompt_manager, resolved.profile())?;
-
-        // Memory RAG: re-run on every user turn. Strip any prior memory block and inject a
-        // fresh one based on the current query. No session-wide dedup -- a memory should appear
-        // again whenever it's still relevant. See `services/memory_rag.rs`.
-        {
-            let token_counter = TokenCounter::new(resolved.preset());
-            let outcome = crate::services::memory_rag::inject_memory_block(
-                self.ctx.storage.clone(),
-                self.ctx.embedding_provider.as_deref(),
-                &self.ctx.config.embedding,
-                &token_counter,
-                &mut llm_messages,
-            )
-            .await;
-            if let Some(outcome) = outcome {
-                let storage_guard = self.ctx.storage.lock().await;
-                if let Err(e) = storage_guard
-                    .record_memory_recalls(&conversation_uuid.to_string(), &outcome.ids)
-                {
-                    tracing::warn!(error = %e, "Failed to record memory recalls (analytics)");
-                }
-                drop(storage_guard);
-                let _ = self.outbound.send(ServerEvent::MemoriesRecalled {
-                    conversation_id: conversation_uuid.to_string(),
-                    memory_ids: outcome.ids,
-                });
-            }
-        }
-
-        // Recalculate tokens after summarization (if it happened)
-        let preset = resolved.preset();
-        let token_counter = TokenCounter::new(preset);
-        let total_tokens: usize = llm_messages.iter()
-            .map(|msg| token_counter.count_message_tokens(msg))
-            .sum();
-        
-        let context_limit = token_counter.get_context_limit(preset);
-        
-        // Log final token usage
-        let usage_percent = (total_tokens as f32 / context_limit as f32 * 100.0) as u32;
-        tracing::info!(
-            "Context usage after summarization: {} tokens / {} limit ({}%)",
-            total_tokens,
-            context_limit,
-            usage_percent
-        );
-        
-        // Apply smart context selection if still over safe limit
-        let mut agent_messages = if total_tokens > token_counter.get_safe_context_limit(preset) {
-            tracing::info!(
-                total_tokens,
-                safe_limit = token_counter.get_safe_context_limit(preset),
-                "Context still exceeds safe limit after summarization, applying smart truncation"
-            );
-            
-            crate::llm::context_manager::SmartContextManager::select_context(
-                llm_messages,
-                &token_counter,
-                preset,
-            )
-        } else {
-            llm_messages
-        };
-        
-        // Continue with agent loop using final messages
-        // (Summarization now handled by ContextService::check_and_trigger_summarization above)
-        
-        // Apply additional safety checks if needed
-        let safe_limit = token_counter.get_safe_context_limit(preset);
-        let hard_limit = token_counter.get_context_limit(preset);
-        
-        // Always ensure we don't exceed the hard limit (API will reject if we do)
-        if total_tokens > hard_limit {
-            tracing::warn!(
-                total_tokens,
-                hard_limit,
-                "CRITICAL: Context exceeds hard limit, forcing truncation"
-            );
-            let original_count = agent_messages.len();
-            agent_messages = SmartContextManager::select_context(agent_messages, &token_counter, preset);
-            let selected_count = agent_messages.len();
-            let selected_tokens: usize = agent_messages.iter()
-                .map(|msg| token_counter.count_message_tokens(msg))
-                .sum();
-            
-            tracing::warn!(
-                original_count,
-                selected_count,
-                total_tokens,
-                selected_tokens,
-                "Emergency truncation: messages and tokens reduced"
-            );
-            
-            // Notify user about truncation (info, not error – conversation continues)
-            let _ = self.outbound.send(ServerEvent::Info {
-                message: format!(
-                    "Context exceeded limit! Truncated: {} messages -> {} messages ({} tokens)",
-                    original_count,
-                    selected_count,
-                    selected_tokens
-                ),
-            });
-        } else if total_tokens > safe_limit {
-            tracing::info!(
-                "Context overflow detected: {} tokens > {} safe limit. Applying smart context selection.",
-                total_tokens,
-                safe_limit
-            );
-            let original_count = agent_messages.len();
-            agent_messages = SmartContextManager::select_context(agent_messages, &token_counter, preset);
-            let selected_count = agent_messages.len();
-            let selected_tokens: usize = agent_messages.iter()
-                .map(|msg| token_counter.count_message_tokens(msg))
-                .sum();
-            
-            tracing::info!(
-                "Context selection: {} messages -> {} messages ({} tokens -> {} tokens)",
-                original_count,
-                selected_count,
-                total_tokens,
-                selected_tokens
-            );
-            
-            // Notify user about truncation (info, not error – conversation continues)
-            let _ = self.outbound.send(ServerEvent::Info {
-                message: format!(
-                    "Context truncated: {} messages selected from {} ({} tokens used)",
-                    selected_count,
-                    original_count,
-                    selected_tokens
-                ),
-            });
-        }
-        
-        // Final safety check: verify we're under the hard limit before sending
-        let final_tokens: usize = agent_messages.iter()
-            .map(|msg| token_counter.count_message_tokens(msg))
-            .sum();
-        
-        if final_tokens > hard_limit {
-            tracing::error!(
-                total_tokens = final_tokens,
-                context_limit = hard_limit,
-                "FATAL: After truncation, still over limit (this should not happen)"
-            );
-            // Emergency fallback: keep only system messages and most recent messages
-            let system_count = agent_messages.iter()
-                .take_while(|m| matches!(m.role, Role::System))
-                .count();
-            let mut emergency_messages: Vec<LlmMessage> = agent_messages[..system_count].to_vec();
-            let mut emergency_tokens: usize = emergency_messages.iter()
-                .map(|msg| token_counter.count_message_tokens(msg))
-                .sum();
-            
-            // Add recent messages until we hit the limit
-            for msg in agent_messages.iter().skip(system_count).rev() {
-                let msg_tokens = token_counter.count_message_tokens(msg);
-                if emergency_tokens + msg_tokens <= hard_limit {
-                    emergency_messages.push(msg.clone());
-                    emergency_tokens += msg_tokens;
-                } else {
-                    break;
-                }
-            }
-            
-            agent_messages = emergency_messages;
-            tracing::warn!(
-                message_count = agent_messages.len(),
-                "Emergency fallback: Reduced messages"
-            );
-        }
-
-        let handle = spawn_agent_task(
-            self.ctx.clone(),
+        self.run_agent_for_conversation(
             conversation_uuid,
-            agent_messages,
-            self.session.profile_name.clone(),
-            self.session.llm_client.clone(),
-            self.session.allowed_tool_names.clone(),
-        );
-        self.session.track_task(handle);
-        Ok(())
+            RunAgentOptions {
+                auto_summarize: true,
+            },
+        )
+        .await
     }
 
     async fn handle_rename_conversation(
@@ -993,6 +1126,15 @@ impl ServerHandler {
             handle.abort();
         }
 
+        if let Some(ref conv_id_str) = conversation_id {
+            if let Ok(uuid) = Uuid::parse_str(conv_id_str) {
+                let mut map = self.ctx.active_agent_runs.write().await;
+                if let Some(abort) = map.remove(&uuid) {
+                    abort.abort();
+                }
+            }
+        }
+
         let conv_id_str = conversation_id.unwrap_or_else(|| "unknown".to_string());
         let event = ServerEvent::StreamingStopped {
             conversation_id: conv_id_str.clone(),
@@ -1142,6 +1284,8 @@ pub fn spawn_agent_task(
         }
 
         let _ = stream_task.await;
+
+        ctx.active_agent_runs.write().await.remove(&conversation_id);
     })
 }
 
@@ -1287,6 +1431,18 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
         }
     };
 
+    {
+        let map = ctx.active_agent_runs.read().await;
+        if map.contains_key(&conversation_id) {
+            tracing::warn!(
+                job_id = %job.id,
+                conversation_id = %conversation_id,
+                "Skipping scheduled job: agent already running for conversation"
+            );
+            return Ok(());
+        }
+    }
+
     let handle = spawn_agent_task(
         ctx.clone(),
         conversation_id,
@@ -1295,6 +1451,10 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
         llm_client,
         allowed_tool_names,
     );
+    {
+        let mut map = ctx.active_agent_runs.write().await;
+        map.insert(conversation_id, handle.abort_handle());
+    }
     let _ = handle.await;
 
     let now = chrono::Utc::now().timestamp();

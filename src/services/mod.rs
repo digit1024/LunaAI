@@ -4,6 +4,7 @@
 //! reusable business logic that can be used by both desktop UI and server.
 
 pub mod message_converter;
+pub mod conversation_tail;
 pub mod context_service;
 pub mod tool_call_manager;
 pub mod mcp_service;

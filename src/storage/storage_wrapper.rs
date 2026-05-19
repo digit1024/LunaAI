@@ -256,6 +256,11 @@ impl Storage {
     }
 
     /// Delete a conversation
+    /// Delete messages by database row ids (e.g. incomplete tool-tail repair).
+    pub fn delete_messages(&self, message_ids: &[i64]) -> SqliteResult<usize> {
+        self.sqlite.delete_messages(message_ids)
+    }
+
     pub fn delete_conversation(&self, conversation_id: &Uuid) -> SqliteResult<bool> {
         let id_str = conversation_id.to_string();
         self.sqlite.delete_conversation(&id_str)

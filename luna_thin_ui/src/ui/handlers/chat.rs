@@ -33,6 +33,34 @@ pub fn handle_chat_messages(
             }
             None
         }
+        Message::SummarizeConversation => {
+            match app.current_conversation_id.clone() {
+                None => app.inline_info = Some("No active conversation.".into()),
+                Some(id) => {
+                    app.send_command(crate::server::dto::ClientCommand::SummarizeConversation {
+                        conversation_id: id,
+                    });
+                    app.inline_info = Some("Compact requested.".into());
+                }
+            }
+            None
+        }
+        Message::ResumeAgent => {
+            match app.current_conversation_id.clone() {
+                None => app.inline_info = Some("No active conversation.".into()),
+                Some(id) => {
+                    if app.is_current_streaming() {
+                        app.inline_info = Some("Stop streaming before resuming.".into());
+                    } else {
+                        app.send_command(crate::server::dto::ClientCommand::ResumeAgent {
+                            conversation_id: id,
+                        });
+                        app.inline_info = Some("Resume agent requested.".into());
+                    }
+                }
+            }
+            None
+        }
         Message::AttachFile => handle_attach_file(app),
         Message::FileSelected(path) => {
             if let Some(ref file_client) = app.file_client {

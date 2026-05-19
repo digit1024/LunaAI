@@ -15,7 +15,7 @@ use crate::{
 use agentic_loop::mcp_servers_registry::MCPServerRegistry;
 use anyhow::{Context, Result};
 use chrono::Utc;
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
 
 pub struct ServerOptions {
@@ -105,6 +105,7 @@ async fn launch(options: ServerOptions) -> Result<()> {
         schedule_service,
         default_allowed_tool_names,
         embedding_provider,
+        active_agent_runs: Arc::new(RwLock::new(HashMap::new())),
     });
 
     // Spawn background title generation thread only if profile is configured

@@ -15,29 +15,41 @@ use crate::storage::sqlite_storage_simple::Message as StorageMessage;
 use anyhow::Result;
 use tracing::debug;
 
-/// Returns the range of `db_messages` (ordered by created_at ASC) to summarize:
-/// - The **last message is always excluded** so it stays verbatim for the next LLM call.
-/// - If there is **no previous summary**, returns a range covering all messages except the last.
-/// - If there **is** a previous summary, returns a range starting **at the last summary (inclusive)**
-///   through the message before the last, so the new summary re-summarizes the prior summary **plus**
-///   intervening messages.
-/// - Returns `None` when there is nothing left to summarize (e.g. only one message, or only a
-///   summary plus the kept tail).
+/// Returns the range of `db_messages` (ordered by created_at ASC) to summarize.
+///
+/// The trailing message is excluded **only when it is a `User` turn** (the
+/// auto-summarize-on-send case), so the user's question stays verbatim for the LLM. For other
+/// tails — assistant replies, tool results, or summary rows produced by on-demand
+/// summarization — we summarize the whole history. Excluding an assistant/tool tail would either
+/// orphan a tool result (its matching tool_call would be inside the summary) or strand a reply
+/// with no preceding context, both of which break the next LLM call.
+///
+/// - No previous summary: full history (or full history minus the last user turn).
+/// - With a previous summary: from that summary (inclusive) to the end of the summarizable range,
+///   so the new summary re-summarizes the prior summary plus intervening messages.
+/// - `None` when there is nothing new to summarize.
 fn range_to_summarize(db_messages: &[StorageMessage]) -> Option<std::ops::Range<usize>> {
     if db_messages.is_empty() {
         return None;
     }
 
-    // Never summarize the latest message — it is kept verbatim for the LLM.
-    let summarize_end = db_messages.len().saturating_sub(1);
+    let keep_last_user = matches!(
+        db_messages.last(),
+        Some(m) if m.role == "user" && !m.is_summary
+    );
+    let summarize_end = if keep_last_user {
+        db_messages.len() - 1
+    } else {
+        db_messages.len()
+    };
     if summarize_end == 0 {
         return None;
     }
 
-    if let Some(last_summary_idx) = db_messages.iter().rposition(|m| m.is_summary) {
-        if last_summary_idx >= summarize_end {
-            return None;
-        }
+    if let Some(last_summary_idx) = db_messages[..summarize_end]
+        .iter()
+        .rposition(|m| m.is_summary)
+    {
         if last_summary_idx + 1 >= summarize_end {
             return None;
         }
@@ -47,8 +59,12 @@ fn range_to_summarize(db_messages: &[StorageMessage]) -> Option<std::ops::Range<
     }
 }
 
-/// `created_at` for a newly inserted summary row: after the last summarized message and before
-/// any kept tail so chronological DB order matches LLM context order (summary, then tail).
+/// `created_at` for a newly inserted summary row.
+///
+/// - With a kept tail (auto on-send): slot the summary between the last summarized message and the
+///   kept user turn so chronological DB order matches LLM context order (summary, then tail).
+/// - Without a kept tail (manual summarize of full history): use `now` so the summary sorts at the
+///   end of the conversation in DB/UI listings.
 fn summary_created_at(db_messages: &[StorageMessage], summarize_range: &std::ops::Range<usize>) -> i64 {
     use chrono::Utc;
 
@@ -57,7 +73,7 @@ fn summary_created_at(db_messages: &[StorageMessage], summarize_range: &std::ops
         return now;
     };
     let Some(kept) = db_messages.get(summarize_range.end) else {
-        return last_summarized.created_at;
+        return now.max(last_summarized.created_at);
     };
     if kept.created_at > last_summarized.created_at {
         kept.created_at.saturating_sub(1).max(last_summarized.created_at)
@@ -543,12 +559,42 @@ mod tests {
     }
 
     #[test]
-    fn range_to_summarize_excludes_last_message() {
-        let db = vec![msg(1, "user", false, false), msg(2, "user", false, false)];
-        assert_eq!(range_to_summarize(&db), Some(0..1));
+    fn range_to_summarize_excludes_trailing_user_message() {
+        let db = vec![
+            msg(1, "user", false, false),
+            msg(2, "assistant", false, false),
+            msg(3, "user", false, false),
+        ];
+        assert_eq!(range_to_summarize(&db), Some(0..2));
+    }
 
+    #[test]
+    fn range_to_summarize_single_user_message_is_none() {
         let db = vec![msg(1, "user", false, false)];
         assert_eq!(range_to_summarize(&db), None);
+    }
+
+    #[test]
+    fn range_to_summarize_assistant_tail_includes_everything() {
+        // On-demand summarization after an assistant reply: summarize everything,
+        // do not strand the assistant turn.
+        let db = vec![
+            msg(1, "user", false, false),
+            msg(2, "assistant", false, false),
+        ];
+        assert_eq!(range_to_summarize(&db), Some(0..2));
+    }
+
+    #[test]
+    fn range_to_summarize_tool_tail_includes_everything() {
+        // Tool result without its assistant in the kept window would be orphaned;
+        // summarize the whole chain instead.
+        let db = vec![
+            msg(1, "user", false, false),
+            msg(2, "assistant", false, false),
+            msg(3, "tool", false, false),
+        ];
+        assert_eq!(range_to_summarize(&db), Some(0..3));
     }
 
     #[test]
@@ -562,7 +608,7 @@ mod tests {
     }
 
     #[test]
-    fn range_to_summarize_only_summary_and_tail_is_none() {
+    fn range_to_summarize_only_summary_and_user_tail_is_none() {
         let db = vec![
             msg(1, "system", true, false),
             msg(2, "user", false, false),

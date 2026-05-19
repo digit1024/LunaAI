@@ -43,6 +43,8 @@ pub enum Message {
     InputChanged(String),
     SendMessage,
     StopMessage,
+    SummarizeConversation,
+    ResumeAgent,
 
     // Navigation
     NavigateTo(Page),

@@ -540,6 +540,12 @@ class ClientCommand {
         'conversation_id': conversationId,
       });
 
+  /// Resume the agentic loop without a new user message.
+  static ClientCommand resumeAgent(String conversationId) =>
+      ClientCommand('resume_agent', {
+        'conversation_id': conversationId,
+      });
+
   static ClientCommand renameConversation(String conversationId, String title) =>
       ClientCommand('rename_conversation', {
         'conversation_id': conversationId,
