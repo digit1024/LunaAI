@@ -135,7 +135,7 @@ pub fn user_bubble<'a>(
 pub fn assistant_bubble<'a>(
     markdown_items: &'a [markdown::Item],
     image_cache: &'a HashMap<String, ImageState>,
-    _content: &str,
+    content: &str,
     reasoning: Option<&str>,
     is_reasoning_expanded: bool,
     ctx: BubbleContext,
@@ -162,8 +162,23 @@ pub fn assistant_bubble<'a>(
         0.0
     };
 
+    // While the chunked background parser hasn't reached this bubble yet,
+    // render plain text instead of an invisible 1px spacer so long histories
+    // are readable immediately on load.
     let content_widget: Element<'a, Message> = if markdown_items.is_empty() {
-        Space::new().height(Length::Fixed(1.0)).into()
+        if content.is_empty() {
+            Space::new().height(Length::Fixed(1.0)).into()
+        } else {
+            container(
+                text(content.to_string())
+                    .size(14)
+                    .class(cosmic::style::Text::Color(
+                        cosmic::theme::active().cosmic().on_bg_color().into(),
+                    )),
+            )
+            .width(Length::Fill)
+            .into()
+        }
     } else {
         let settings =
             markdown::Settings::with_text_size(14.0f32, bubble_markdown_style());

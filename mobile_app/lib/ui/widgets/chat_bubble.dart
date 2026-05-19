@@ -91,6 +91,7 @@ class ChatBubble extends StatelessWidget {
     this.prevMessage,
     this.nextMessage,
     this.onRetry,
+    this.animate = true,
   });
 
   final ChatMessage message;
@@ -98,11 +99,21 @@ class ChatBubble extends StatelessWidget {
   final ChatMessage? nextMessage;
   final VoidCallback? onRetry;
 
+  /// Whether to play the slide-in animation. False for messages that came in
+  /// via a bulk conversation load — we don't want to animate dozens of
+  /// historical bubbles into view, only genuinely new ones.
+  final bool animate;
+
   bool _isAssistantType(BubbleType? type) {
     if (type == null) return false;
     return type == BubbleType.assistant ||
         type == BubbleType.toolRequest ||
         type == BubbleType.toolResult;
+  }
+
+  Widget _wrap(Widget child, SlideDirection direction) {
+    if (!animate) return child;
+    return _SlideInWrapper(direction: direction, child: child);
   }
 
   @override
@@ -113,47 +124,44 @@ class ChatBubble extends StatelessWidget {
 
     switch (message.bubbleType) {
       case BubbleType.user:
-        return _SlideInWrapper(
-          direction: SlideDirection.right,
-          child: _UserBubble(
-            message: message,
-            onRetry: onRetry,
-          ),
+        return _wrap(
+          _UserBubble(message: message, onRetry: onRetry),
+          SlideDirection.right,
         );
       case BubbleType.assistant:
-        return _SlideInWrapper(
-          direction: SlideDirection.left,
-          child: _AssistantBubble(
+        return _wrap(
+          _AssistantBubble(
             message: message,
             isPrevUser: isPrevUser,
             isPrevAssistant: isPrevAssistant,
             isNextAssistant: isNextAssistant,
           ),
+          SlideDirection.left,
         );
       case BubbleType.toolRequest:
-        return _SlideInWrapper(
-          direction: SlideDirection.left,
-          child: _ToolRequestBubble(
+        return _wrap(
+          _ToolRequestBubble(
             message: message,
             isPrevUser: isPrevUser,
             isPrevAssistant: isPrevAssistant,
             isNextAssistant: isNextAssistant,
           ),
+          SlideDirection.left,
         );
       case BubbleType.toolResult:
-        return _SlideInWrapper(
-          direction: SlideDirection.left,
-          child: _ToolResultBubble(
+        return _wrap(
+          _ToolResultBubble(
             message: message,
             isPrevUser: isPrevUser,
             isPrevAssistant: isPrevAssistant,
             isNextAssistant: isNextAssistant,
           ),
+          SlideDirection.left,
         );
       case BubbleType.summary:
-        return _SlideInWrapper(
-          direction: SlideDirection.center,
-          child: _SummaryBubble(message: message),
+        return _wrap(
+          _SummaryBubble(message: message),
+          SlideDirection.center,
         );
     }
   }

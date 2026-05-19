@@ -52,8 +52,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   late final ProviderSubscription<List<ChatMessage>> _toolCompletionSubscription;
   late final ProviderSubscription<List<ChatMessage>> _ttsSubscription;
   late final ProviderSubscription<bool> _dialogModeSubscription;
-  Set<String> _completedToolIds = {}; // Track completed tools to avoid replaying
-  Set<String> _processedMessageIds = {}; // Track messages that have been processed for sound/TTS
+  final Set<String> _completedToolIds = {}; // Track completed tools to avoid replaying
+  final Set<String> _processedMessageIds = {}; // Track messages that have been processed for sound/TTS
+  /// IDs of messages that arrived as part of a bulk conversation load. These
+  /// must not play the slide-in animation (we don't want to animate dozens
+  /// of historical bubbles every time the user opens a long chat).
+  final Set<String> _historicalMessageIds = {};
+  /// Conversation we currently believe the screen is showing. When it changes
+  /// we treat the next chatMessages snapshot as a bulk load and gate listeners.
+  String? _renderedConversationId;
+  /// True for one frame after a bulk load so the post-frame scroller jumps to
+  /// the bottom instead of running an animateTo against a moving extent.
+  bool _pendingJumpToBottom = false;
+  /// Tracks the last chatMessages count we observed so we only auto-scroll
+  /// when the list actually grows (a new bubble/streaming delta), not on
+  /// every rebuild.
+  int _lastObservedMessageCount = 0;
   SpeechService? _speechService;
   String? _currentTranscribedText;
   Timer? _sttErrorRetryTimer; // Debounce STT error retries to avoid double start (error_busy)
@@ -130,9 +144,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _toolCompletionSubscription = ref.listenManual<List<ChatMessage>>(
       appControllerProvider.select((state) => state.chatMessages),
       (previous, next) {
-        // Check for newly completed tools (toolResult bubbles)
+        if (_isBulkLoad(previous, next)) {
+          // Bulk load: silently absorb the existing tool IDs so we never
+          // replay historical tool sounds.
+          for (final m in next) {
+            if (m.toolCallId != null) _completedToolIds.add(m.toolCallId!);
+          }
+          return;
+        }
         for (final message in next) {
-          if (message.bubbleType == BubbleType.toolResult && 
+          if (message.bubbleType == BubbleType.toolResult &&
               message.toolStatus == 'done' &&
               message.toolCallId != null &&
               !_completedToolIds.contains(message.toolCallId!)) {
@@ -148,6 +169,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _ttsSubscription = ref.listenManual<List<ChatMessage>>(
       appControllerProvider.select((state) => state.chatMessages),
       (previous, next) {
+        if (_isBulkLoad(previous, next)) {
+          // Bulk load: pre-mark every existing message (incl. last assistant)
+          // as already processed so we don't auto-TTS / play sounds for
+          // history.
+          for (final m in next) {
+            _processedMessageIds.add(m.id);
+            _processedMessageIds.add('${m.id}_tts');
+          }
+          return;
+        }
         _handleNewAssistantMessages(previous, next);
       },
     );
@@ -196,6 +227,30 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Clear retry input callback
     ref.read(appControllerProvider.notifier).onRetryInputReady = null;
     super.dispose();
+  }
+
+  /// True when [next] is the result of switching/loading a conversation
+  /// rather than an incremental update (streaming delta, tool event, etc.).
+  /// We treat both "first-ever frame" (previous == null) and any frame where
+  /// the message list shrinks or jumps by more than one as a bulk load.
+  bool _isBulkLoad(List<ChatMessage>? previous, List<ChatMessage> next) {
+    if (previous == null) return next.isNotEmpty;
+    if (previous.isEmpty && next.isNotEmpty) return true;
+    if (next.length < previous.length) return true; // truncation/retry/switch
+    if (next.length - previous.length > 1) return true;
+    if (previous.isNotEmpty && next.isNotEmpty && previous.first.id != next.first.id) {
+      // Different conversation head — fresh load.
+      return true;
+    }
+    return false;
+  }
+
+  /// Snapshot the IDs from a fresh conversation so the bubble widget skips
+  /// the slide-in animation for them.
+  void _markHistoricalMessages(List<ChatMessage> messages) {
+    _historicalMessageIds
+      ..clear()
+      ..addAll(messages.map((m) => m.id));
   }
 
   void _startTypingFeedback() {
@@ -641,15 +696,43 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       },
     );
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut,
-        );
-      }
-    });
+    // Detect conversation switches/loads: snapshot history and request a
+    // one-shot jumpTo so a long lazy ListView doesn't chase a moving extent.
+    ref.listen<String?>(
+      appControllerProvider.select((s) => s.activeConversation?.id),
+      (previousId, currentId) {
+        if (currentId == null || currentId == _renderedConversationId) return;
+        _renderedConversationId = currentId;
+        final fresh = ref.read(appControllerProvider).chatMessages;
+        _markHistoricalMessages(fresh);
+        _lastObservedMessageCount = fresh.length;
+        _pendingJumpToBottom = true;
+      },
+    );
+
+    // Auto-scroll only when the message list actually grows (new bubble or
+    // streaming delta arriving). Previously this ran on every rebuild, which
+    // animated against a moving extent on huge histories.
+    final messageCount = state.chatMessages.length;
+    final shouldScroll = _pendingJumpToBottom || messageCount > _lastObservedMessageCount;
+    final shouldJump = _pendingJumpToBottom;
+    _pendingJumpToBottom = false;
+    _lastObservedMessageCount = messageCount;
+    if (shouldScroll) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_scrollController.hasClients) return;
+        final target = _scrollController.position.maxScrollExtent;
+        if (shouldJump) {
+          _scrollController.jumpTo(target);
+        } else {
+          _scrollController.animateTo(
+            target,
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+    }
 
     return PopScope(
       canPop: false,
@@ -704,6 +787,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         message: message,
                         prevMessage: prevMessage,
                         nextMessage: nextMessage,
+                        animate: !_historicalMessageIds.contains(message.id),
                         onRetry: message.bubbleType == BubbleType.user
                             ? () => controller.retryMessage(message.id)
                             : null,
@@ -823,7 +907,6 @@ class _TopBar extends ConsumerWidget {
             streaming: streaming,
             onRequestCompact: onRequestCompact,
             onRequestResumeAgent: onRequestResumeAgent,
-            streaming: streaming,
           ),
         ],
       ),

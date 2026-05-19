@@ -1512,12 +1512,22 @@ fn truncate_preview(text: &str) -> String {
 }
 
 fn to_conversation_view(conv: &StoredConversation) -> ConversationView {
+    // Drop messages that have been rolled up into a summary. The summary message
+    // (`is_summary == true`) is kept as the anchor; clients render it as a
+    // collapsible "Summary (N messages)" bubble. This mirrors what the LLM sees
+    // via `MessageConverter::llm_context_messages` and avoids shipping (and
+    // re-rendering) the redundant pre-summary tail on every load.
     ConversationView {
         id: conv.id.to_string(),
         title: conv.title.clone(),
         created_at: conv.created_at.timestamp(),
         updated_at: conv.updated_at.timestamp(),
-        messages: conv.messages.iter().map(MessageView::from).collect(),
+        messages: conv
+            .messages
+            .iter()
+            .filter(|m| !(m.is_summarized && !m.is_summary))
+            .map(MessageView::from)
+            .collect(),
         profile_name: conv.profile_name.clone(),
     }
 }

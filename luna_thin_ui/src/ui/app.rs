@@ -139,6 +139,12 @@ pub enum Message {
     ImageLoaded { url: String, data: Vec<u8>, is_svg: bool },
     ImageLoadFailed { url: String, error: String },
 
+    /// Incrementally parse markdown for a loaded conversation off the
+    /// synchronous load path so long histories don't freeze the UI.
+    /// Each tick parses a small chunk and chains into the next one until done,
+    /// then triggers image fetching.
+    ParseMarkdownChunk { start: usize },
+
     // Text editor action
     InputActionPerformed(text_editor::Action),
 
@@ -938,28 +944,37 @@ impl LunaThinApp {
                 
                 result.push(tool_msg);
             } else if m.is_summary {
-                // Summary message
-                result.push(ChatMessage::summary(
-                    m.content.clone(),
-                    m.summarized_count.unwrap_or(0),
-                ));
+                // Summary message — defer markdown parse (see chunked pass below).
+                result.push(ChatMessage {
+                    id: Uuid::new_v4().to_string(),
+                    content: m.content.clone(),
+                    markdown_items: Vec::new(),
+                    bubble_type: BubbleType::Summary,
+                    is_error: false,
+                    reasoning_content: None,
+                    summarized_count: Some(m.summarized_count.unwrap_or(0)),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_params: None,
+                    tool_result: None,
+                    tool_status: None,
+                    is_streaming: false,
+                });
             } else {
-                // Regular user/assistant message
+                // Regular user/assistant message. Markdown parsing is deferred to
+                // a chunked background pass (see `Message::ParseMarkdownChunk`) so
+                // a long history doesn't block the iced update loop. The
+                // assistant bubble falls back to plain text while items are empty.
                 let bubble_type = if m.role == "user" {
                     BubbleType::User
                 } else {
                     BubbleType::Assistant
                 };
-                let content = m.content.clone();
-                let markdown_items = match bubble_type {
-                    BubbleType::Assistant => ChatMessage::parse_markdown_items(&content),
-                    _ => Vec::new(),
-                };
 
                 result.push(ChatMessage {
                     id: m.id.clone(),
-                    content,
-                    markdown_items,
+                    content: m.content.clone(),
+                    markdown_items: Vec::new(),
                     bubble_type,
                     is_error: false,
                     reasoning_content: m.reasoning_content.clone(),
@@ -1195,13 +1210,12 @@ impl LunaThinApp {
                     self.chat_page.input_content = cosmic::widget::text_editor::Content::new();
                 }
 
-                // Fetch any images referenced in the loaded messages
-                let items_snapshot: Vec<_> = self
-                    .messages
-                    .iter()
-                    .flat_map(|m| m.markdown_items.iter().cloned())
-                    .collect();
-                return self.fetch_missing_images(&items_snapshot);
+                // Defer markdown parsing and image fetching: chain through
+                // `ParseMarkdownChunk` so the UI thread can paint the first
+                // bubbles immediately on long conversations.
+                return app::Task::done(cosmic::Action::App(
+                    Message::ParseMarkdownChunk { start: 0 },
+                ));
             }
             ServerEvent::ConversationsList { conversations } => {
                 self.conversations = conversations;
@@ -1669,6 +1683,39 @@ impl Application for LunaThinApp {
             Message::ImageLoadFailed { url, error } => {
                 tracing::warn!("Failed to load markdown image {url}: {error}");
                 self.image_cache.insert(url, ImageState::Error(error));
+            }
+            Message::ParseMarkdownChunk { start } => {
+                // Parse markdown for a small slice of messages, then yield to
+                // the iced runtime by chaining the next chunk via Task::done.
+                // This keeps each update tick short on huge histories.
+                const CHUNK_SIZE: usize = 15;
+                let end = (start + CHUNK_SIZE).min(self.messages.len());
+                if start < end {
+                    for msg in &mut self.messages[start..end] {
+                        if matches!(
+                            msg.bubble_type,
+                            BubbleType::Assistant | BubbleType::Summary
+                        ) && msg.markdown_items.is_empty()
+                            && !msg.content.trim().is_empty()
+                        {
+                            msg.markdown_items =
+                                ChatMessage::parse_markdown_items(&msg.content);
+                        }
+                    }
+                }
+                return if end < self.messages.len() {
+                    app::Task::done(cosmic::Action::App(
+                        Message::ParseMarkdownChunk { start: end },
+                    ))
+                } else {
+                    // All parsed — fetch any referenced images.
+                    let items_snapshot: Vec<_> = self
+                        .messages
+                        .iter()
+                        .flat_map(|m| m.markdown_items.iter().cloned())
+                        .collect();
+                    self.fetch_missing_images(&items_snapshot)
+                };
             }
             _ => {} // Messages handled by handler modules
         }
