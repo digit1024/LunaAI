@@ -77,4 +77,3 @@ pub enum AgentUpdate {
         error: String,
     },
 }
-tools
