@@ -19,6 +19,22 @@ api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 max_tokens = 4000
 temperature = 0.7
 
+# Reasoning models (o3, o4-mini, gpt-5.x): optional sampling + reasoning_effort.
+# Omit any field to let the API use its own defaults (we do not send unset params).
+[model_presets.openai_o3_high_reasoning]
+backend = "openai"
+model = "o3"
+endpoint = "https://api.openai.com/v1/chat/completions"
+api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+max_tokens = 16000
+temperature = 1.0
+top_p = 1.0
+parallel_tool_calls = true
+tool_choice = "auto"   # or "required", "none", or JSON object per OpenAI docs
+
+[model_presets.openai_o3_high_reasoning.reasoning]
+effort = "high"        # none | minimal | low | medium | high | xhigh (max on supported models)
+
 [model_presets.anthropic_claude]
 backend = "anthropic"
 model = "claude-3-5-sonnet-20241022"

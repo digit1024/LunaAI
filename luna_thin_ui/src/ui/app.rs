@@ -490,7 +490,7 @@ const MEMORIES_LIST_LIMIT: u32 = 100;
 const CONVERSATION_TITLE_MAX_LEN: usize = 28;
 const CONVERSATION_TITLE_TRUNCATE_LEN: usize = 25;
 const FRAME_RATE_MS: u64 = 16; // ~60fps max
-const TYPING_INDICATOR_INTERVAL_MS: u64 = 100;
+const TYPING_INDICATOR_INTERVAL_MS: u64 = 250;
 
 impl LunaThinApp {
     fn new(core: Core) -> Self {
@@ -845,6 +845,19 @@ impl LunaThinApp {
         }
     }
 
+    /// True when the animated typing dots are visible (waiting for first token / tools).
+    fn needs_typing_indicator_tick(&self) -> bool {
+        if !self.is_current_streaming() {
+            return false;
+        }
+        let has_running_tools = self.messages.iter().any(|m| {
+            m.bubble_type == BubbleType::ToolRequest
+                && m.tool_status.as_deref() == Some("running")
+        });
+        let has_streaming_bubble = self.messages.iter().any(|m| m.is_streaming);
+        !has_streaming_bubble && !has_running_tools
+    }
+
     fn is_viewing_conversation(&self, conversation_id: &str) -> bool {
         self.current_conversation_id.as_deref() == Some(conversation_id)
     }
@@ -1002,7 +1015,8 @@ impl LunaThinApp {
         if let Some(ref bubble_id) = self.current_assistant_bubble_id {
             if let Some(msg) = self.messages.iter_mut().find(|m| &m.id == bubble_id) {
                 msg.content.push_str(chunk);
-                msg.markdown_items = ChatMessage::parse_markdown_items(&msg.content);
+                // Plain text while streaming; markdown parsed once in complete_assistant.
+                msg.markdown_items.clear();
                 msg.is_streaming = true;
                 return;
             }
@@ -1013,11 +1027,10 @@ impl LunaThinApp {
         self.current_assistant_bubble_id = Some(new_id.clone());
         
         let content = chunk.to_string();
-        let markdown_items = ChatMessage::parse_markdown_items(&content);
         self.messages.push(ChatMessage {
             id: new_id,
             content,
-            markdown_items,
+            markdown_items: Vec::new(),
             bubble_type: BubbleType::Assistant,
             is_error: false,
             reasoning_content: None,
@@ -1384,6 +1397,16 @@ impl LunaThinApp {
                     self.current_assistant_bubble_id = None;
                 }
             }
+            ServerEvent::MemoriesRecalled {
+                conversation_id,
+                memory_ids,
+            } => {
+                if self.is_viewing_conversation(&conversation_id) && !memory_ids.is_empty() {
+                    let n = memory_ids.len();
+                    let label = if n == 1 { "memory" } else { "memories" };
+                    self.inline_info = Some(format!("Recalled {n} {label} into context."));
+                }
+            }
         }
         app::Task::none()
     }
@@ -1412,61 +1435,74 @@ fn ws_client_event_stream(
         };
 
         if let Some(mut rx) = rx {
-            tracing::info!("🎧 Subscribed to event channel, starting poll loop");
+            tracing::info!("🎧 Subscribed to event channel, starting event loop");
             let mut last_yield = std::time::Instant::now();
             let min_yield_interval = std::time::Duration::from_millis(FRAME_RATE_MS);
             let mut event_buffer = Vec::new();
             let max_buffer_size = 100;
 
             loop {
-                let next_yield_time = last_yield + min_yield_interval;
-                let sleep_duration =
-                    next_yield_time.saturating_duration_since(std::time::Instant::now());
-                let yield_timer = tokio::time::sleep(sleep_duration);
-                tokio::pin!(yield_timer);
+                // Block on recv while idle — no timer arm, so no ~60 Hz wakeups.
+                match rx.recv().await {
+                    Ok(event) => event_buffer.push(event),
+                    Err(BroadcastRecvError::Lagged(skipped)) => {
+                        tracing::warn!("🎧 Lagged behind by {} messages, continuing...", skipped);
+                        event_buffer.clear();
+                        continue;
+                    }
+                    Err(BroadcastRecvError::Closed) => {
+                        for buffered_event in event_buffer.drain(..) {
+                            yield Message::ServerEvent(buffered_event);
+                        }
+                        tracing::info!("🎧 Event channel closed (disconnected)");
+                        yield Message::ServerDisconnected;
+                        break;
+                    }
+                }
 
-                tokio::select! {
-                    result = rx.recv() => {
-                        match result {
-                            Ok(event) => {
-                                event_buffer.push(event);
+                // Coalesce bursts before yielding to the UI thread.
+                loop {
+                    let should_flush = event_buffer.len() >= max_buffer_size
+                        || last_yield.elapsed() >= min_yield_interval;
 
-                                let now = std::time::Instant::now();
-                                let should_yield = now.duration_since(last_yield) >= min_yield_interval
-                                    || event_buffer.len() >= max_buffer_size;
+                    if should_flush {
+                        for buffered_event in event_buffer.drain(..) {
+                            tracing::debug!("🎧 Yielding buffered event: {:?}", buffered_event);
+                            yield Message::ServerEvent(buffered_event);
+                        }
+                        last_yield = std::time::Instant::now();
+                        break;
+                    }
 
-                                if should_yield && !event_buffer.is_empty() {
-                                    for buffered_event in event_buffer.drain(..) {
-                                        tracing::debug!("🎧 Yielding buffered event: {:?}", buffered_event);
-                                        yield Message::ServerEvent(buffered_event);
-                                    }
-                                    last_yield = std::time::Instant::now();
-                                }
-                            }
-                            Err(BroadcastRecvError::Lagged(skipped)) => {
-                                tracing::warn!("🎧 Lagged behind by {} messages, continuing...", skipped);
-                                if !event_buffer.is_empty() {
-                                    tracing::debug!("🎧 Clearing {} buffered events due to lag", event_buffer.len());
+                    let remaining = min_yield_interval.saturating_sub(last_yield.elapsed());
+                    let flush_timer = tokio::time::sleep(remaining);
+                    tokio::pin!(flush_timer);
+
+                    tokio::select! {
+                        result = rx.recv() => {
+                            match result {
+                                Ok(event) => event_buffer.push(event),
+                                Err(BroadcastRecvError::Lagged(skipped)) => {
+                                    tracing::warn!("🎧 Lagged behind by {} messages, continuing...", skipped);
                                     event_buffer.clear();
                                 }
-                            }
-                            Err(BroadcastRecvError::Closed) => {
-                                for buffered_event in event_buffer.drain(..) {
-                                    yield Message::ServerEvent(buffered_event);
+                                Err(BroadcastRecvError::Closed) => {
+                                    for buffered_event in event_buffer.drain(..) {
+                                        yield Message::ServerEvent(buffered_event);
+                                    }
+                                    tracing::info!("🎧 Event channel closed (disconnected)");
+                                    yield Message::ServerDisconnected;
+                                    return;
                                 }
-                                tracing::info!("🎧 Event channel closed (disconnected)");
-                                yield Message::ServerDisconnected;
-                                break;
                             }
                         }
-                    }
-                    _ = yield_timer.as_mut() => {
-                        if !event_buffer.is_empty() {
+                        _ = flush_timer.as_mut() => {
                             for buffered_event in event_buffer.drain(..) {
                                 tracing::debug!("🎧 Yielding buffered event (timer): {:?}", buffered_event);
                                 yield Message::ServerEvent(buffered_event);
                             }
                             last_yield = std::time::Instant::now();
+                            break;
                         }
                     }
                 }
@@ -1729,8 +1765,8 @@ impl Application for LunaThinApp {
         // TTS status subscription - TODO: Implement proper stream subscription
         // For now, status is updated via TtsStatusChanged messages from TTS operations
 
-        // Typing indicator tick when streaming
-        if self.is_current_streaming() {
+        // Typing indicator tick only while the animated dots are on screen.
+        if self.needs_typing_indicator_tick() {
             subscriptions.push(
                 cosmic::iced::time::every(std::time::Duration::from_millis(TYPING_INDICATOR_INTERVAL_MS))
                     .map(Message::Tick),

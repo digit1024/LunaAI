@@ -18,12 +18,28 @@ struct OpenAIRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frequency_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presence_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stop: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OpenAITool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_choice: Option<String>,
+    tool_choice: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parallel_tool_calls: Option<bool>,
     /// Per OpenAI: when set on a streaming request, the server appends a
     /// final SSE chunk containing `usage`. DeepSeek implements this; we
     /// use it as our authoritative "stream finished" signal in addition
@@ -554,6 +570,71 @@ fn sanitize_max_tokens(v: Option<u32>) -> Option<u32> {
     Some(n)
 }
 
+fn reasoning_effort_from_preset(preset: &ModelPreset) -> Option<String> {
+    let effort = preset
+        .reasoning
+        .as_ref()
+        .and_then(|r| r.effort.as_ref())?
+        .trim();
+    if effort.is_empty() {
+        return None;
+    }
+    Some(effort.to_string())
+}
+
+fn resolve_tool_choice(
+    preset: &ModelPreset,
+    has_tools: bool,
+) -> Option<serde_json::Value> {
+    if let Some(choice) = &preset.tool_choice {
+        return Some(choice.clone());
+    }
+    if has_tools {
+        return Some(serde_json::Value::String("auto".to_string()));
+    }
+    None
+}
+
+struct OpenAIRequestParams {
+    messages: Vec<OpenAIMessage>,
+    temperature: Option<f32>,
+    max_tokens: Option<u32>,
+    stream: bool,
+    tools: Option<Vec<OpenAITool>>,
+}
+
+impl OpenAIClient {
+    fn build_request(&self, params: OpenAIRequestParams) -> OpenAIRequest {
+        let has_tools = params
+            .tools
+            .as_ref()
+            .is_some_and(|tools| !tools.is_empty());
+
+        OpenAIRequest {
+            model: self.preset.model.clone(),
+            messages: params.messages,
+            temperature: params.temperature.or(self.preset.temperature),
+            top_p: self.preset.top_p,
+            max_tokens: sanitize_max_tokens(params.max_tokens.or(self.preset.max_tokens)),
+            frequency_penalty: self.preset.frequency_penalty,
+            presence_penalty: self.preset.presence_penalty,
+            seed: self.preset.seed,
+            stop: self.preset.stop.clone(),
+            response_format: self.preset.response_format.clone(),
+            reasoning_effort: reasoning_effort_from_preset(&self.preset),
+            stream: params.stream,
+            tools: params.tools,
+            tool_choice: resolve_tool_choice(&self.preset, has_tools),
+            parallel_tool_calls: self.preset.parallel_tool_calls,
+            stream_options: if params.stream {
+                Some(OpenAIStreamOptions { include_usage: true })
+            } else {
+                None
+            },
+        }
+    }
+}
+
 #[async_trait]
 impl LlmClient for OpenAIClient {
     async fn send_message_stream(
@@ -567,19 +648,13 @@ impl LlmClient for OpenAIClient {
         let context_tokens = Self::estimate_context_tokens(&messages);
         span.set_input_shape(messages_in, 0, context_tokens);
 
-        let openai_messages = Self::map_messages(messages);
-        let max_tokens = sanitize_max_tokens(max_tokens.or(self.preset.max_tokens));
-
-        let request = OpenAIRequest {
-            model: self.preset.model.clone(),
-            messages: openai_messages,
-            temperature: temperature.or(self.preset.temperature),
+        let request = self.build_request(OpenAIRequestParams {
+            messages: Self::map_messages(messages),
+            temperature,
             max_tokens,
             stream: true,
             tools: None,
-            tool_choice: None,
-            stream_options: Some(OpenAIStreamOptions { include_usage: true }),
-        };
+        });
 
         if let Ok(payload) = serde_json::to_string(&request) {
             tracing::debug!(target: "llm.body", payload = %payload, "OpenAI stream request");
@@ -789,17 +864,13 @@ impl LlmClient for OpenAIClient {
             )
         };
 
-        let max_tokens = sanitize_max_tokens(max_tokens.or(self.preset.max_tokens));
-        let request = OpenAIRequest {
-            model: self.preset.model.clone(),
+        let request = self.build_request(OpenAIRequestParams {
             messages: openai_messages,
-            temperature: temperature.or(self.preset.temperature),
+            temperature,
             max_tokens,
             stream: false,
             tools,
-            tool_choice: self.preset.tool_choice.as_ref().and_then(|v| v.as_str().map(String::from)).or_else(|| if has_tools { Some("auto".to_string()) } else { None }),
-            stream_options: None,
-        };
+        });
 
         if let Ok(payload) = serde_json::to_string(&request) {
             tracing::debug!(target: "llm.body", payload = %payload, "OpenAI tool request");
@@ -995,17 +1066,13 @@ impl LlmClient for OpenAIClient {
             )
         };
 
-        let max_tokens = sanitize_max_tokens(max_tokens.or(self.preset.max_tokens));
-        let request = OpenAIRequest {
-            model: self.preset.model.clone(),
+        let request = self.build_request(OpenAIRequestParams {
             messages: openai_messages,
-            temperature: temperature.or(self.preset.temperature),
+            temperature,
             max_tokens,
             stream: true,
             tools,
-            tool_choice: self.preset.tool_choice.as_ref().and_then(|v| v.as_str().map(String::from)).or_else(|| if has_tools { Some("auto".to_string()) } else { None }),
-            stream_options: Some(OpenAIStreamOptions { include_usage: true }),
-        };
+        });
 
         if let Ok(payload) = serde_json::to_string(&request) {
             tracing::debug!(target: "llm.body", payload = %payload, "OpenAI streaming tool request");

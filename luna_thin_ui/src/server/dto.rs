@@ -168,6 +168,11 @@ pub enum ServerEvent {
     StreamingStopped {
         conversation_id: String,
     },
+    /// Memory RAG injected a fresh memory block for this turn.
+    MemoriesRecalled {
+        conversation_id: String,
+        memory_ids: Vec<i64>,
+    },
 }
 
 /// Summary of a conversation for listing

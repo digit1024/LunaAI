@@ -6,10 +6,14 @@ use std::path::{Path, PathBuf};
 
 // ── Model preset (identity + optional request params; no defaults sent to API) ──
 
+/// OpenAI Chat Completions: maps to request field `reasoning_effort`.
+/// Supported values (model-dependent): `none`, `minimal`, `low`, `medium`, `high`, `xhigh`.
+/// Omit the whole `[preset.reasoning]` block to use the provider default.
 #[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct ReasoningConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Reserved for Responses API; not sent on Chat Completions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
 }
