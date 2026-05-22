@@ -6,6 +6,7 @@ pub mod error_banner;
 pub mod info_banner;
 pub mod markdown_viewer;
 pub mod message_bubble;
+pub mod selectable_text;
 pub mod menu_bar;
 pub mod tool_call;
 pub mod typing_indicator;

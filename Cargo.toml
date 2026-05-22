@@ -112,3 +112,11 @@ anthropic = []
 
 [workspace]
 members = [".", "luna_thin_ui", "agentic-loop"]
+
+# Unify iced with libcosmic's fork so iced_selection widgets compose in cosmic::Element.
+[patch.crates-io]
+iced = { git = "https://github.com/pop-os/libcosmic.git", branch = "master" }
+iced_core = { git = "https://github.com/pop-os/libcosmic.git", branch = "master", package = "iced_core" }
+iced_graphics = { git = "https://github.com/pop-os/libcosmic.git", branch = "master", package = "iced_graphics" }
+iced_renderer = { git = "https://github.com/pop-os/libcosmic.git", branch = "master", package = "iced_renderer" }
+iced_widget = { git = "https://github.com/pop-os/libcosmic.git", branch = "master", package = "iced_widget" }

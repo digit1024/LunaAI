@@ -82,6 +82,9 @@ pulldown-cmark = "0.13"
 # Base64 decoding for data: URI images
 base64 = "0.22"
 
+# Selectable text in message bubbles (vendored; patched for libcosmic iced ellipsize)
+iced_selection = { path = "vendor/iced_selection", features = ["markdown", "cosmic"] }
+
 [features]
 default = ["ttsandstt"]
 ttsandstt = []

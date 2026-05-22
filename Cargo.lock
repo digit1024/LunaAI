@@ -3103,6 +3103,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "iced_selection"
+version = "0.5.0"
+dependencies = [
+ "iced_widget",
+ "libcosmic",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "iced_tiny_skia"
 version = "0.14.0"
 source = "git+https://github.com/pop-os/libcosmic.git?branch=master#1d01054993862f615adb029379307cd5501c79f7"
@@ -3828,6 +3837,7 @@ dependencies = [
  "clap",
  "dirs",
  "futures",
+ "iced_selection",
  "libcosmic",
  "license",
  "mime_guess",

@@ -1,0 +1,67 @@
+[package]
+name = "iced_selection"
+description = "Text selection for `iced`"
+authors = ["pml68 <contact@pml68.dev>"]
+version = "0.5.0"
+edition = "2024"
+license = "MIT"
+readme = "README.md"
+homepage = "https://sr.ht/~pml68/iced_selection"
+repository = "https://git.sr.ht/~pml68/iced_selection"
+categories = ["gui"]
+keywords = ["gui", "ui", "graphics", "interface", "widgets"]
+rust-version = "1.88"
+exclude = [
+  ".cargo/config.toml",
+  ".builds/*",
+  "docs/*",
+  ".gitignore",
+  ".gitattributes",
+  "examples",
+  "rustfmt.toml",
+]
+
+[features]
+default = []
+markdown = ["iced_widget/markdown"]
+
+[dependencies]
+iced_widget.workspace = true
+unicode-segmentation.workspace = true
+
+[workspace.dependencies]
+iced_widget = "0.14"
+unicode-segmentation = "1.0"
+
+iced = "0.14"
+open = "5.3"
+
+[workspace]
+members = ["examples/*"]
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
+all-features = true
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_code = "deny"
+unused_results = "deny"
+
+[lints.clippy]
+type-complexity = "allow"
+semicolon_if_nothing_returned = "deny"
+trivially-copy-pass-by-ref = "deny"
+default_trait_access = "deny"
+match-wildcard-for-single-variants = "deny"
+redundant-closure-for-method-calls = "deny"
+filter_map_next = "deny"
+manual_let_else = "deny"
+unused_async = "deny"
+from_over_into = "deny"
+needless_borrow = "deny"
+new_without_default = "deny"
+useless_conversion = "deny"
+
+[lints.rustdoc]
+broken_intra_doc_links = "forbid"

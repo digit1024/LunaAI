@@ -7,10 +7,10 @@ use cosmic::{
     widget::{self, button, container, markdown, text, Column, Row, Space},
     Element,
 };
-
 use crate::ui::app::{ImageState, Message};
 use crate::ui::icons;
-use crate::ui::widgets::markdown_viewer::ImageViewer;
+use crate::ui::widgets::markdown_viewer::{ImageViewer, SelectableImageViewer};
+use crate::ui::widgets::selectable_text;
 
 /// Context for rendering message bubbles with smart corners
 #[derive(Debug, Clone, Copy)]
@@ -63,14 +63,8 @@ pub fn user_bubble<'a>(
 ) -> Element<'a, Message> {
     let content_owned = content.to_string();
 
-    let content_widget = container(
-        text(content_owned)
-            .size(14)
-            .class(cosmic::style::Text::Color(
-                cosmic::theme::active().cosmic().on_bg_color().into(),
-            )),
-    )
-    .width(Length::Fill);
+    let content_widget = container(selectable_text::bubble_text(content_owned))
+        .width(Length::Fill);
 
     let mut buttons = Row::new().push(Space::new().width(Length::Fill));
 
@@ -169,20 +163,14 @@ pub fn assistant_bubble<'a>(
         if content.is_empty() {
             Space::new().height(Length::Fixed(1.0)).into()
         } else {
-            container(
-                text(content.to_string())
-                    .size(14)
-                    .class(cosmic::style::Text::Color(
-                        cosmic::theme::active().cosmic().on_bg_color().into(),
-                    )),
-            )
-            .width(Length::Fill)
-            .into()
+            container(selectable_text::bubble_text(content.to_string()))
+                .width(Length::Fill)
+                .into()
         }
     } else {
         let settings =
             markdown::Settings::with_text_size(14.0f32, bubble_markdown_style());
-        let viewer = ImageViewer { image_cache };
+        let viewer = SelectableImageViewer { image_cache };
         container(markdown::view_with(markdown_items, settings, &viewer))
             .width(Length::Fill)
             .into()

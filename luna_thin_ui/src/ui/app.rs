@@ -717,8 +717,10 @@ impl LunaThinApp {
 
         let mut tasks: Vec<app::Task<Message>> = Vec::new();
         for url in urls {
-            if self.image_cache.contains_key(&url) {
-                continue;
+            match self.image_cache.get(&url) {
+                Some(ImageState::Raster(_)) | Some(ImageState::Svg(_)) => continue,
+                Some(ImageState::Fetching) => continue,
+                Some(ImageState::Error(_)) | None => {}
             }
             self.image_cache.insert(url.clone(), ImageState::Fetching);
             let url_clone = url.clone();
@@ -1205,7 +1207,8 @@ impl LunaThinApp {
                 self.pending_attachment_ids.clear();
                 self.current_profile = conversation.profile_name.unwrap_or_default();
                 self.current_assistant_bubble_id = None;
-                
+                self.image_cache.clear();
+
                 // Map messages like mobile app - tool calls become separate bubbles
                 self.messages = self.map_messages_from_server(&conversation.messages);
 
@@ -1739,19 +1742,22 @@ impl Application for LunaThinApp {
                         }
                     }
                 }
-                return if end < self.messages.len() {
-                    app::Task::done(cosmic::Action::App(
-                        Message::ParseMarkdownChunk { start: end },
-                    ))
-                } else {
-                    // All parsed — fetch any referenced images.
-                    let items_snapshot: Vec<_> = self
-                        .messages
-                        .iter()
-                        .flat_map(|m| m.markdown_items.iter().cloned())
-                        .collect();
-                    self.fetch_missing_images(&items_snapshot)
-                };
+
+                let chunk_items: Vec<_> = self.messages[start..end]
+                    .iter()
+                    .flat_map(|m| m.markdown_items.iter().cloned())
+                    .collect();
+                let image_task = self.fetch_missing_images(&chunk_items);
+
+                if end < self.messages.len() {
+                    return app::Task::batch([
+                        app::Task::done(cosmic::Action::App(
+                            Message::ParseMarkdownChunk { start: end },
+                        )),
+                        image_task,
+                    ]);
+                }
+                return image_task;
             }
             _ => {} // Messages handled by handler modules
         }
