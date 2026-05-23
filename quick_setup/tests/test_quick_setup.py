@@ -244,6 +244,81 @@ class TestMainHelpers:
         assert p.exists()
 
 
+class TestLunaFeatures:
+    def test_enabled_mcp_for_selection_with_memory(self):
+        from quick_setup.luna_features import enabled_mcp_for_selection
+
+        ids = enabled_mcp_for_selection(["shell", "skills"], True)
+        assert ids == ["shell", "skills", "cosmic-llm-memory"]
+
+    def test_enabled_mcp_for_selection_dedupes(self):
+        from quick_setup.luna_features import enabled_mcp_for_selection
+
+        ids = enabled_mcp_for_selection(["shell", "shell", "fetch"], False)
+        assert ids == ["shell", "fetch"]
+
+    def test_finalize_full_luna_config(self, tmp_config_dir):
+        from quick_setup.profile_creator import load_config, save_config
+        from quick_setup.luna_features import finalize_full_luna_config
+
+        path = tmp_config_dir / "config.toml"
+        save_config({"default": "p1", "profiles": {"p1": {}}, "tools_policies": {"default": {}}}, path)
+        summary = finalize_full_luna_config(
+            profile_name="p1",
+            enabled_mcp=["shell", "cosmic-llm-memory"],
+            chat_api_key="sk-chat",
+            chat_backend="openai",
+            full_luna=True,
+            config_path=path,
+        )
+        data = load_config(path)
+        assert data["tools_policies"]["default"]["enabled_mcp"] == [
+            "shell",
+            "cosmic-llm-memory",
+        ]
+        assert data["embedding"]["enabled"] is True
+        assert data["embedding"]["api_key"] == "sk-chat"
+        assert data["deep_sleep"]["enabled"] is True
+        assert data["deep_sleep"]["profile"] == "p1"
+        assert data["title_summary"]["title_generation_profile"] == "p1"
+        assert summary["embedding_on"] is True
+        assert summary["deep_sleep_on"] is True
+
+    def test_finalize_skips_full_luna_blocks(self, tmp_config_dir):
+        from quick_setup.profile_creator import load_config, save_config
+        from quick_setup.luna_features import finalize_full_luna_config
+
+        path = tmp_config_dir / "config.toml"
+        save_config({"tools_policies": {"default": {"enabled_mcp": []}}}, path)
+        summary = finalize_full_luna_config(
+            profile_name="p1",
+            enabled_mcp=["fetch"],
+            chat_api_key="sk-x",
+            chat_backend="openai",
+            full_luna=False,
+            config_path=path,
+        )
+        data = load_config(path)
+        assert data["tools_policies"]["default"]["enabled_mcp"] == ["fetch"]
+        assert "embedding" not in data
+        assert "deep_sleep" not in data
+        assert summary["embedding_on"] is False
+
+    def test_embedding_api_key_from_openai_backend(self):
+        from quick_setup.luna_features import embedding_api_key_from_chat
+
+        assert embedding_api_key_from_chat("sk-a", "openai") == "sk-a"
+        assert embedding_api_key_from_chat("sk-a", "deepseek") == "sk-a"
+        assert embedding_api_key_from_chat("sk-a", "anthropic", "sk-emb") == "sk-emb"
+
+    def test_chat_backend_needs_embedding_key_prompt(self):
+        from quick_setup.luna_features import chat_backend_needs_embedding_key_prompt
+
+        assert chat_backend_needs_embedding_key_prompt("openai") is False
+        assert chat_backend_needs_embedding_key_prompt("anthropic") is True
+        assert chat_backend_needs_embedding_key_prompt("gemini") is True
+
+
 class TestServerConfig:
     def test_merge_server_into_config(self, tmp_config_dir):
         from quick_setup.profile_creator import load_config

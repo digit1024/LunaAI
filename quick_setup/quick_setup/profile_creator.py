@@ -97,7 +97,11 @@ def save_config(data: dict[str, Any], config_path: Path | None = None) -> None:
 
 
 def _ensure_tools_policy_default(data: dict[str, Any]) -> None:
-    """Ensure [tools_policies.default] exists so profile can reference it."""
+    """Ensure [tools_policies.default] exists so profile can reference it.
+
+    enabled_mcp starts empty; quick_setup sets the authoritative list in
+    luna_features.finalize_full_luna_config after MCP selection.
+    """
     if "tools_policies" not in data:
         data["tools_policies"] = {}
     if "default" not in data["tools_policies"]:

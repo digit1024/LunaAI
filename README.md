@@ -28,6 +28,7 @@ Luna AI is your intelligent companion that combines the power of modern AI with 
 - **MCP Integration**: Connect to external tools, APIs, and services
 - **File Attachments**: Share documents and images directly in conversations
 - **Keyboard Shortcuts**: Navigate like a pro with efficient keyboard controls (desktop)
+- **Thin desktop client** (`luna-thin`): COSMIC UI with selectable/copyable chat text — see [luna_thin_ui/README.md](luna_thin_ui/README.md)
 
 ### 🔧 MCP Magic
 Luna's MCP integration opens up a world of possibilities:

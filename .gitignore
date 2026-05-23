@@ -19,3 +19,11 @@ venv/
 
 # Packaging
 packaging/out/
+quick_setup/quick_setup/__pycache__/__init__.cpython-312.pyc
+quick_setup/quick_setup/__pycache__/deps.cpython-312.pyc
+quick_setup/quick_setup/__pycache__/main.cpython-312.pyc
+quick_setup/quick_setup/__pycache__/mcp_config.cpython-312.pyc
+quick_setup/quick_setup/__pycache__/paths.cpython-312.pyc
+quick_setup/quick_setup/__pycache__/profile_creator.cpython-312.pyc
+quick_setup/quick_setup/__pycache__/prompts.cpython-312.pyc
+quick_setup/quick_setup/__pycache__/server_config.cpython-312.pyc

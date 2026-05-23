@@ -1,17 +1,18 @@
 # Luna AI Quick Setup
 
-**Opinionated one-shot configuration** for Luna AI: server (`config.toml`) and thin UI (`server_config.toml`), so you can start using Luna quickly.
+**Opinionated one-shot configuration** for Luna AI: server, thin UI, MCP policy, memory RAG, and deep sleep — so Luna is usable end-to-end after one run.
 
 ## What it does
 
-0. **Dependencies** – Checks for `uvx` and `npx` (needed for MCP). Installs **uv** (provides uvx) via official script if missing; tries to install Node/npx via apt, or prints install instructions.
-1. **Provider & model** – Choose provider (OpenAI, Claude, Gemini, DeepSeek, OpenRouter), pick a model (with a suggested default: good balance of speed and cost), enter API key.
-2. **Personality** – Pick one of 3 sample system prompts (Luna, Vera, Jude) and install it.
-3. **Profile** – Asks temperature (default 0.3), max tokens (default 4000), profile name (suggested: `{persona}_{model}`), writes `[model_presets.<name>]` and `[profiles.<name>]` to `config.toml` (config refinement shape).
-4. **Server** – Asks for server API (host, port, api_key) and writes `[server]` to `config.toml`. Writes **Thin UI** config to `~/.config/luna_thin_ui/server_config.toml` so you can **connect right away** with `luna-thin`. When server host is `0.0.0.0`, Thin UI is set to `localhost` (same-machine only); for remote access, edit `server_config.toml` and set `host` to the server’s IP or hostname.
-4b. **Skills** – Installs the **self_config** skill from `quick_setup/self_config/` into `~/.local/share/cosmic_llm/skills/self_config/` so the **skills** MCP server can use it (Luna self-administration).
-5. **MCP** – Pick which MCP servers to add from a **catalog** (no-setup only: shell, filesystem, fetch, skills). Optionally add Luna memory server if you have the binary. Writes `mcp_config.json`.
-6. **Systemd** – Optionally install **user** systemd unit `luna-server.service` (~/.config/systemd/user/), then **enable** and **start** it. Prompts for path to `cosmic_llm` binary (default: repo `target/release/cosmic_llm`). For run-at-boot without login: `loginctl enable-linger $USER`.
+0. **Dependencies** – Checks for `uvx` and `npx`. Installs **uv** if missing; tries Node/npx via apt or prints instructions.
+1. **Provider & model** – OpenAI, Claude, Gemini, DeepSeek, OpenRouter + API key.
+2. **Personality** – Luna, Vera, or Jude system prompts.
+3. **Profile** – Temperature, max tokens, profile name → `[model_presets]` + `[profiles]` in `config.toml`.
+4. **Server** – `[server]` + thin UI `server_config.toml` (`0.0.0.0` → thin UI uses `localhost`).
+4b. **Skills** – Installs **self_config** into `~/.local/share/cosmic_llm/skills/self_config/`.
+5. **MCP** – Catalog: shell, filesystem, fetch, skills, markitdown (`[all]` default). Luna memory MCP **`[Y/n]` default yes** (binary auto-download).
+5b. **Full Luna** – Memory RAG, deep sleep, auto titles **`[Y/n]` default yes**; sets `enabled_mcp` to match your MCP picks; writes `[embedding]`, `[deep_sleep]`, `[title_summary]`.
+6. **Systemd** – Optional `luna-server.service` enable + start. Use `loginctl enable-linger $USER` for boot without login.
 
 ## Quick run
 
@@ -35,29 +36,27 @@ luna-quick-setup
 
 ## Catalog & sample data
 
-- **Providers/models**: `catalog/providers_models.json` – providers, models, endpoints, suggested default model, context window sizes.
-- **MCP servers**: `catalog/mcp_servers.json` – **no-setup only** (no API keys, no connection strings). Listed: shell, filesystem, fetch, skills, git, memory, markitdown. See `docs/MCP_SERVERS_CURATED.md` for the curated list (from awesome-mcp-servers). Luna memory is added separately; the script downloads the binary automatically to `~/.local/share/cosmic_llm/bin/mcp_luna_history` when you opt in (or use that [release](https://github.com/digit1024/mcp_luna_memory/releases/download/1.0/mcp_luna_history) manually).
-- **Sample personas**: `sample_data/personas/` – `luna.md`, `vera.md`, `jude.md`.
+- **Providers/models**: `catalog/providers_models.json`
+- **MCP servers**: `catalog/mcp_servers.json` – shell, filesystem, fetch, skills, markitdown (no API keys). Luna memory (`cosmic-llm-memory`) added separately, **on by default**. See `docs/MCP_SERVERS_CURATED.md`.
+- **Personas**: `sample_data/personas/` – `luna.md`, `vera.md`, `jude.md`
 
 ## Project layout
 
-- `quick_setup/main.py` – CLI flow (questions, orchestration).
-- `quick_setup/profile_creator.py` – Build model preset and profile TOML, merge into config.
-- `quick_setup/server_config.py` – Server section + thin_ui `server_config.toml`.
-- `quick_setup/mcp_config.py` – Load MCP catalog, build config from selected servers, optional Luna memory; save `mcp_config.json`.
-- `quick_setup/prompts.py` – Persona choice and system prompt install.
-- `quick_setup/deps.py` – Ensure required commands (uvx, npx); install uv or suggest Node install.
-- `quick_setup/systemd_setup.py` – User systemd: write `luna-server.service`, daemon-reload, enable, start.
-- `quick_setup/paths.py` – Resolve cosmic_llm, luna_thin_ui, and user systemd paths.
+- `quick_setup/main.py` – CLI flow
+- `quick_setup/profile_creator.py` – Presets, profiles, config load/save
+- `quick_setup/luna_features.py` – enabled_mcp, embedding, deep_sleep, finalize
+- `quick_setup/server_config.py` – Server + thin_ui
+- `quick_setup/mcp_config.py` – MCP catalog → JSON
+- `quick_setup/prompts.py` – Personas
+- `quick_setup/deps.py` – uvx/npx
+- `quick_setup/systemd_setup.py` – User systemd unit
+- `quick_setup/paths.py` – Path helpers
 
 ## Testing
 
 ```bash
 cd quick_setup
-# Use system Python (if your venv points at Cursor, use python3 directly):
-PYTHONPATH=. python3 run_tests.py     # script-based tests, no pytest needed
-# With venv that has real Python + pytest:
-# PYTHONPATH=. .venv/bin/python -m pytest tests -v
+PYTHONPATH=. python3 run_tests.py
 ```
 
 See `docs/QUICK_SETUP.md` for full documentation.

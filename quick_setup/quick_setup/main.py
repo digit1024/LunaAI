@@ -16,7 +16,6 @@ from .profile_creator import (
     add_or_update_profile,
     build_model_preset,
     build_profile,
-    load_config,
 )
 from .server_config import merge_server_into_config, write_thin_ui_server_config, thin_ui_connect_host
 from .mcp_config import load_mcp_catalog, merge_mcp_servers, save_mcp_config
@@ -28,6 +27,11 @@ from .prompts import (
     install_system_prompt,
     install_persona_as_profile_prompt,
     get_persona_path,
+)
+from .luna_features import (
+    enabled_mcp_for_selection,
+    finalize_full_luna_config,
+    chat_backend_needs_embedding_key_prompt,
 )
 
 
@@ -231,10 +235,63 @@ def _ask_mcp_servers_from_catalog() -> tuple[list[str], bool, str | None]:
         selected_ids = list(dict.fromkeys(selected_ids))  # dedupe
     add_luna = False
     luna_bin = None
-    if input("  Add Luna memory server? (binary downloaded automatically if needed) [y/N]: ").strip().lower() in ("y", "yes"):
+    if input(
+        "  Add Luna memory server? (binary downloaded automatically if needed) [Y/n]: "
+    ).strip().lower() not in ("n", "no"):
         add_luna = True
         luna_bin = _ask_mcp_memory_path()
     return selected_ids, add_luna, luna_bin
+
+
+def _ask_full_luna() -> bool:
+    raw = input(
+        "\n  Enable memory RAG, deep sleep, and auto conversation titles? [Y/n]: "
+    ).strip().lower()
+    return raw not in ("n", "no")
+
+
+def _ask_embedding_api_key() -> str:
+    print("\n  Memory embeddings use OpenAI-compatible API (text-embedding-3-small).")
+    return getpass.getpass("  OpenAI API key for embeddings (hidden): ").strip()
+
+
+def _print_setup_summary(
+    *,
+    profile_name: str,
+    feature_summary: dict[str, Any],
+    systemd_installed: bool,
+) -> None:
+    print("\n  —— Setup summary ——")
+    print(f"  Default profile:     {profile_name}")
+    mcp_list = feature_summary.get("enabled_mcp") or []
+    if mcp_list:
+        print(f"  MCP enabled in policy: {', '.join(mcp_list)}")
+    else:
+        print("  MCP enabled in policy: (none)")
+    print(
+        "  Memory RAG (embedding):",
+        "on" if feature_summary.get("embedding_on") else "off",
+    )
+    print(
+        "  Deep sleep:          ",
+        "on" if feature_summary.get("deep_sleep_on") else "off",
+    )
+    print(
+        "  Auto titles:         ",
+        "on" if feature_summary.get("title_summary_on") else "off",
+    )
+    print(f"\n  Config:    {paths.config_toml_path()}")
+    print(f"  Thin UI:   {paths.thin_ui_server_config_path()}")
+    print(f"  MCP JSON:  {paths.mcp_config_path()}")
+    print(f"  Skills:    {paths.skills_dir()}")
+    if systemd_installed:
+        print(f"  Systemd:   {paths.luna_server_service_path()}")
+        print("  Run at boot (no login): loginctl enable-linger $USER")
+        print("  Check service: systemctl --user status luna-server.service")
+    if feature_summary.get("deep_sleep_on"):
+        print("  Test deep sleep:  cosmic_llm --deep-sleep")
+    print("\n  Connect: run luna-thin (or: cargo run -p luna_thin_ui from LunaAI repo).")
+    print("  Done.")
 
 
 def _ensure_toml() -> None:
@@ -366,6 +423,35 @@ def run() -> None:
     else:
         print("  Skipped MCP servers.")
 
+    # 5b) Full Luna: tools_policy enabled_mcp + embedding + deep_sleep + titles
+    full_luna = _ask_full_luna()
+    embedding_api_key: str | None = None
+    if full_luna and chat_backend_needs_embedding_key_prompt(backend):
+        embedding_api_key = _ask_embedding_api_key()
+        if not embedding_api_key:
+            print(
+                "  Warning: No embedding API key; memory RAG will stay off "
+                "(set [embedding] in config.toml or OPENAI_API_KEY)."
+            )
+
+    enabled_mcp = enabled_mcp_for_selection(selected_ids, add_luna_memory)
+    feature_summary = finalize_full_luna_config(
+        profile_name=profile_name,
+        enabled_mcp=enabled_mcp,
+        chat_api_key=api_key,
+        chat_backend=backend,
+        full_luna=full_luna,
+        embedding_api_key=embedding_api_key,
+    )
+    if enabled_mcp:
+        print(f"  tools_policies.default.enabled_mcp = {enabled_mcp}")
+    if feature_summary.get("embedding_on"):
+        print("  [embedding] enabled for memory RAG.")
+    if feature_summary.get("deep_sleep_on"):
+        print(f"  [deep_sleep] enabled (profile={profile_name}).")
+    if feature_summary.get("title_summary_on"):
+        print("  [title_summary] enabled for auto titles.")
+
     # 6) User systemd: install service, enable and start
     installed_binary = Path("/usr/bin/cosmic_llm")
     dev_binary = _project_root().parent / "target" / "release" / "cosmic_llm"
@@ -374,23 +460,22 @@ def run() -> None:
         default_binary = installed_binary
     else:
         default_binary = dev_binary if dev_binary.exists() else installed_binary
+    systemd_installed = False
     if input("\n  Install Luna server in user systemd (enable + start)? [Y/n]: ").strip().lower() not in ("n", "no"):
         binary_raw = input(f"  Path to cosmic_llm binary [{default_binary}]: ").strip() or str(default_binary)
         ok, msg = install_user_service(Path(binary_raw))
+        systemd_installed = ok
         if ok:
             print(" ", msg)
         else:
             print("  ", msg)
             print("  You can install later: systemctl --user enable luna-server.service && systemctl --user start luna-server.service")
 
-    config_path = paths.config_toml_path()
-    print(f"\n  Config written to: {config_path}")
-    print("  Thin UI config:", paths.thin_ui_server_config_path())
-    print("  Skills dir:", paths.skills_dir())
-    print("  MCP config:", paths.mcp_config_path())
-    print("  User systemd unit:", paths.luna_server_service_path())
-    print("\n  Connect: run luna-thin (or: cargo run -p luna_thin_ui from LunaAI repo).")
-    print("  Done.")
+    _print_setup_summary(
+        profile_name=profile_name,
+        feature_summary=feature_summary,
+        systemd_installed=systemd_installed,
+    )
 
 
 def main() -> None:

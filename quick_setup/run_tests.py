@@ -17,6 +17,11 @@ def run():
     from quick_setup.prompts import get_personas, get_persona_path
     from quick_setup.deps import find_command, commands_required_for_mcp_catalog, ensure_commands
     from quick_setup.mcp_config import load_mcp_catalog, build_servers_from_catalog, build_luna_memory_server
+    from quick_setup.luna_features import (
+        enabled_mcp_for_selection,
+        finalize_full_luna_config,
+        embedding_api_key_from_chat,
+    )
 
     ok = []
     fail = []
@@ -113,6 +118,30 @@ def run():
         ok.append("main_helpers")
     except Exception as e:
         fail.append(("main_helpers", str(e)))
+
+    # luna_features
+    try:
+        ids = enabled_mcp_for_selection(["shell"], True)
+        assert "cosmic-llm-memory" in ids
+        assert embedding_api_key_from_chat("k", "openai") == "k"
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "config.toml"
+            save_config({"tools_policies": {"default": {}}}, config_path=path)
+            s = finalize_full_luna_config(
+                profile_name="t",
+                enabled_mcp=["shell"],
+                chat_api_key="sk",
+                chat_backend="openai",
+                full_luna=True,
+                config_path=path,
+            )
+            data = load_config(path)
+            assert data["tools_policies"]["default"]["enabled_mcp"] == ["shell"]
+            assert s["embedding_on"] is True
+        ok.append("luna_features")
+    except Exception as e:
+        fail.append(("luna_features", str(e)))
 
     # build_profile with empty prompts (persona missing case)
     try:

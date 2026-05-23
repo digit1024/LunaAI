@@ -773,3 +773,16 @@ Returns:
 **Reviewer Notes:**
 The codebase is functional but needs significant refactoring to meet production-quality standards. The critical issue with event receiver lifecycle **must be fixed immediately** as it prevents reconnection functionality. The giant `update()` method, while working, is a maintenance burden and should be split into handler modules **following the original app's proven pattern**.
 
+---
+
+## Selectable chat text & markdown (2025)
+
+Implemented and documented separately from the review items above.
+
+- **Doc:** [docs/TEXT_SELECTION_AND_MARKDOWN.md](docs/TEXT_SELECTION_AND_MARKDOWN.md)
+- **Crate README:** [README.md](README.md)
+- **Agent rule:** `.cursor/rules/luna-thin-ui-text-selection.mdc`
+- **Vendored dep:** [vendor/iced_selection/VENDOR.md](vendor/iced_selection/VENDOR.md)
+
+Highlights: `iced_selection` + workspace iced patch; user/assistant bodies selectable; assistant markdown via `SelectableImageViewer`; accent-themed 1px full-width markdown tables; image cache wired through parse including table cells.
+

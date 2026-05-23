@@ -1,0 +1,33 @@
+---
+description: luna_thin_ui selectable chat text, iced_selection vendor, markdown tables
+globs: luna_thin_ui/**/*
+alwaysApply: false
+---
+
+# Luna thin UI — text selection & markdown
+
+## In scope for selection
+- User and assistant **message body** only (`selectable_text`, `SelectableImageViewer`).
+- **Not** selectable: tool bubbles, summary (`ImageViewer`), reasoning/thinking blocks.
+
+## Stack
+- Workspace `[patch.crates-io]` → libcosmic iced fork (required; single iced tree).
+- `iced_selection` path: `luna_thin_ui/vendor/iced_selection` with features `markdown`, `cosmic`.
+- `Catalog for cosmic::Theme` only in vendor `cosmic_catalog.rs` (orphan rules).
+
+## Key files
+- `src/ui/widgets/selectable_text.rs` — `bubble_text`, `accent_highlight` (accent @ 0.55α), `accent_rule_style`
+- `src/ui/widgets/markdown_viewer.rs` — `SelectableImageViewer`, `styled_table` (custom grid, 1px accent borders, full width)
+- `src/ui/widgets/message_bubble.rs` — wiring
+- `src/ui/app.rs` — `image_cache`, fetch on parse, clear on `ConversationLoaded`
+
+## Styling rules
+- Selection + table chrome: theme **accent**, alpha **0.55** — not `primary.component.hover`.
+- Tables: custom row/column + `rule`, not iced `table` (no separator color API). Header row has accent underline.
+
+## Commands
+```bash
+unset ARGV0 && cargo check -p luna_thin_ui
+```
+
+Full doc: `luna_thin_ui/docs/TEXT_SELECTION_AND_MARKDOWN.md`
