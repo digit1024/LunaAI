@@ -116,6 +116,10 @@ sqlite_busy_timeout_ms = 5000
 - **prompts** – Personas and install helpers.
 - **main** – Interactive flow and summary.
 
+## Memory, embedding, and deep sleep
+
+See **[MEMORY.md](MEMORY.md)** for how curated facts, vector RAG, `cosmic-llm-memory` MCP, and deep sleep fit together.
+
 ## Notes
 
 - **`[prompts]` in config.toml** – Not written; Luna defaults to `~/.local/share/cosmic_llm/system_prompt.md`.

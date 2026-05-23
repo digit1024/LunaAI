@@ -59,4 +59,5 @@ cd quick_setup
 PYTHONPATH=. python3 run_tests.py
 ```
 
-See `docs/QUICK_SETUP.md` for full documentation.
+- **Memory / RAG / deep sleep:** `docs/MEMORY.md`
+- **Full setup flow:** `docs/QUICK_SETUP.md`

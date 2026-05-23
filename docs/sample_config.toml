@@ -63,7 +63,8 @@ temperature = 0.7
 # Empty enabled_mcp = no MCP servers in scope. Empty enabled_tools = no tools allowed.
 
 [tools_policies.default]
-enabled_mcp = ["filesystem", "weather", "mem*"]
+# Server ids must match mcp_config.json keys; empty = no MCP tools allowed
+enabled_mcp = ["filesystem", "shell", "cosmic-llm-memory"]
 enabled_tools = ["*"]
 disabled_tools = []
 
@@ -113,6 +114,14 @@ api_key = ""  # optional, falls back to OPENAI_API_KEY
 max_memories = 3           # Maximum memories to return per query (default: 3)
 # max_distance = 0.4       # Maximum cosine distance (0.0-2.0, lower = more similar). Comment out for no filter.
 # min_importance = 2       # Minimum importance score (1-5). Comment out for no filter.
+
+# ── Deep sleep: background memory maintenance ──
+[deep_sleep]
+enabled = false
+# profile = "openai"       # LLM profile for summarize / evaluate / extract (required when enabled)
+# interval_hours = 24
+# memory_batch_size = 20
+# max_conversations_per_run = 50
 
 # Prompt configuration (global system prompt)
 [prompts]

@@ -1,6 +1,6 @@
 ---
 name: self_config
-description: Self-administration and configuration of Luna AI. Manage config files, restart service, troubleshoot issues. Activate ONLY when user explicitly requests configuration changes or system administration tasks.
+description: Self-administration and configuration of Luna AI. Manage config files, memory/embedding/deep sleep, restart service, troubleshoot. Activate ONLY when user explicitly requests configuration changes or system administration tasks.
 allowed-tools:
   - shell_execute
   - read_file
@@ -12,445 +12,296 @@ license: MIT
 
 # Luna Self-Configuration & Administration
 
-This skill enables modification of Luna's configuration, management of the service, and troubleshooting. **Use with extreme caution—you are modifying my brain.**
+Modify Luna's **configuration** (not Rust source), manage the **user systemd service**, and troubleshoot memory, MCP, and embeddings. **Use with caution—you are modifying runtime behavior.**
 
 ## When to Use This Skill
 
-**Activate ONLY in these situations:**
+**Activate ONLY when:**
 
-1. **Explicit user request**: "change your config", "modify your settings", "update your configuration"
-2. **System administration**: Restart service, check status, troubleshoot issues
-3. **Configuration debugging**: Fix broken configs, restore backups
-4. **Profile management**: Add/modify LLM profiles, adjust MCP servers
+1. User explicitly asks to change config, profiles, MCP, memory, or service
+2. System administration (restart, status, logs, backups)
+3. Fixing broken `config.toml` / `mcp_config.json` after manual edits
 
-**DO NOT activate for:**
-- Regular conversation responses
-- To fix something that is working correctly
-- Unauthorized changes without explicit user confirmation
-- Modifying source code (PROHIBITED)
+**DO NOT activate for:** normal chat, unauthorized changes, or editing `$HOME/proj/LunaAI/src/`.
 
 ---
 
-## 🚨 SAFETY PROTOCOLS (CRITICAL)
+## Quick setup baseline
 
-### The Three Laws of Self-Modification
+Fresh installs should run **`luna_ai_quick_setup`** (or `python -m quick_setup.main` from `quick_setup/`). That writes:
 
-1. **ALWAYS CREATE BACKUPS** before modifying any config file
-2. **NEVER MODIFY SOURCE CODE** in `$HOME/proj/LunaAI/src/` - Config only!
-3. **CONFIRM DESTRUCTIVE ACTIONS** - Ask user before restart, deletion, or major changes
+- `[model_presets.*]`, `[profiles.*]`, `[server]`
+- `[tools_policies.default]` with **`enabled_mcp`** matching selected MCP servers
+- `[embedding]`, `[deep_sleep]`, `[title_summary]` when Full Luna is enabled (default **yes**)
+- `mcp_config.json` + optional `cosmic-llm-memory` binary
+- `self_config` skill (this file) under `skills/self_config/`
 
-### Pre-Modification Checklist
+See `quick_setup/docs/QUICK_SETUP.md` and `quick_setup/docs/MEMORY.md`.
 
-Before changing ANY configuration:
+---
 
-```bash
-# 1. Check current service status
-systemctl --user status luna.service
+## Memory (three layers)
 
-# 2. Create backup of file being modified
-cp $HOME/.local/share/cosmic_llm/config.toml \
-   $HOME/.local/share/cosmic_llm/config.toml.backup.$(date +%Y%m%d_%H%M%S)
+| Layer | What | Config |
+|-------|------|--------|
+| **Facts + keyword search** | `store_memory`, `search_memory`, `search_memory_by_category` | Internal tools; SQLite `memory` + FTS |
+| **Semantic recall (RAG)** | Injects relevant memories each turn | `[embedding] enabled = true` |
+| **History MCP** | Search past conversations via MCP | `cosmic-llm-memory` in `mcp_config.json` **and** `enabled_mcp` |
+| **Deep sleep** | Background summarize / prune / extract | `[deep_sleep] enabled = true`, `profile = "..."` |
 
-# 3. Verify backup was created
-ls -la $HOME/.local/share/cosmic_llm/*.backup.*
+**Common mistake:** MCP servers listed in `mcp_config.json` but **`enabled_mcp = []`** in `tools_policies` — agent gets zero MCP tools. Fix:
+
+```toml
+[tools_policies.default]
+enabled_mcp = ["shell", "filesystem", "fetch", "skills", "markitdown", "cosmic-llm-memory"]
+enabled_tools = ["*"]
 ```
 
-### Forbidden Operations
+Manual checks:
 
-❌ **NEVER DO THESE:**
-- Modify Rust source code in `$HOME/proj/LunaAI/src/`
-- Delete the database without explicit confirmation
-- Share API keys in plain text
-- Run `systemctl --user restart luna.service` without scheduling a wake-up if needed
-- Modify Cargo.toml or build files
-
-✅ **ALLOWED:**
-- Edit `config.toml` (profiles, prompts, server settings)
-- Edit `mcp_config.json` (MCP server configurations)
-- Edit skill files in `skills/` directory
-- Edit profile prompts in `profiles/` directory
-- Modify system prompts
-- Restart service with proper safety measures
+```bash
+cosmic_llm --deep-sleep              # one deep sleep cycle
+cosmic_llm --reorganize-memories     # rebuild memory_vec (needs [embedding])
+```
 
 ---
 
-## Configuration Files Reference
+## Safety protocols
 
-### Primary Config: `config.toml`
+1. **Backup** before editing `config.toml` or `mcp_config.json`
+2. **Never modify** `$HOME/proj/LunaAI/src/` or Cargo files
+3. **Confirm** before restart (ends active WebSocket sessions)
 
-**Location:** `$HOME/.local/share/cosmic_llm/config.toml`
+```bash
+cp $HOME/.local/share/cosmic_llm/config.toml \
+   $HOME/.local/share/cosmic_llm/config.toml.backup.$(date +%Y%m%d_%H%M%S)
+systemctl --user status luna-server.service
+```
 
-**Purpose:** Main configuration file containing:
-- LLM profiles (DeepSeek, GLM, Gemini, etc.)
-- Default profile selection
-- MCP server settings
-- Server configuration (host, port, timeouts)
-- Prompt file paths
-- Title generation settings
+---
 
-**Key Sections:**
+## Configuration files
+
+### `config.toml`
+
+**Path:** `$HOME/.local/share/cosmic_llm/config.toml`
+
+**Shape (config refinement):** profiles reference **model presets** and **tools policies** — not inline `backend`/`model` on profiles.
+
 ```toml
-default = "deepseek"  # Default LLM profile
+default = "luna_gpt5mini"
 
-[model_presets.deepseek]
+[model_presets.luna_gpt5mini]
 backend = "openai"
-model = "deepseek-chat"
-endpoint = "https://api.deepseek.com/chat/completions"
+model = "gpt-5-mini"
+endpoint = "https://api.openai.com/v1/chat/completions"
 api_key = "..."
 temperature = 0.3
 max_tokens = 4000
 
 [tools_policies.default]
-enabled_mcp = []
+enabled_mcp = ["shell", "filesystem", "fetch", "skills", "markitdown", "cosmic-llm-memory"]
 enabled_tools = ["*"]
 disabled_tools = []
 
-[profiles.deepseek]
-model_preset = "deepseek"
-prompts = []
+[profiles.luna_gpt5mini]
+model_preset = "luna_gpt5mini"
+prompts = ["profiles/luna_gpt5mini.md"]
 tools_policy = "default"
+summarize_threshold = 0.7
 hidden = false
 
-[prompts]
-system_prompt_file = "$HOME/.local/share/cosmic_llm/system_prompt.md"
+[embedding]
+enabled = true
+endpoint = "https://api.openai.com/v1/embeddings"
+model = "text-embedding-3-small"
+dimensions = 1536
+api_key = "..."
+
+[deep_sleep]
+enabled = true
+profile = "luna_gpt5mini"
+
+[title_summary]
+title_generation_profile = "luna_gpt5mini"
 
 [server]
 enabled = true
 host = "0.0.0.0"
 port = 8080
+api_key = ""
 ```
 
-### MCP Config: `mcp_config.json`
+Global system prompt: `$HOME/.local/share/cosmic_llm/system_prompt.md` (default path; optional `[prompts]` section).
 
-**Location:** `$HOME/.local/share/cosmic_llm/mcp_config.json`
+Thin UI: `$HOME/.config/luna_thin_ui/server_config.toml`
 
-**Purpose:** MCP (Model Context Protocol) server definitions
+### `mcp_config.json`
 
-**Available MCP Servers:**
-- `filesystem` - File operations (root: $HOME)
-- `shell` - Shell command execution
-- `time` - Time/date utilities
-- `mail` - Email operations
-- `cosmic-llm-memory` - Conversation history and memory
-- `skills` - Skill-based tool activation
-- `fetch` - Web content fetching
-- `dietApi` - Diet tracking API
-- `SEARCH` - Web search
+**Path:** `$HOME/.local/share/cosmic_llm/mcp_config.json`
 
-**Structure:**
+**Quick-setup catalog servers (typical):**
+
+| id | Purpose |
+|----|---------|
+| `shell` | Whitelisted commands (`uvx mcp-shell-server`) |
+| `filesystem` | Home directory (`npx @modelcontextprotocol/server-filesystem`) |
+| `fetch` | URL → markdown |
+| `skills` | `skills/` folder (`agent-skills-mcp`) |
+| `markitdown` | Office/PDF/URL → markdown |
+| `cosmic-llm-memory` | Luna history binary (`mcp_luna_history`, `COSMIC_LLM_DB_PATH`) |
+
+Example:
+
 ```json
 {
   "mcpServers": {
-    "filesystem": {
-      "command": "$HOME/go/bin/mcp-filesystem-server",
-      "args": ["$HOME"],
-      "env": {}
+    "shell": {
+      "command": "uvx",
+      "args": ["mcp-shell-server"],
+      "env": { "ALLOW_COMMANDS": "ls,cat,..." }
+    },
+    "cosmic-llm-memory": {
+      "command": "/home/USER/.local/share/cosmic_llm/bin/mcp_luna_history",
+      "args": [],
+      "env": { "COSMIC_LLM_DB_PATH": "/home/USER/.local/share/cosmic_llm/conversations.db" }
     }
   }
 }
 ```
 
-### System Prompt: `system_prompt.md`
-
-**Location:** `$HOME/.local/share/cosmic_llm/system_prompt.md`
-
-**Purpose:** Core system instructions that define my personality, behavior, and operational constraints.
-
-### Profile Prompts: `profiles/*.md`
-
-**Location:** `$HOME/.local/share/cosmic_llm/profiles/`
-
-**Available Profiles:**
-- `code.md` - Programming assistant mode
-- `diet.md` / `diet2.md` - Diet and nutrition tracking
-- `finance.md` - Financial analysis
-- `generic.md` - General purpose
-- `mailer.md` - Email composition
-- `notes.md` / `notes2.md` - Note-taking mode
-
-### Skills: `skills/*/SKILL.md`
-
-**Location:** `$HOME/.local/share/cosmic_llm/skills/`
-
-**Purpose:** Skill definitions that activate specialized tool sets and behaviors.
+Restart server after MCP JSON changes.
 
 ---
 
-## Database Information
+## Database
 
-### Conversation Database
+**Path:** `$HOME/.local/share/cosmic_llm/conversations.db`
 
-**Location:** `$HOME/.local/share/cosmic_llm/conversations.db`
-
-**Type:** SQLite3
-
-**Purpose:** Stores all conversation history, messages, and metadata.
-
-**Schema Overview:**
-- `conversations` - Conversation metadata (id, title, created_at, updated_at)
-- `messages` - Individual messages (id, conversation_id, role, content, created_at)
-- `conversation_summaries` - Generated summaries for context management
-
-**Important Notes:**
-- Database is locked when service is running
-- WAL mode enabled (conversations.db-wal file)
-- **Backup before manual modifications**
-- Size can grow significantly over time
-
-### Querying the Database
+| Object | Role |
+|--------|------|
+| `conversations`, `messages` | Chat history |
+| `memory` | Curated facts |
+| `memory_fts` | Keyword search |
+| `memory_vec` | Embeddings (if `[embedding]` enabled) |
+| `deep_sleep_state` | Maintenance checkpoints |
 
 ```bash
-# List recent conversations
 sqlite3 $HOME/.local/share/cosmic_llm/conversations.db \
-  "SELECT id, title, created_at FROM conversations ORDER BY updated_at DESC LIMIT 10;"
-
-# Count total conversations
+  "SELECT COUNT(*) FROM memory;"
 sqlite3 $HOME/.local/share/cosmic_llm/conversations.db \
-  "SELECT COUNT(*) FROM conversations;"
-
-# Database size
-ls -lh $HOME/.local/share/cosmic_llm/conversations.db
+  "PRAGMA integrity_check;"
 ```
+
+Stop service before manual DB surgery.
 
 ---
 
-## Service Management
+## Service management
 
-### Check Service Status
-
-```bash
-systemctl --user status luna.service
-```
-
-### Restart Service (⚠️ DESTRUCTIVE)
-
-**⚠️ WARNING:** This will terminate the current conversation!
+**Unit:** `$HOME/.config/systemd/user/luna-server.service` (installed by quick setup)
 
 ```bash
-# Basic restart (conversation WILL end)
-systemctl --user restart luna.service
-
-# Schedule a wake-up call after restart (if using scheduling)
-# Restart typically takes 2-5 minutes
+systemctl --user status luna-server.service
+systemctl --user restart luna-server.service
+journalctl --user -u luna-server.service -n 50
+loginctl enable-linger $USER    # run at boot without login
 ```
 
-**Safe Restart Procedure:**
-1. Confirm with user that restart is acceptable
-2. Notify user: "Restarting Luna service. Current conversation will end."
-3. Execute restart
-4. Service will be available again in ~2 minutes (5 minutes to be safe)
-
-### View Service Logs
-
-```bash
-# Recent logs
-journalctl --user -u luna.service -n 50
-
-# Follow logs in real-time
-journalctl --user -u luna.service -f
-
-# Logs since last boot
-journalctl --user -u luna.service --since today
-```
-
-### Stop/Start Service
-
-```bash
-# Stop service
-systemctl --user stop luna.service
-
-# Start service
-systemctl --user start luna.service
-
-# Disable auto-start
-systemctl --user disable luna.service
-
-# Enable auto-start
-systemctl --user enable luna.service
-```
+Config/MCP changes usually need **restart**. System prompt file changes apply on next message.
 
 ---
 
-## Common Configuration Tasks
+## Common tasks
 
-### Add a New LLM Profile
+### Enable MCP servers for the default profile
 
-1. **Backup config:**
+Edit **`[tools_policies.default]`** (not the profile block):
+
+```toml
+[tools_policies.default]
+enabled_mcp = ["filesystem", "shell", "cosmic-llm-memory"]
+enabled_tools = ["*"]
+```
+
+### Add a new LLM profile
+
+1. Backup `config.toml`
+2. Add `[model_presets.name]` and `[profiles.name]` with `model_preset = "name"`, `tools_policy = "default"`
+3. Optional: `profiles/name.md` under `profiles/`
+4. Set `default = "name"` if desired
+5. Restart service
+
+### Enable or fix memory RAG
+
+```toml
+[embedding]
+enabled = true
+endpoint = "https://api.openai.com/v1/embeddings"
+model = "text-embedding-3-small"
+dimensions = 1536
+api_key = "sk-..."
+```
+
+Restart; verify logs: `Embedding enabled for memory vector search`.
+
+### Enable deep sleep
+
+```toml
+[deep_sleep]
+enabled = true
+profile = "your_profile_name"
+```
+
+### Re-run quick setup (merge)
+
 ```bash
-cp $HOME/.local/share/cosmic_llm/config.toml \
-   $HOME/.local/share/cosmic_llm/config.toml.backup.$(date +%Y%m%d_%H%M%S)
+luna_ai_quick_setup
+# or: cd $HOME/proj/LunaAI/quick_setup && python -m quick_setup.main
 ```
 
-2. **Edit config.toml** to add profile section:
-```toml
-[profiles.NewProfileName]
-backend = "openai"
-api_key = "your-api-key"
-model = "model-name"
-endpoint = "https://api.provider.com/v1/chat/completions"
-temperature = 0.3
-max_tokens = 4000
-enabled_mcp = ["filesystem", "shell", "time"]
-hidden = false
-summarize_threshold = 0.7
-```
-
-3. **Set as default (optional):**
-```toml
-default = "NewProfileName"
-```
-
-### Modify MCP Server Configuration
-
-1. **Backup:**
-```bash
-cp $HOME/.local/share/cosmic_llm/mcp_config.json \
-   $HOME/.local/share/cosmic_llm/mcp_config.json.backup.$(date +%Y%m%d_%H%M%S)
-```
-
-2. **Edit mcp_config.json**
-
-3. **Restart required** for changes to take effect
-
-### Enable/Disable MCP Servers for a Profile
-
-Edit `config.toml` profile section:
-```toml
-[profiles.profilename]
-# ... other settings ...
-enabled_mcp = ["filesystem", "shell", "time", "mail"]  # Add or remove servers
-```
-
-### Update System Prompt
-
-Edit: `$HOME/.local/share/cosmic_llm/system_prompt.md`
-
-**No restart required** - changes take effect on next message.
+MCP merge adds missing servers; `finalize` updates `enabled_mcp` and Full Luna blocks.
 
 ---
 
 ## Troubleshooting
 
-### Service Won't Start
-
 ```bash
-# Check for config errors
-journalctl --user -u luna.service -n 100 | grep -i error
-
-# Validate TOML syntax
-python3 -c "import tomllib; tomllib.load(open('$HOME/.local/share/cosmic_llm/config.toml', 'rb'))"
-
-# Validate JSON syntax
+# Config syntax
+python3 -c "import tomllib; tomllib.load(open('$HOME/.local/share/cosmic_llm/config.toml','rb'))"
 python3 -c "import json; json.load(open('$HOME/.local/share/cosmic_llm/mcp_config.json'))"
+
+# Logs: MCP failed, embedding, deep sleep
+journalctl --user -u luna-server.service -n 100 | grep -iE 'error|mcp|embedding|deep.sleep'
 ```
 
-### Database Issues
-
-```bash
-# Check database integrity
-sqlite3 $HOME/.local/share/cosmic_llm/conversations.db "PRAGMA integrity_check;"
-
-# If corrupted, restore from backup (if available)
-# Or create new database (WILL LOSE HISTORY):
-mv $HOME/.local/share/cosmic_llm/conversations.db \
-   $HOME/.local/share/cosmic_llm/conversations.db.corrupted.$(date +%Y%m%d)
-# Service will create new database on restart
-```
-
-### Configuration Reset
-
-**Nuclear option** - Reset to defaults:
-```bash
-# Backup everything first
-cd $HOME/.local/share/cosmic_llm
-tar czf config_backup_$(date +%Y%m%d_%H%M%S).tar.gz config.toml mcp_config.json system_prompt.md profiles/
-
-# Copy sample configs from repo
-cp $HOME/proj/LunaAI/docs/sample_config.toml ./config.toml
-cp $HOME/proj/LunaAI/docs/sample_mcp_config.json ./mcp_config.json
-cp $HOME/proj/LunaAI/docs/sample_system_prompt.md ./system_prompt.md
-```
-
-### High Memory Usage
-
-```bash
-# Check database size
-ls -lh $HOME/.local/share/cosmic_llm/conversations.db
-
-# Vacuum database to reclaim space
-sqlite3 $HOME/.local/share/cosmic_llm/conversations.db "VACUUM;"
-```
+| Symptom | Likely cause |
+|---------|----------------|
+| MCP tools never appear | `enabled_mcp` empty or wrong server id |
+| No semantic memory recall | `[embedding] enabled = false` or bad API key |
+| Deep sleep never runs | `[deep_sleep] enabled = false` or missing `profile` |
+| History MCP useless | Binary missing or not in `enabled_mcp` |
 
 ---
 
-## Backup and Recovery
-
-### Create Full Backup
-
-```bash
-BACKUP_DIR="$HOME/.local/share/cosmic_llm/backups/$(date +%Y%m%d_%H%M%S)"
-mkdir -p "$BACKUP_DIR"
-
-# Backup configs
-cp $HOME/.local/share/cosmic_llm/config.toml "$BACKUP_DIR/"
-cp $HOME/.local/share/cosmic_llm/mcp_config.json "$BACKUP_DIR/"
-cp $HOME/.local/share/cosmic_llm/system_prompt.md "$BACKUP_DIR/"
-
-# Backup database (stop service first for consistent backup)
-cp $HOME/.local/share/cosmic_llm/conversations.db "$BACKUP_DIR/"
-
-# Backup profiles and skills
-cp -r $HOME/.local/share/cosmic_llm/profiles "$BACKUP_DIR/"
-cp -r $HOME/.local/share/cosmic_llm/skills "$BACKUP_DIR/"
-
-echo "Backup created at: $BACKUP_DIR"
-```
-
-### Restore from Backup
-
-```bash
-# Restore specific file
-cp /path/to/backup/config.toml $HOME/.local/share/cosmic_llm/config.toml
-
-# Restart service after restore
-systemctl --user restart luna.service
-```
-
----
-
-## File Locations Summary
+## File locations
 
 | Component | Path |
 |-----------|------|
-| Main Config | `$HOME/.local/share/cosmic_llm/config.toml` |
-| MCP Config | `$HOME/.local/share/cosmic_llm/mcp_config.json` |
-| System Prompt | `$HOME/.local/share/cosmic_llm/system_prompt.md` |
-| User Prompt | `$HOME/.local/share/cosmic_llm/user_prompt.md` |
+| Main config | `$HOME/.local/share/cosmic_llm/config.toml` |
+| MCP config | `$HOME/.local/share/cosmic_llm/mcp_config.json` |
+| System prompt | `$HOME/.local/share/cosmic_llm/system_prompt.md` |
 | Database | `$HOME/.local/share/cosmic_llm/conversations.db` |
-| Profiles | `$HOME/.local/share/cosmic_llm/profiles/` |
-| Skills | `$HOME/.local/share/cosmic_llm/skills/` |
-| Source Code | `$HOME/proj/LunaAI/` |
-| Binary | `$HOME/proj/LunaAI/target/release/cosmic_llm` |
-| Service Unit | `$HOME/.config/systemd/user/luna.service` |
-
----
-
-## Emergency Contacts
-
-If everything breaks:
-
-1. **Check service status:** `systemctl --user status luna.service`
-2. **View logs:** `journalctl --user -u luna.service -n 100`
-3. **Restore from backup** (if available)
-4. **Manual restart:** `systemctl --user restart luna.service`
-5. **Nuclear reset:** Restore sample configs from `$HOME/proj/LunaAI/docs/`
+| Memory MCP binary | `$HOME/.local/share/cosmic_llm/bin/mcp_luna_history` |
+| Profiles / skills | `profiles/`, `skills/` under cosmic_llm |
+| Thin UI | `$HOME/.config/luna_thin_ui/server_config.toml` |
+| Service unit | `$HOME/.config/systemd/user/luna-server.service` |
+| Source (read-only) | `$HOME/proj/LunaAI/` |
 
 ---
 
 ## Notes
 
-- Configuration changes to `config.toml` and `mcp_config.json` require service restart
-- System prompt changes take effect immediately
-- Profile prompt changes take effect on next conversation using that profile
-- Database modifications should only be done when service is stopped
-- **When in doubt, ask the user before making changes!**
+- `tools_policies` control MCP + internal tools; profiles only **reference** a policy name.
+- Embedding uses **OpenAI-compatible** API even when chat uses Claude/Gemini.
+- When in doubt, **ask the user** before destructive changes.
