@@ -47,7 +47,7 @@ See `quick_setup/docs/QUICK_SETUP.md` and `quick_setup/docs/MEMORY.md`.
 | **Facts + keyword search** | `store_memory`, `search_memory`, `search_memory_by_category` | Internal tools; SQLite `memory` + FTS |
 | **Semantic recall (RAG)** | Injects relevant memories each turn | `[embedding] enabled = true` |
 | **History MCP** | Search past conversations via MCP | `cosmic-llm-memory` in `mcp_config.json` **and** `enabled_mcp` |
-| **Deep sleep** | Background summarize / prune / extract | `[deep_sleep] enabled = true`, `profile = "..."` |
+| **Deep sleep** | Background summarize / prune / extract | `[deep_sleep] enabled = true`, `profile = "..."`; optional `summarize_prompt`, `evaluate_prompt`, `extract_prompt` |
 
 **Common mistake:** MCP servers listed in `mcp_config.json` but **`enabled_mcp = []`** in `tools_policies` — agent gets zero MCP tools. Fix:
 
@@ -251,7 +251,12 @@ Restart; verify logs: `Embedding enabled for memory vector search`.
 [deep_sleep]
 enabled = true
 profile = "your_profile_name"
+# summarize_prompt = "..."   # step 1: conversation digest (optional)
+# evaluate_prompt = "..."    # step 2: KEEP / UPDATE / DELETE (optional)
+# extract_prompt = "..."     # step 3: propose new memories (optional)
 ```
+
+Full default prompt text: [quick_setup/docs/MEMORY.md](../docs/MEMORY.md#deep-sleep-deep_sleep).
 
 ### Re-run quick setup (merge)
 

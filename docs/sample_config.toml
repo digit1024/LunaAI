@@ -116,12 +116,18 @@ max_memories = 3           # Maximum memories to return per query (default: 3)
 # min_importance = 2       # Minimum importance score (1-5). Comment out for no filter.
 
 # ── Deep sleep: background memory maintenance ──
+# Three LLM steps: summarize → evaluate (KEEP/UPDATE/DELETE) → extract new memories.
+# Full default prompt text: quick_setup/docs/MEMORY.md#deep-sleep-deep_sleep
 [deep_sleep]
 enabled = false
 # profile = "openai"       # LLM profile for summarize / evaluate / extract (required when enabled)
 # interval_hours = 24
 # memory_batch_size = 20
 # max_conversations_per_run = 50
+# inter_call_delay_secs = 2
+# summarize_prompt = "..."  # step 1 system prompt (built-in default if omitted)
+# evaluate_prompt = "..."   # step 2 system prompt
+# extract_prompt = "..."    # step 3 system prompt
 
 # Prompt configuration (global system prompt)
 [prompts]

@@ -426,6 +426,41 @@ fn default_deep_sleep_inter_call_delay_secs() -> u64 {
     2
 }
 
+fn default_deep_sleep_summarize_prompt() -> String {
+    "Summarize the key outcomes of this conversation in 2-5 bullet points. \
+Focus on: decisions made, facts revealed, user preferences expressed, \
+technical details discussed, things the user asked to remember. \
+Be specific and factual. Skip greetings and small talk. \
+Output ONLY the bullet points, no preamble."
+        .to_string()
+}
+
+fn default_deep_sleep_evaluate_prompt() -> String {
+    "You are a memory maintenance assistant. You are given a digest of recent \
+conversations and a batch of existing long-term memories. For EACH memory, decide:\n\
+- KEEP: still accurate, no changes needed\n\
+- UPDATE: conversation digest reveals corrected/updated info (provide new content + importance 1-10)\n\
+- DELETE: contradicted, outdated, or now irrelevant (provide reason)\n\n\
+Respond ONLY with a JSON array, no markdown fences:\n\
+[{\"id\": 42, \"action\": \"keep\"}, {\"id\": 17, \"action\": \"update\", \"content\": \"...\", \"importance\": 8}, \
+{\"id\": 5, \"action\": \"delete\", \"reason\": \"...\"}]"
+        .to_string()
+}
+
+fn default_deep_sleep_extract_prompt() -> String {
+    "You are a memory extraction assistant. You are given a digest of recent \
+conversations and the current set of long-term memories.\n\n\
+Identify NEW facts, preferences, or knowledge from the digest that are NOT already covered by \
+existing memories. Focus on: user preferences, technical setup, important people/projects, events or places where the user has been, \
+decisions made or things the user asked to remember.\n\n\
+If this is a generic conversation then maybe it's not relevant to create new memories ( like generic knowledge question), but if the converastion is about event or place then its' relevant to store memory. \
+When the digest contains notable information, prefer suggesting 1-5 new memory candidates. \
+Return empty array [] only when there is truly nothing new or the digest is just small talk.\n\n\
+Do NOT duplicate existing memories. Respond ONLY with a JSON array, no markdown fences or preamble:\n\
+[{\"content\": \"...\", \"category\": \"optional\", \"importance\": 1-10}]\n"
+        .to_string()
+}
+
 #[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct DeepSleepConfig {
     #[serde(default = "default_deep_sleep_enabled")]
@@ -445,6 +480,15 @@ pub struct DeepSleepConfig {
     /// Delay between LLM calls (seconds, for RPi4 thermal management)
     #[serde(default = "default_deep_sleep_inter_call_delay_secs")]
     pub inter_call_delay_secs: u64,
+    /// System prompt for step 1: conversation summarization
+    #[serde(default = "default_deep_sleep_summarize_prompt")]
+    pub summarize_prompt: String,
+    /// System prompt for step 2: existing memory evaluation
+    #[serde(default = "default_deep_sleep_evaluate_prompt")]
+    pub evaluate_prompt: String,
+    /// System prompt for step 3: new memory extraction
+    #[serde(default = "default_deep_sleep_extract_prompt")]
+    pub extract_prompt: String,
 }
 
 impl Default for DeepSleepConfig {
@@ -456,6 +500,9 @@ impl Default for DeepSleepConfig {
             memory_batch_size: default_deep_sleep_memory_batch_size(),
             max_conversations_per_run: default_deep_sleep_max_conversations(),
             inter_call_delay_secs: default_deep_sleep_inter_call_delay_secs(),
+            summarize_prompt: default_deep_sleep_summarize_prompt(),
+            evaluate_prompt: default_deep_sleep_evaluate_prompt(),
+            extract_prompt: default_deep_sleep_extract_prompt(),
         }
     }
 }

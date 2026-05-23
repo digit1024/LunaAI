@@ -9,7 +9,7 @@ Luna uses **three complementary memory layers**. Quick setup enables all of them
 | **Curated facts** | `store_memory` / `search_memory` tools + SQLite `memory` table | Always (internal tools) | Every agent run with tools allowed |
 | **Semantic recall (RAG)** | `memory_rag` injects relevant memories into context | `[embedding] enabled = true` | Server startup + each message when embedding provider works |
 | **Conversation history MCP** | `cosmic-llm-memory` MCP server (`mcp_luna_history`) | `mcp_config.json` + id in `tools_policies.*.enabled_mcp` | MCP connected and policy allows server |
-| **Background maintenance** | Deep sleep cycle (summarize, evaluate, extract memories) | `[deep_sleep] enabled = true`, `profile = "..."` | Server background loop |
+| **Background maintenance** | Deep sleep cycle (summarize, evaluate, extract memories) | `[deep_sleep] enabled = true`, `profile = "..."`; optional `summarize_prompt`, `evaluate_prompt`, `extract_prompt` | Server background loop |
 
 ```mermaid
 flowchart LR
@@ -57,14 +57,59 @@ cosmic_llm --reorganize-memories   # rebuild all memory vectors (embedding must 
 
 ## Deep sleep (`[deep_sleep]`)
 
+Three LLM steps per cycle: **summarize** new conversations → **evaluate** existing memories (KEEP / UPDATE / DELETE) → **extract** new memories. Re-embeds stored memories when embedding is active.
+
 ```toml
 [deep_sleep]
 enabled = true
-profile = "your_default_profile"   # LLM used for summarization / memory evaluation
-# interval_hours, memory_batch_size, etc. use server defaults if omitted
+profile = "your_default_profile"   # LLM used for all three steps (required when enabled)
+# interval_hours = 24
+# memory_batch_size = 20
+# max_conversations_per_run = 50
+# inter_call_delay_secs = 2
+
+# Optional: override system prompts (omit to use built-in defaults below)
+# summarize_prompt = "..."
+# evaluate_prompt = "..."
+# extract_prompt = "..."
 ```
 
-Per cycle: summarize new conversations → evaluate existing memories → extract new memories. Re-embeds stored memories when embedding is active.
+Use TOML triple-quoted strings for multi-line prompts.
+
+### Default prompts
+
+**Step 1 — `summarize_prompt`**
+
+```
+Summarize the key outcomes of this conversation in 2-5 bullet points. Focus on: decisions made, facts revealed, user preferences expressed, technical details discussed, things the user asked to remember. Be specific and factual. Skip greetings and small talk. Output ONLY the bullet points, no preamble.
+```
+
+**Step 2 — `evaluate_prompt`**
+
+```
+You are a memory maintenance assistant. You are given a digest of recent conversations and a batch of existing long-term memories. For EACH memory, decide:
+- KEEP: still accurate, no changes needed
+- UPDATE: conversation digest reveals corrected/updated info (provide new content + importance 1-10)
+- DELETE: contradicted, outdated, or now irrelevant (provide reason)
+
+Respond ONLY with a JSON array, no markdown fences:
+[{"id": 42, "action": "keep"}, {"id": 17, "action": "update", "content": "...", "importance": 8}, {"id": 5, "action": "delete", "reason": "..."}]
+```
+
+**Step 3 — `extract_prompt`**
+
+```
+You are a memory extraction assistant. You are given a digest of recent conversations and the current set of long-term memories.
+
+Identify NEW facts, preferences, or knowledge from the digest that are NOT already covered by existing memories. Focus on: user preferences, technical setup, important people/projects, events or places where the user has been, decisions made or things the user asked to remember.
+
+If this is a generic conversation then maybe it's not relevant to create new memories ( like generic knowledge question), but if the converastion is about event or place then its' relevant to store memory. When the digest contains notable information, prefer suggesting 1-5 new memory candidates. Return empty array [] only when there is truly nothing new or the digest is just small talk.
+
+Do NOT duplicate existing memories. Respond ONLY with a JSON array, no markdown fences or preamble:
+[{"content": "...", "category": "optional", "importance": 1-10}]
+```
+
+Each step also sends a structured **user message** (conversation text, digest, or memory list). Only the system prompts above are configurable.
 
 Manual run:
 

@@ -14,5 +14,6 @@ Quick reference:
 | Semantic recall | `[embedding] enabled = true` |
 | History search MCP | `cosmic-llm-memory` in `mcp_config.json` + `enabled_mcp` |
 | Background upkeep | `[deep_sleep] enabled = true`, `profile = "..."` |
+| Deep sleep LLM prompts | Optional `[deep_sleep] summarize_prompt`, `evaluate_prompt`, `extract_prompt` (built-in defaults if omitted) |
 
 Bootstrap with `luna_ai_quick_setup` — Full Luna is **on by default**.

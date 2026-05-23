@@ -73,6 +73,7 @@ api_key = "..."
 [deep_sleep]
 enabled = true
 profile = "<name>"
+# summarize_prompt, evaluate_prompt, extract_prompt — optional; see MEMORY.md for defaults
 
 [title_summary]
 title_generation_profile = "<name>"

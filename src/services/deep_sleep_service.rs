@@ -251,7 +251,8 @@ async fn step1_summarize_conversations(
         }
 
         // LLM call to summarize
-        let summary = call_llm_summarize(llm_client, &conversation_text, &conversation.title).await;
+        let summary =
+            call_llm_summarize(llm_client, config, &conversation_text, &conversation.title).await;
         match summary {
             Ok(s) if !s.is_empty() => {
                 digest_parts.push(format!(
@@ -323,22 +324,17 @@ fn build_conversation_text(
 
 async fn call_llm_summarize(
     llm_client: &Arc<dyn LlmClient>,
+    config: &DeepSleepConfig,
     conversation_text: &str,
     title: &str,
 ) -> Result<String> {
-    let system_prompt = "Summarize the key outcomes of this conversation in 2-5 bullet points. \
-Focus on: decisions made, facts revealed, user preferences expressed, \
-technical details discussed, things the user asked to remember. \
-Be specific and factual. Skip greetings and small talk. \
-Output ONLY the bullet points, no preamble.";
-
     let user_message = format!(
         "Conversation title: {}\n\n{}",
         title, conversation_text
     );
 
     let messages = vec![
-        LlmMessage::new(Role::System, system_prompt.to_string()),
+        LlmMessage::new(Role::System, config.summarize_prompt.clone()),
         LlmMessage::new(Role::User, user_message),
     ];
 
@@ -380,7 +376,7 @@ async fn step2_evaluate_memories(
     let mut kept = 0usize;
 
     for batch in memories.chunks(config.memory_batch_size) {
-        let evaluations = call_llm_evaluate(llm_client, session_digest, batch).await;
+        let evaluations = call_llm_evaluate(llm_client, config, session_digest, batch).await;
 
         match evaluations {
             Ok(evals) => {
@@ -451,6 +447,7 @@ async fn step2_evaluate_memories(
 
 async fn call_llm_evaluate(
     llm_client: &Arc<dyn LlmClient>,
+    config: &DeepSleepConfig,
     session_digest: &str,
     memories: &[crate::storage::sqlite_storage_simple::MemoryEntry],
 ) -> Result<Vec<MemoryEvaluation>> {
@@ -463,22 +460,13 @@ async fn call_llm_evaluate(
         ));
     }
 
-    let system_prompt = "You are a memory maintenance assistant. You are given a digest of recent \
-conversations and a batch of existing long-term memories. For EACH memory, decide:\n\
-- KEEP: still accurate, no changes needed\n\
-- UPDATE: conversation digest reveals corrected/updated info (provide new content + importance 1-10)\n\
-- DELETE: contradicted, outdated, or now irrelevant (provide reason)\n\n\
-Respond ONLY with a JSON array, no markdown fences:\n\
-[{\"id\": 42, \"action\": \"keep\"}, {\"id\": 17, \"action\": \"update\", \"content\": \"...\", \"importance\": 8}, \
-{\"id\": 5, \"action\": \"delete\", \"reason\": \"...\"}]";
-
     let user_message = format!(
         "## Recent Conversation Digest\n{}\n\n## Memories to Evaluate\n{}",
         session_digest, memory_list
     );
 
     let messages = vec![
-        LlmMessage::new(Role::System, system_prompt.to_string()),
+        LlmMessage::new(Role::System, config.evaluate_prompt.clone()),
         LlmMessage::new(Role::User, user_message),
     ];
 
@@ -505,7 +493,7 @@ async fn step3_extract_new_memories(
         guard.list_memory(1000)?
     };
 
-    let new_memories = call_llm_extract(llm_client, session_digest, &current_memories).await;
+    let new_memories = call_llm_extract(llm_client, config, session_digest, &current_memories).await;
 
     match new_memories {
         Ok(proposals) => {
@@ -626,6 +614,7 @@ async fn step3_extract_new_memories(
 
 async fn call_llm_extract(
     llm_client: &Arc<dyn LlmClient>,
+    config: &DeepSleepConfig,
     session_digest: &str,
     current_memories: &[crate::storage::sqlite_storage_simple::MemoryEntry],
 ) -> Result<Vec<NewMemory>> {
@@ -634,17 +623,6 @@ async fn call_llm_extract(
         let cat = m.category.as_deref().unwrap_or("none");
         memory_list.push_str(&format!("- [{}] {} (importance: {})\n", cat, m.content, m.importance));
     }
-
-    let system_prompt = "You are a memory extraction assistant. You are given a digest of recent \
-conversations and the current set of long-term memories.\n\n\
-Identify NEW facts, preferences, or knowledge from the digest that are NOT already covered by \
-existing memories. Focus on: user preferences, technical setup, important people/projects, events or places where the user has been, \
-decisions made or things the user asked to remember.\n\n\
-If this is a generic conversation then maybe it's not relevant to create new memories ( like generic knowledge question), but if the converastion is about event or place then its' relevant to store memory. 
-When the digest contains notable information, prefer suggesting 1-5 new memory candidates. \
-Return empty array [] only when there is truly nothing new or the digest is just small talk.\n\n\
-Do NOT duplicate existing memories. Respond ONLY with a JSON array, no markdown fences or preamble:\n\
-[{\"content\": \"...\", \"category\": \"optional\", \"importance\": 1-10}]\n";
 
     let user_message = format!(
         "## Recent Conversation Digest\n{}\n\n## Current Memories\n{}",
@@ -657,7 +635,7 @@ Do NOT duplicate existing memories. Respond ONLY with a JSON array, no markdown 
     );
 
     let messages = vec![
-        LlmMessage::new(Role::System, system_prompt.to_string()),
+        LlmMessage::new(Role::System, config.extract_prompt.clone()),
         LlmMessage::new(Role::User, user_message),
     ];
 
