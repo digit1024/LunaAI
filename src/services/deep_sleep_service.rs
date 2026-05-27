@@ -7,7 +7,7 @@
 
 use crate::config::DeepSleepConfig;
 use crate::embeddings::EmbeddingProvider;
-use crate::llm::{LlmClient, Message as LlmMessage, Role};
+use crate::llm::{LlmClient, LlmError, Message as LlmMessage, Role};
 use crate::storage::Storage;
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -20,6 +20,27 @@ const STATE_LAST_PROCESSED_MSG_ID: &str = "last_processed_message_id";
 
 /// Maximum memories to fetch when listing all (for reorganize)
 const REORGANIZE_MEMORY_LIMIT: usize = 100_000;
+
+/// Rough completion budget per memory for step-2 JSON (`{"id":N,"action":"keep"}` baseline).
+const EVAL_TOKENS_PER_MEMORY: u32 = 48;
+const EVAL_OUTPUT_FLOOR: u32 = 2048;
+const EVAL_OUTPUT_CAP: u32 = 16384;
+
+/// Compute `max_tokens` for step 2 so a batch of N memories can fit in one JSON array.
+fn max_tokens_for_evaluate(batch_len: usize, profile_max_tokens: Option<u32>) -> u32 {
+    let needed = (batch_len as u32)
+        .saturating_mul(EVAL_TOKENS_PER_MEMORY)
+        .saturating_add(512)
+        .clamp(EVAL_OUTPUT_FLOOR, EVAL_OUTPUT_CAP);
+    match profile_max_tokens {
+        Some(profile_max) => profile_max.max(needed),
+        None => needed,
+    }
+}
+
+fn max_tokens_for_summarize_or_extract(profile_max_tokens: Option<u32>) -> Option<u32> {
+    profile_max_tokens.or(Some(4096))
+}
 
 /// Reorganize the memory_vec index: delete all vector rows, then re-embed and re-insert
 /// every memory from the `memory` table. Requires embedding to be configured.
@@ -96,6 +117,7 @@ pub async fn run_deep_sleep_cycle(
     config: &DeepSleepConfig,
     llm_client: Arc<dyn LlmClient>,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    profile_max_tokens: Option<u32>,
 ) -> Result<()> {
     let start = std::time::Instant::now();
     tracing::info!("Deep Sleep: starting cycle");
@@ -122,6 +144,7 @@ pub async fn run_deep_sleep_cycle(
             &storage,
             config,
             &llm_client,
+            profile_max_tokens,
             last_processed_id,
         )
         .await?;
@@ -156,6 +179,7 @@ pub async fn run_deep_sleep_cycle(
             &storage,
             config,
             &llm_client,
+            profile_max_tokens,
             &session_digest,
             embedding_provider.as_ref(),
         )
@@ -166,6 +190,7 @@ pub async fn run_deep_sleep_cycle(
             &storage,
             config,
             &llm_client,
+            profile_max_tokens,
             &session_digest,
             embedding_provider.as_ref(),
         )
@@ -207,6 +232,7 @@ async fn step1_summarize_conversations(
     storage: &Arc<Mutex<Storage>>,
     config: &DeepSleepConfig,
     llm_client: &Arc<dyn LlmClient>,
+    profile_max_tokens: Option<u32>,
     last_processed_id: i64,
 ) -> Result<(String, i64)> {
     let conversations = {
@@ -251,8 +277,14 @@ async fn step1_summarize_conversations(
         }
 
         // LLM call to summarize
-        let summary =
-            call_llm_summarize(llm_client, config, &conversation_text, &conversation.title).await;
+        let summary = call_llm_summarize(
+            llm_client,
+            config,
+            profile_max_tokens,
+            &conversation_text,
+            &conversation.title,
+        )
+        .await;
         match summary {
             Ok(s) if !s.is_empty() => {
                 digest_parts.push(format!(
@@ -325,6 +357,7 @@ fn build_conversation_text(
 async fn call_llm_summarize(
     llm_client: &Arc<dyn LlmClient>,
     config: &DeepSleepConfig,
+    profile_max_tokens: Option<u32>,
     conversation_text: &str,
     title: &str,
 ) -> Result<String> {
@@ -339,7 +372,12 @@ async fn call_llm_summarize(
     ];
 
     let response = llm_client
-        .send_message_with_tools(messages, Vec::new(), Some(0.3), None)
+        .send_message_with_tools(
+            messages,
+            Vec::new(),
+            Some(0.3),
+            max_tokens_for_summarize_or_extract(profile_max_tokens),
+        )
         .await
         .context("Deep Sleep Step 1: LLM summarize call failed")?;
 
@@ -352,6 +390,7 @@ async fn step2_evaluate_memories(
     storage: &Arc<Mutex<Storage>>,
     config: &DeepSleepConfig,
     llm_client: &Arc<dyn LlmClient>,
+    profile_max_tokens: Option<u32>,
     session_digest: &str,
     embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
 ) -> Result<()> {
@@ -376,7 +415,23 @@ async fn step2_evaluate_memories(
     let mut kept = 0usize;
 
     for batch in memories.chunks(config.memory_batch_size) {
-        let evaluations = call_llm_evaluate(llm_client, config, session_digest, batch).await;
+        let max_tokens = max_tokens_for_evaluate(batch.len(), profile_max_tokens);
+        if let Some(profile_max) = profile_max_tokens {
+            let needed = (batch.len() as u32)
+                .saturating_mul(EVAL_TOKENS_PER_MEMORY)
+                .saturating_add(512);
+            if needed > profile_max {
+                tracing::info!(
+                    batch_memories = batch.len(),
+                    profile_max_tokens = profile_max,
+                    max_output_tokens = max_tokens,
+                    "Deep Sleep Step 2: raising max_tokens for large evaluate batch"
+                );
+            }
+        }
+
+        let evaluations =
+            call_llm_evaluate(llm_client, config, session_digest, batch, max_tokens).await;
 
         match evaluations {
             Ok(evals) => {
@@ -428,7 +483,18 @@ async fn step2_evaluate_memories(
                 }
             }
             Err(e) => {
-                tracing::warn!(error = %e, "Deep Sleep Step 2: failed to evaluate batch");
+                let length_truncated = e.chain().any(|cause| {
+                    cause
+                        .downcast_ref::<LlmError>()
+                        .is_some_and(|le| matches!(le, LlmError::LengthTruncated { .. }))
+                });
+                tracing::warn!(
+                    error = %e,
+                    batch_memories = batch.len(),
+                    max_output_tokens = max_tokens,
+                    length_truncated,
+                    "Deep Sleep Step 2: failed to evaluate batch (try lowering memory_batch_size or raising preset max_tokens)"
+                );
             }
         }
 
@@ -450,6 +516,7 @@ async fn call_llm_evaluate(
     config: &DeepSleepConfig,
     session_digest: &str,
     memories: &[crate::storage::sqlite_storage_simple::MemoryEntry],
+    max_tokens: u32,
 ) -> Result<Vec<MemoryEvaluation>> {
     let mut memory_list = String::new();
     for m in memories {
@@ -471,7 +538,7 @@ async fn call_llm_evaluate(
     ];
 
     let response = llm_client
-        .send_message_with_tools(messages, Vec::new(), Some(0.2), None)
+        .send_message_with_tools(messages, Vec::new(), Some(0.2), Some(max_tokens))
         .await
         .context("Deep Sleep Step 2: LLM evaluate call failed")?;
 
@@ -484,6 +551,7 @@ async fn step3_extract_new_memories(
     storage: &Arc<Mutex<Storage>>,
     config: &DeepSleepConfig,
     llm_client: &Arc<dyn LlmClient>,
+    profile_max_tokens: Option<u32>,
     session_digest: &str,
     embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
 ) -> Result<()> {
@@ -493,7 +561,14 @@ async fn step3_extract_new_memories(
         guard.list_memory(1000)?
     };
 
-    let new_memories = call_llm_extract(llm_client, config, session_digest, &current_memories).await;
+    let new_memories = call_llm_extract(
+        llm_client,
+        config,
+        profile_max_tokens,
+        session_digest,
+        &current_memories,
+    )
+    .await;
 
     match new_memories {
         Ok(proposals) => {
@@ -615,6 +690,7 @@ async fn step3_extract_new_memories(
 async fn call_llm_extract(
     llm_client: &Arc<dyn LlmClient>,
     config: &DeepSleepConfig,
+    profile_max_tokens: Option<u32>,
     session_digest: &str,
     current_memories: &[crate::storage::sqlite_storage_simple::MemoryEntry],
 ) -> Result<Vec<NewMemory>> {
@@ -640,7 +716,12 @@ async fn call_llm_extract(
     ];
 
     let response = llm_client
-        .send_message_with_tools(messages, Vec::new(), Some(0.3), None)
+        .send_message_with_tools(
+            messages,
+            Vec::new(),
+            Some(0.3),
+            max_tokens_for_summarize_or_extract(profile_max_tokens),
+        )
         .await
         .context("Deep Sleep Step 3: LLM extract call failed")?;
 

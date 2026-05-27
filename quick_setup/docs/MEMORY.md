@@ -10,6 +10,7 @@ Luna uses **three complementary memory layers**. Quick setup enables all of them
 | **Semantic recall (RAG)** | `memory_rag` injects relevant memories into context | `[embedding] enabled = true` | Server startup + each message when embedding provider works |
 | **Conversation history MCP** | `cosmic-llm-memory` MCP server (`mcp_luna_history`) | `mcp_config.json` + id in `tools_policies.*.enabled_mcp` | MCP connected and policy allows server |
 | **Background maintenance** | Deep sleep cycle (summarize, evaluate, extract memories) | `[deep_sleep] enabled = true`, `profile = "..."`; optional `summarize_prompt`, `evaluate_prompt`, `extract_prompt` | Server background loop |
+| **Conversation compaction** | On-demand + auto threshold history summarization | `[conversation_compact] system_prompt`, `max_tokens` (optional) | When compact is triggered manually or by context threshold |
 
 ```mermaid
 flowchart LR
@@ -64,7 +65,7 @@ Three LLM steps per cycle: **summarize** new conversations → **evaluate** exis
 enabled = true
 profile = "your_default_profile"   # LLM used for all three steps (required when enabled)
 # interval_hours = 24
-# memory_batch_size = 20
+# memory_batch_size = 20   # memories per step-2 LLM call; large values need more output tokens
 # max_conversations_per_run = 50
 # inter_call_delay_secs = 2
 
@@ -110,6 +111,8 @@ Do NOT duplicate existing memories. Respond ONLY with a JSON array, no markdown 
 ```
 
 Each step also sends a structured **user message** (conversation text, digest, or memory list). Only the system prompts above are configurable.
+
+**Step 2 output budget:** evaluate calls auto-raise `max_tokens` when `memory_batch_size × ~48` exceeds the profile preset (e.g. 184 memories needs ~9k completion tokens). If you still see `length_truncated`, lower `memory_batch_size` (default **20**) or raise `[model_presets.*] max_tokens`.
 
 Manual run:
 

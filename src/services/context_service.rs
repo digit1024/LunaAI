@@ -167,6 +167,7 @@ impl ContextService {
         storage: std::sync::Arc<tokio::sync::Mutex<crate::storage::Storage>>,
         llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
         resolved: &ResolvedProfile,
+        compact_config: &crate::config::ConversationCompactConfig,
     ) -> Result<String> {
         use anyhow::Context;
 
@@ -208,6 +209,7 @@ impl ContextService {
         let summary_msg = crate::llm::context_manager::SmartContextManager::summarize_messages(
             llm_msgs_to_summarize,
             resolved.preset(),
+            compact_config,
             llm_client.as_ref(),
         )
         .await
@@ -259,6 +261,7 @@ impl ContextService {
         storage: std::sync::Arc<tokio::sync::Mutex<crate::storage::Storage>>,
         llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
         resolved: &ResolvedProfile,
+        compact_config: &crate::config::ConversationCompactConfig,
     ) -> Result<()> {
         Self::check_and_trigger_summarization_impl(
             llm_messages,
@@ -266,6 +269,7 @@ impl ContextService {
             storage,
             llm_client,
             resolved,
+            compact_config,
         ).await
     }
 
@@ -276,6 +280,7 @@ impl ContextService {
         storage: &crate::storage::Storage,
         llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
         resolved: &ResolvedProfile,
+        compact_config: &crate::config::ConversationCompactConfig,
     ) -> Result<()> {
         // For desktop, we can use the storage directly since we're not in a tokio::spawn context
         Self::check_and_trigger_summarization_impl_desktop(
@@ -284,6 +289,7 @@ impl ContextService {
             storage,
             llm_client,
             resolved,
+            compact_config,
         ).await
     }
 
@@ -294,6 +300,7 @@ impl ContextService {
         storage: std::sync::Arc<tokio::sync::Mutex<crate::storage::Storage>>,
         llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
         resolved: &ResolvedProfile,
+        compact_config: &crate::config::ConversationCompactConfig,
     ) -> Result<()> {
         use anyhow::Context;
         use crate::llm::tokenizer::TokenCounter;
@@ -368,6 +375,7 @@ impl ContextService {
         let summary_msg = crate::llm::context_manager::SmartContextManager::summarize_messages(
             llm_msgs_to_summarize,
             preset,
+            compact_config,
             llm_client.as_ref(),
         )
         .await
@@ -405,6 +413,7 @@ impl ContextService {
         storage: &crate::storage::Storage,
         llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
         resolved: &ResolvedProfile,
+        compact_config: &crate::config::ConversationCompactConfig,
     ) -> Result<()> {
         use anyhow::Context;
         use crate::llm::tokenizer::TokenCounter;
@@ -476,6 +485,7 @@ impl ContextService {
         let summary_msg = crate::llm::context_manager::SmartContextManager::summarize_messages(
             llm_msgs_to_summarize,
             preset,
+            compact_config,
             llm_client.as_ref(),
         )
         .await

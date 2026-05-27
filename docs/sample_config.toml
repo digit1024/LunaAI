@@ -122,7 +122,7 @@ max_memories = 3           # Maximum memories to return per query (default: 3)
 enabled = false
 # profile = "openai"       # LLM profile for summarize / evaluate / extract (required when enabled)
 # interval_hours = 24
-# memory_batch_size = 20
+# memory_batch_size = 20   # step-2 batch size; 184+ memories in one call needs ~9k+ max_tokens output
 # max_conversations_per_run = 50
 # inter_call_delay_secs = 2
 # summarize_prompt = "..."  # step 1 system prompt (built-in default if omitted)
@@ -139,3 +139,8 @@ title_generation_profile = "openai"
 summary_chars = 1000
 summary_loop_sleep_seconds = 15
 title_generation_system_prompt = "Your task is to generate a conversation title that will describe the topic easily. Keep original conversation language and tone. YOU SHOULD ALWAYS ANSWER ONLY WITH TITLE. MAXIMUM 100CHARS. You will receive a part of the conversation transcript in next message"
+
+# Conversation compaction configuration (manual compact + auto compact on context threshold)
+[conversation_compact]
+# system_prompt = "..."      # compaction system prompt (built-in default if omitted)
+# max_tokens = 4000          # max output tokens for compaction summary

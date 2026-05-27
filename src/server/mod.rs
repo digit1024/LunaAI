@@ -342,6 +342,7 @@ fn spawn_deep_sleep_loop(ctx: Arc<ServerContext>) {
                 }
             };
 
+            let profile_max_tokens = resolved.preset().max_tokens;
             let llm_client = crate::llm::build_llm_client(resolved.preset());
 
             if let Err(e) = crate::services::deep_sleep_service::run_deep_sleep_cycle(
@@ -349,6 +350,7 @@ fn spawn_deep_sleep_loop(ctx: Arc<ServerContext>) {
                 deep_sleep_cfg,
                 llm_client,
                 ctx.embedding_provider.clone(),
+                profile_max_tokens,
             )
             .await
             {

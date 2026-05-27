@@ -188,11 +188,14 @@ async fn run_deep_sleep_manual(config_path: Option<PathBuf>) {
         None
     };
 
+    let profile_max_tokens = resolved.preset().max_tokens;
+
     match services::deep_sleep_service::run_deep_sleep_cycle(
         storage,
         deep_sleep_cfg,
         llm_client,
         embedding_provider,
+        profile_max_tokens,
     )
     .await
     {

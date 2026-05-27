@@ -234,6 +234,7 @@ impl ServerHandler {
             storage,
             &llm_client,
             &resolved,
+            &self.ctx.config.conversation_compact,
         )
         .await?;
 
@@ -420,6 +421,7 @@ impl ServerHandler {
                     storage,
                     &llm_client,
                     &resolved,
+                    &self.ctx.config.conversation_compact,
                 )
                 .await
                 {
