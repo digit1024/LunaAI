@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../application/app_controller.dart';
@@ -20,11 +21,14 @@ class SetupScreen extends ConsumerStatefulWidget {
 }
 
 class _SetupScreenState extends ConsumerState<SetupScreen> {
+  static const _wearSyncChannel = MethodChannel('com.luna.mobile/wear_sync');
+
   late final TextEditingController _hostController;
   late final TextEditingController _portController;
   late final TextEditingController _apiKeyController;
   List<dynamic>? _availableLanguages;
   bool _loadingLanguages = false;
+  bool _sendingToWatch = false;
 
   @override
   void initState() {
@@ -101,6 +105,48 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
       return '$langName ($country)';
     }
     return langName;
+  }
+
+  Future<void> _sendConfigToWatch() async {
+    if (_sendingToWatch) return;
+    setState(() => _sendingToWatch = true);
+    try {
+      final config = ref.read(serverConfigProvider);
+      final result = await _wearSyncChannel.invokeMethod<Map<dynamic, dynamic>>(
+        'sendConfigToWatch',
+        {
+          'host': config.host,
+          'port': config.port,
+          'apiKey': config.apiKey,
+        },
+      );
+      final success = result?['success'] as bool? ?? false;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              success
+                  ? 'Config sent to watch'
+                  : 'Watch not reachable: ${result?['error'] ?? 'unknown error'}',
+            ),
+          ),
+        );
+      }
+    } on PlatformException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: ${e.message}')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not reach watch')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _sendingToWatch = false);
+    }
   }
 
   @override
@@ -412,7 +458,19 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
                     ? 'Connecting...'
                     : 'Connect',
               ),
-            )
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: _sendingToWatch ? null : _sendConfigToWatch,
+              icon: _sendingToWatch
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.watch_outlined, size: 18),
+              label: Text(_sendingToWatch ? 'Sending…' : 'Send to Watch'),
+            ),
           ],
         ),
       ),

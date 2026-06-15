@@ -131,7 +131,7 @@ echo "${GREEN}${WATCH} Luna Wear is now installed on your watch${NC}\n"
 
 # Optionally launch the app
 echo "${BLUE}${ARROW} Launching app...${NC}"
-adb shell am start -n com.luna.mobile/.MainActivity 2>/dev/null || true
+adb shell am start -n com.luna.mobile.wear/.MainActivity 2>/dev/null || true
 
 echo ""
 

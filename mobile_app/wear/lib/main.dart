@@ -10,6 +10,7 @@ import 'package:luna_mobile/core/theme/app_theme.dart';
 import 'package:luna_mobile/services/notification_service.dart';
 import 'package:luna_mobile/services/foreground_guard.dart';
 import 'package:luna_mobile/services/tts_service.dart';
+import 'package:luna_mobile/utils/text_processing.dart';
 import 'wear_chat_screen.dart';
 import 'wear_setup_screen.dart';
 import 'wear_connecting_screen.dart';
@@ -110,7 +111,7 @@ class _WearHomeRouter extends ConsumerWidget {
       ActivePane.connecting => const WearConnectingScreen(),
       ActivePane.conversations => const WearConversationsScreen(),
       ActivePane.chat => const WearChatScreen(),
-      ActivePane.memories => const WearConversationsScreen(),
+      ActivePane.memories => const WearChatScreen(),
       ActivePane.settings => const WearSetupScreen(),
     };
 
@@ -120,22 +121,61 @@ class _WearHomeRouter extends ConsumerWidget {
   }
 }
 
-class _AmbientScreen extends StatelessWidget {
+class _AmbientScreen extends ConsumerWidget {
   const _AmbientScreen();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final messages = ref.watch(
+      appControllerProvider.select((s) => s.chatMessages),
+    );
+    final lastAssistant = messages.lastWhere(
+      (m) => m.bubbleType == BubbleType.assistant && m.content.isNotEmpty,
+      orElse: () => ChatMessage(
+        id: '',
+        role: 'assistant',
+        content: '',
+        timestamp: DateTime.now(),
+        bubbleType: BubbleType.assistant,
+      ),
+    );
+    final snippet = lastAssistant.content.isNotEmpty
+        ? stripEmojisAndMarkdown(lastAssistant.content)
+        : '';
+
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Center(
-          child: Text(
-            'Luna',
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.6),
-              fontSize: 24,
-              fontWeight: FontWeight.w300,
+      body: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              'Luna',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.4),
+                fontSize: 16,
+                fontWeight: FontWeight.w300,
+                letterSpacing: 2,
+              ),
             ),
-          ),
+            if (snippet.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                snippet.length > 120 ? '${snippet.substring(0, 120)}…' : snippet,
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.25),
+                  fontSize: 10,
+                  fontWeight: FontWeight.w300,
+                  height: 1.4,
+                ),
+                textAlign: TextAlign.center,
+                maxLines: 4,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }

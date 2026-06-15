@@ -14,6 +14,7 @@ import 'package:luna_mobile/services/tts_service.dart';
 import 'package:luna_mobile/utils/text_processing.dart';
 import 'package:luna_mobile/utils/platform_utils.dart';
 import 'widgets/wear_message_bubble.dart';
+import 'widgets/wear_voice_overlay.dart';
 
 class WearChatScreen extends ConsumerStatefulWidget {
   const WearChatScreen({super.key});
@@ -24,7 +25,7 @@ class WearChatScreen extends ConsumerStatefulWidget {
 
 class _WearChatScreenState extends ConsumerState<WearChatScreen> {
   static const _speechChannel = MethodChannel('com.luna.mobile.wear/speech');
-  
+
   final _scrollController = ScrollController();
   late final AudioPlayer _sentPlayer;
   late final AudioPlayer _donePlayer;
@@ -32,6 +33,10 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
   late final ProviderSubscription<List<ChatMessage>> _ttsSubscription;
   final Set<String> _processedMessageIds = {};
   bool _isRecognizing = false;
+
+  // Dialog mode — continuous voice loop
+  bool _isDialogMode = false;
+  DialogModeState _dialogModeState = DialogModeState.listening;
 
   @override
   void initState() {
@@ -43,14 +48,16 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
     unawaited(_sentPlayer.setSource(AssetSource('audio/sent.mp3')));
     unawaited(_donePlayer.setSource(AssetSource('audio/done.mp3')));
 
-    // Listen for streaming completion - same as mobile app
     final streamingProvider =
         appControllerProvider.select((state) => state.streaming);
     _streamingSubscription = ref.listenManual<bool>(
       streamingProvider,
       (previous, next) {
         if (!next && previous == true) {
-          // Streaming just finished - play done sound then trigger TTS
+          // Streaming just finished
+          if (_isDialogMode) {
+            setState(() => _dialogModeState = DialogModeState.speaking);
+          }
           _donePlayer.stop();
           unawaited(_donePlayer.play(AssetSource('audio/done.mp3')).then((_) {
             Future.delayed(const Duration(milliseconds: 300), () {
@@ -61,7 +68,6 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
       },
     );
 
-    // Listen for new assistant messages to trigger TTS - same logic as mobile app
     _ttsSubscription = ref.listenManual<List<ChatMessage>>(
       appControllerProvider.select((state) => state.chatMessages),
       (previous, next) {
@@ -80,7 +86,6 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
     super.dispose();
   }
 
-  /// Handle new assistant messages - same logic as mobile app's _handleNewAssistantMessages
   void _handleNewAssistantMessages(
     List<ChatMessage>? previous,
     List<ChatMessage> next,
@@ -88,26 +93,16 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
     final ttsPrefs = ref.read(ttsPreferencesProvider);
     if (!ttsPrefs.enabled) return;
 
-    // Find messages that were streaming and are now complete
-    // Key: wasStreaming check ensures we only trigger for NEWLY completed messages,
-    // not for messages loaded from history (which were never streaming)
     final completedMessages = next.where(
       (m) => m.bubbleType == BubbleType.assistant && !m.isStreaming,
     ).where((m) {
-      // Check if this message was streaming in previous state
       final wasStreaming = previous?.any((p) => p.id == m.id && p.isStreaming) ?? false;
-      // Only trigger for messages that WERE streaming and are now complete
-      // This prevents TTS from playing for history messages
       return wasStreaming;
     }).toList();
 
-    // Process completed messages for TTS
     for (final message in completedMessages) {
-      // Skip if already processed for TTS
       if (_processedMessageIds.contains('${message.id}_tts')) continue;
       _processedMessageIds.add('${message.id}_tts');
-      
-      // Stop any ongoing TTS and start new one
       _playTtsForMessage(message);
     }
   }
@@ -121,15 +116,20 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
 
     final ttsService = ref.read(ttsServiceProvider);
     await ttsService.setLanguage(ttsPrefs.language);
-    
-    // Stop any ongoing TTS before starting new one - this ensures
-    // new message cancels the previous TTS
     await ttsService.stop();
-    await ttsService.speak(cleanText);
+
+    if (_isDialogMode) {
+      await ttsService.speak(cleanText, onComplete: () {
+        if (mounted && _isDialogMode) {
+          setState(() => _dialogModeState = DialogModeState.listening);
+          _startVoiceInput(dialogMode: true);
+        }
+      });
+    } else {
+      await ttsService.speak(cleanText);
+    }
   }
 
-  /// Trigger TTS for the last message after streaming completes
-  /// Same logic as mobile app's _triggerTtsForLastMessage
   Future<void> _triggerTtsForLastMessage() async {
     final state = ref.read(appControllerProvider);
     final ttsPrefs = ref.read(ttsPreferencesProvider);
@@ -137,7 +137,6 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
     if (!ttsPrefs.enabled) return;
     if (state.chatMessages.isEmpty) return;
 
-    // Get the last assistant message
     final lastAssistant = state.chatMessages.lastWhere(
       (m) => m.bubbleType == BubbleType.assistant && !m.isStreaming,
       orElse: () => ChatMessage(
@@ -150,33 +149,45 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
     );
 
     if (lastAssistant.content.isEmpty) return;
-    
-    // Skip if already processed
     if (_processedMessageIds.contains(lastAssistant.id)) return;
     _processedMessageIds.add(lastAssistant.id);
 
     await _playTtsForMessage(lastAssistant);
   }
 
-  /// Start voice input using Wear OS Intent-based speech recognition
-  Future<void> _startVoiceInput() async {
+  // ── Dialog Mode ────────────────────────────────────────────────────────────
+
+  void _enterDialogMode() {
+    setState(() {
+      _isDialogMode = true;
+      _dialogModeState = DialogModeState.listening;
+    });
+    _startVoiceInput(dialogMode: true);
+  }
+
+  void _exitDialogMode() {
+    ref.read(ttsServiceProvider).stop();
+    setState(() {
+      _isDialogMode = false;
+      _isRecognizing = false;
+    });
+  }
+
+  // ── Voice Input ────────────────────────────────────────────────────────────
+
+  Future<void> _startVoiceInput({bool dialogMode = false}) async {
     if (_isRecognizing) return;
-    
-    // Stop any ongoing TTS before starting voice input
+
     final ttsService = ref.read(ttsServiceProvider);
     await ttsService.stop();
-    
-    setState(() {
-      _isRecognizing = true;
-    });
-    
-    if (isMobile) {
-      await WakelockPlus.enable();
-    }
-    
+
+    setState(() => _isRecognizing = true);
+
+    if (isMobile) await WakelockPlus.enable();
+
     try {
       final sttPrefs = ref.read(sttPreferencesProvider);
-      
+
       final result = await _speechChannel.invokeMethod<Map<dynamic, dynamic>>(
         'startSpeechRecognition',
         {
@@ -184,22 +195,32 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
           'prompt': 'Speak to Luna',
         },
       );
-      
+
       if (result != null) {
         final success = result['success'] as bool? ?? false;
         final text = result['text'] as String? ?? '';
-        
+
         if (success && text.isNotEmpty) {
           _sentPlayer.stop();
           unawaited(_sentPlayer.play(AssetSource('audio/sent.mp3')));
-          
+
+          if (dialogMode && _isDialogMode) {
+            setState(() => _dialogModeState = DialogModeState.processing);
+          }
+
           final controller = ref.read(appControllerProvider.notifier);
           controller.sendPrompt(text);
+        } else if (dialogMode && _isDialogMode) {
+          // No speech detected — loop back to listening
+          setState(() => _dialogModeState = DialogModeState.listening);
+          _startVoiceInput(dialogMode: true);
         }
       }
     } on PlatformException catch (e) {
       debugPrint('Speech recognition error: ${e.message}');
-      if (mounted) {
+      if (dialogMode && mounted && _isDialogMode) {
+        _exitDialogMode();
+      } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Voice error: ${e.message}'),
@@ -218,14 +239,8 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
         );
       }
     } finally {
-      if (isMobile) {
-        await WakelockPlus.disable();
-      }
-      if (mounted) {
-        setState(() {
-          _isRecognizing = false;
-        });
-      }
+      if (isMobile) await WakelockPlus.disable();
+      if (mounted) setState(() => _isRecognizing = false);
     }
   }
 
@@ -234,35 +249,20 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
     final lang = parts[0];
     final country = parts.length > 1 ? parts[1] : null;
 
-    final languageNames = {
-      'en': 'English',
-      'es': 'Spanish',
-      'fr': 'French',
-      'de': 'German',
-      'it': 'Italian',
-      'pt': 'Portuguese',
-      'ru': 'Russian',
-      'ja': 'Japanese',
-      'ko': 'Korean',
-      'zh': 'Chinese',
-      'ar': 'Arabic',
-      'hi': 'Hindi',
-      'nl': 'Dutch',
-      'pl': 'Polish',
-      'tr': 'Turkish',
-      'uk': 'Ukrainian',
+    const languageNames = {
+      'en': 'English', 'es': 'Spanish', 'fr': 'French', 'de': 'German',
+      'it': 'Italian', 'pt': 'Portuguese', 'ru': 'Russian', 'ja': 'Japanese',
+      'ko': 'Korean', 'zh': 'Chinese', 'ar': 'Arabic', 'hi': 'Hindi',
+      'nl': 'Dutch', 'pl': 'Polish', 'tr': 'Turkish', 'uk': 'Ukrainian',
     };
 
     final langName = languageNames[lang] ?? lang.toUpperCase();
-    if (country != null) {
-      return '$langName ($country)';
-    }
-    return langName;
+    return country != null ? '$langName ($country)' : langName;
   }
 
   void _showOptionsMenu() {
     final controller = ref.read(appControllerProvider.notifier);
-    
+
     showModalBottomSheet(
       context: context,
       backgroundColor: Theme.of(context).colorScheme.surface,
@@ -275,7 +275,7 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
           final currentTtsPrefs = ref.watch(ttsPreferencesProvider);
           final currentSttPrefs = ref.watch(sttPreferencesProvider);
           final currentState = ref.watch(appControllerProvider);
-          
+
           return SafeArea(
             child: SingleChildScrollView(
               child: Padding(
@@ -283,7 +283,6 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // New Chat
                     ListTile(
                       leading: const Icon(Icons.add, size: 20),
                       title: const Text('New Chat', style: TextStyle(fontSize: 14)),
@@ -294,15 +293,13 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
                       },
                     ),
                     const Divider(height: 1),
-                    
-                    // Profile selector
                     if (currentState.availableProfiles.isNotEmpty) ...[
                       ListTile(
                         leading: const Icon(Icons.person, size: 20),
                         title: const Text('Profile', style: TextStyle(fontSize: 14)),
                         trailing: DropdownButton<String>(
-                          value: currentState.currentProfile.isNotEmpty 
-                              ? currentState.currentProfile 
+                          value: currentState.currentProfile.isNotEmpty
+                              ? currentState.currentProfile
                               : currentState.availableProfiles.first,
                           isDense: true,
                           underline: const SizedBox(),
@@ -317,17 +314,13 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
                             );
                           }).toList(),
                           onChanged: (value) {
-                            if (value != null) {
-                              controller.changeProfile(value);
-                            }
+                            if (value != null) controller.changeProfile(value);
                           },
                         ),
                         dense: true,
                       ),
                       const Divider(height: 1),
                     ],
-                    
-                    // TTS toggle
                     SwitchListTile(
                       secondary: const Icon(Icons.volume_up, size: 20),
                       title: const Text('TTS', style: TextStyle(fontSize: 14)),
@@ -335,14 +328,10 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
                       dense: true,
                       onChanged: (value) {
                         ref.read(ttsPreferencesProvider.notifier).setEnabled(value);
-                        if (!value) {
-                          ref.read(ttsServiceProvider).stop();
-                        }
+                        if (!value) ref.read(ttsServiceProvider).stop();
                       },
                     ),
                     const Divider(height: 1),
-                    
-                    // Voice Language selector (from favorites)
                     ListTile(
                       leading: const Icon(Icons.language, size: 20),
                       title: const Text('Voice Language', style: TextStyle(fontSize: 14)),
@@ -373,8 +362,6 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
                       dense: true,
                     ),
                     const Divider(height: 1),
-                    
-                    // History
                     ListTile(
                       leading: const Icon(Icons.history, size: 20),
                       title: const Text('History', style: TextStyle(fontSize: 14)),
@@ -385,8 +372,6 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
                       },
                     ),
                     const Divider(height: 1),
-                    
-                    // Settings
                     ListTile(
                       leading: const Icon(Icons.settings, size: 20),
                       title: const Text('Settings', style: TextStyle(fontSize: 14)),
@@ -428,12 +413,13 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
     };
 
     return Scaffold(
-      body: Column(
+      body: Stack(
         children: [
-          Expanded(
-            child: Stack(
-              children: [
-                state.chatMessages.isEmpty
+          // ── Main chat UI ──────────────────────────────────────────────────
+          Column(
+            children: [
+              Expanded(
+                child: state.chatMessages.isEmpty
                     ? Center(
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
@@ -441,14 +427,20 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
                             Icon(
                               Icons.chat_bubble_outline,
                               size: 32,
-                              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurface
+                                  .withValues(alpha: 0.5),
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              'Tap mic to speak',
+                              'Tap mic · Hold for dialog',
                               style: TextStyle(
-                                fontSize: 12,
-                                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+                                fontSize: 11,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurface
+                                    .withValues(alpha: 0.5),
                               ),
                             ),
                           ],
@@ -457,12 +449,14 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
                     : ListView.builder(
                         controller: _scrollController,
                         padding: const EdgeInsets.fromLTRB(12, 24, 12, 8),
-                        itemCount: state.chatMessages.length + (state.streaming ? 1 : 0),
+                        itemCount: state.chatMessages.length +
+                            (state.streaming ? 1 : 0),
                         itemBuilder: (context, index) {
                           if (index < state.chatMessages.length) {
                             final message = state.chatMessages[index];
                             return Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 4),
                               child: WearMessageBubble(message: message),
                             );
                           }
@@ -472,88 +466,114 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
                               child: SizedBox(
                                 width: 20,
                                 height: 20,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2),
                               ),
                             ),
                           );
                         },
                       ),
-                if (_isRecognizing)
-                  Container(
-                    color: Colors.black54,
-                    child: const Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          CircularProgressIndicator(),
-                          SizedBox(height: 16),
-                          Text(
-                            'Listening...',
-                            style: TextStyle(color: Colors.white),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                Stack(
+              ),
+              // Bottom action bar
+              Container(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
-                    IconButton(
-                      icon: const Icon(Icons.more_horiz, size: 24),
-                      onPressed: _showOptionsMenu,
-                      tooltip: 'Options',
+                    Stack(
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.more_horiz, size: 24),
+                          onPressed: _showOptionsMenu,
+                          tooltip: 'Options',
+                        ),
+                        Positioned(
+                          right: 8,
+                          top: 8,
+                          child: Container(
+                            width: 8,
+                            height: 8,
+                            decoration: BoxDecoration(
+                              color: connectionColor,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                    Positioned(
-                      right: 8,
-                      top: 8,
-                      child: Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          color: connectionColor,
-                          shape: BoxShape.circle,
+                    if (state.streaming)
+                      SizedBox(
+                        width: 56,
+                        height: 56,
+                        child: FloatingActionButton(
+                          onPressed: () => controller.stopStreaming(
+                            conversationId: state.activeConversation?.id,
+                          ),
+                          backgroundColor: Colors.red,
+                          child: const Icon(Icons.stop, size: 28),
+                        ),
+                      )
+                    else
+                      SizedBox(
+                        width: 56,
+                        height: 56,
+                        child: GestureDetector(
+                          onLongPress: _isRecognizing ? null : _enterDialogMode,
+                          child: FloatingActionButton(
+                            onPressed: _isRecognizing
+                                ? null
+                                : () => _startVoiceInput(),
+                            backgroundColor: _isRecognizing
+                                ? Colors.grey
+                                : Theme.of(context).colorScheme.primary,
+                            tooltip: 'Tap: one-shot · Hold: dialog loop',
+                            child: Icon(
+                              _isRecognizing ? Icons.mic_off : Icons.mic,
+                              size: 28,
+                            ),
+                          ),
                         ),
                       ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+
+          // ── One-shot listening indicator (non-dialog mode) ────────────────
+          if (_isRecognizing && !_isDialogMode)
+            Container(
+              color: Colors.black54,
+              child: const Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(height: 16),
+                    Text(
+                      'Listening...',
+                      style: TextStyle(color: Colors.white),
                     ),
                   ],
                 ),
-                if (state.streaming)
-                  SizedBox(
-                    width: 56,
-                    height: 56,
-                    child: FloatingActionButton(
-                      onPressed: () => controller.stopStreaming(
-                        conversationId: state.activeConversation?.id,
-                      ),
-                      backgroundColor: Colors.red,
-                      child: const Icon(Icons.stop, size: 28),
-                    ),
-                  )
-                else
-                  SizedBox(
-                    width: 56,
-                    height: 56,
-                    child: FloatingActionButton(
-                      onPressed: _isRecognizing ? null : _startVoiceInput,
-                      backgroundColor: _isRecognizing 
-                          ? Colors.grey 
-                          : Theme.of(context).colorScheme.primary,
-                      child: Icon(
-                        _isRecognizing ? Icons.mic_off : Icons.mic,
-                        size: 28,
-                      ),
-                    ),
-                  ),
-              ],
+              ),
             ),
-          ),
+
+          // ── Dialog mode voice overlay ─────────────────────────────────────
+          if (_isDialogMode)
+            Positioned.fill(
+              child: WearVoiceOverlay(
+                state: _dialogModeState,
+                onClose: _exitDialogMode,
+                onStopTts: () {
+                  ref.read(ttsServiceProvider).stop();
+                  if (mounted && _isDialogMode) {
+                    setState(() => _dialogModeState = DialogModeState.listening);
+                    _startVoiceInput(dialogMode: true);
+                  }
+                },
+              ),
+            ),
         ],
       ),
     );

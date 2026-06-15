@@ -16,10 +16,45 @@ class _WearConversationsScreenState extends ConsumerState<WearConversationsScree
   @override
   void initState() {
     super.initState();
-    // Refresh conversations when screen opens
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(appControllerProvider.notifier).refreshConversations();
     });
+  }
+
+  Future<void> _confirmDelete(
+    BuildContext context,
+    dynamic controller,
+    String conversationId,
+    String title,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete?', style: TextStyle(fontSize: 14)),
+        content: Text(
+          title.isNotEmpty ? title : 'Untitled',
+          style: const TextStyle(fontSize: 12),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(fontSize: 12)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(ctx).colorScheme.error,
+            ),
+            child: const Text('Delete', style: TextStyle(fontSize: 12)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      controller.deleteConversation(conversationId);
+    }
   }
 
   @override
@@ -68,7 +103,7 @@ class _WearConversationsScreenState extends ConsumerState<WearConversationsScree
             ),
           ),
           // Conversation list
-          Expanded(
+            Expanded(
             child: state.conversations.isEmpty
                 ? Center(
                     child: Column(
@@ -99,6 +134,7 @@ class _WearConversationsScreenState extends ConsumerState<WearConversationsScree
                         conversation: conversation,
                         isActive: state.activeConversation?.id == conversation.id,
                         onTap: () => controller.selectConversation(conversation.id),
+                        onLongPress: () => _confirmDelete(context, controller, conversation.id, conversation.title),
                       );
                     },
                   ),
@@ -114,11 +150,13 @@ class _WearConversationTile extends StatelessWidget {
     required this.conversation,
     required this.isActive,
     required this.onTap,
+    required this.onLongPress,
   });
 
   final ConversationSummary conversation;
   final bool isActive;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -132,6 +170,7 @@ class _WearConversationTile extends StatelessWidget {
           : theme.colorScheme.surface,
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         borderRadius: BorderRadius.circular(8),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),

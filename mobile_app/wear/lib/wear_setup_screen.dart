@@ -1,4 +1,8 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:luna_mobile/application/app_controller.dart';
@@ -15,12 +19,16 @@ class WearSetupScreen extends ConsumerStatefulWidget {
 }
 
 class _WearSetupScreenState extends ConsumerState<WearSetupScreen> {
+  static const _configSyncChannel =
+      EventChannel('com.luna.mobile.wear/config_sync');
+
   final _hostController = TextEditingController();
   final _portController = TextEditingController();
   final _apiKeyController = TextEditingController();
-  final _profileController = TextEditingController();
   List<dynamic> _availableLanguages = [];
   bool _loadingLanguages = true;
+  bool _waitingForSync = false;
+  StreamSubscription<dynamic>? _configSyncSub;
 
   @override
   void initState() {
@@ -29,8 +37,43 @@ class _WearSetupScreenState extends ConsumerState<WearSetupScreen> {
     _hostController.text = config.host;
     _portController.text = config.port.toString();
     _apiKeyController.text = config.apiKey;
-    _profileController.text = config.profile;
     _loadAvailableLanguages();
+    _listenForPhoneSync();
+  }
+
+  void _listenForPhoneSync() {
+    try {
+      _configSyncSub = _configSyncChannel
+          .receiveBroadcastStream()
+          .listen(_onConfigReceived, onError: (_) {});
+    } catch (_) {
+      // Channel not available on non-Wear builds
+    }
+  }
+
+  void _onConfigReceived(dynamic data) {
+    try {
+      final map = jsonDecode(data as String) as Map<String, dynamic>;
+      final host = map['host'] as String? ?? '';
+      final port = (map['port'] as int?) ?? 8080;
+      final apiKey = map['apiKey'] as String? ?? '';
+
+      setState(() {
+        _hostController.text = host;
+        _portController.text = port.toString();
+        _apiKeyController.text = apiKey;
+        _waitingForSync = false;
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Config received from phone!'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (_) {}
   }
 
   Future<void> _loadAvailableLanguages() async {
@@ -44,20 +87,16 @@ class _WearSetupScreenState extends ConsumerState<WearSetupScreen> {
         });
       }
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _loadingLanguages = false;
-        });
-      }
+      if (mounted) setState(() => _loadingLanguages = false);
     }
   }
 
   @override
   void dispose() {
+    _configSyncSub?.cancel();
     _hostController.dispose();
     _portController.dispose();
     _apiKeyController.dispose();
-    _profileController.dispose();
     super.dispose();
   }
 
@@ -65,7 +104,6 @@ class _WearSetupScreenState extends ConsumerState<WearSetupScreen> {
     final host = _hostController.text.trim();
     final port = int.tryParse(_portController.text.trim()) ?? 8080;
     final apiKey = _apiKeyController.text.trim();
-    final profile = _profileController.text.trim();
 
     if (host.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -78,7 +116,7 @@ class _WearSetupScreenState extends ConsumerState<WearSetupScreen> {
       host: host,
       port: port,
       apiKey: apiKey.isEmpty ? 'LUna' : apiKey,
-      profile: profile.isEmpty ? 'default' : profile,
+      profile: 'default',
     );
 
     final notifier = ref.read(serverConfigProvider.notifier);
@@ -94,41 +132,20 @@ class _WearSetupScreenState extends ConsumerState<WearSetupScreen> {
     final lang = parts[0];
     final country = parts.length > 1 ? parts[1] : null;
 
-    final languageNames = {
-      'en': 'English',
-      'es': 'Spanish',
-      'fr': 'French',
-      'de': 'German',
-      'it': 'Italian',
-      'pt': 'Portuguese',
-      'ru': 'Russian',
-      'ja': 'Japanese',
-      'ko': 'Korean',
-      'zh': 'Chinese',
-      'ar': 'Arabic',
-      'hi': 'Hindi',
-      'nl': 'Dutch',
-      'pl': 'Polish',
-      'tr': 'Turkish',
-      'uk': 'Ukrainian',
-      'sv': 'Swedish',
-      'da': 'Danish',
-      'fi': 'Finnish',
-      'no': 'Norwegian',
-      'cs': 'Czech',
-      'hu': 'Hungarian',
+    const languageNames = {
+      'en': 'English', 'es': 'Spanish', 'fr': 'French', 'de': 'German',
+      'it': 'Italian', 'pt': 'Portuguese', 'ru': 'Russian', 'ja': 'Japanese',
+      'ko': 'Korean', 'zh': 'Chinese', 'ar': 'Arabic', 'hi': 'Hindi',
+      'nl': 'Dutch', 'pl': 'Polish', 'tr': 'Turkish', 'uk': 'Ukrainian',
+      'sv': 'Swedish', 'da': 'Danish', 'fi': 'Finnish', 'no': 'Norwegian',
+      'cs': 'Czech', 'hu': 'Hungarian',
     };
 
     final langName = languageNames[lang] ?? lang.toUpperCase();
-    if (country != null) {
-      return '$langName ($country)';
-    }
-    return langName;
+    return country != null ? '$langName ($country)' : langName;
   }
 
   void _showLanguageSelector() {
-    final sttPrefs = ref.read(sttPreferencesProvider);
-    
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -139,8 +156,7 @@ class _WearSetupScreenState extends ConsumerState<WearSetupScreen> {
       builder: (context) => Consumer(
         builder: (context, ref, _) {
           final currentPrefs = ref.watch(sttPreferencesProvider);
-          
-          // Sort languages: favorites first
+
           final sortedLanguages = List<dynamic>.from(_availableLanguages);
           sortedLanguages.sort((a, b) {
             final aCode = a.toString();
@@ -152,7 +168,7 @@ class _WearSetupScreenState extends ConsumerState<WearSetupScreen> {
             return _getLanguageDisplayName(aCode)
                 .compareTo(_getLanguageDisplayName(bCode));
           });
-          
+
           return DraggableScrollableSheet(
             initialChildSize: 0.7,
             minChildSize: 0.5,
@@ -168,7 +184,8 @@ class _WearSetupScreenState extends ConsumerState<WearSetupScreen> {
                       const SizedBox(width: 8),
                       const Text(
                         'Favorite Languages',
-                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                        style: TextStyle(
+                            fontSize: 14, fontWeight: FontWeight.bold),
                       ),
                       const Spacer(),
                       Text(
@@ -189,9 +206,12 @@ class _WearSetupScreenState extends ConsumerState<WearSetupScreen> {
                     itemBuilder: (context, index) {
                       final langCode = sortedLanguages[index].toString();
                       final displayName = _getLanguageDisplayName(langCode);
-                      final isFavorite = currentPrefs.favoriteLanguages.contains(langCode);
-                      final isOnlyFavorite = currentPrefs.favoriteLanguages.length == 1 && isFavorite;
-                      
+                      final isFavorite =
+                          currentPrefs.favoriteLanguages.contains(langCode);
+                      final isOnlyFavorite =
+                          currentPrefs.favoriteLanguages.length == 1 &&
+                              isFavorite;
+
                       return ListTile(
                         leading: Icon(
                           isFavorite ? Icons.star : Icons.star_border,
@@ -200,24 +220,29 @@ class _WearSetupScreenState extends ConsumerState<WearSetupScreen> {
                               ? Theme.of(context).colorScheme.primary
                               : Theme.of(context).colorScheme.outline,
                         ),
-                        title: Text(displayName, style: const TextStyle(fontSize: 12)),
-                        subtitle: Text(langCode, style: const TextStyle(fontSize: 10)),
+                        title: Text(displayName,
+                            style: const TextStyle(fontSize: 12)),
+                        subtitle: Text(langCode,
+                            style: const TextStyle(fontSize: 10)),
                         dense: true,
                         onTap: () {
                           if (isFavorite) {
                             if (!isOnlyFavorite) {
-                              ref.read(sttPreferencesProvider.notifier)
+                              ref
+                                  .read(sttPreferencesProvider.notifier)
                                   .removeFavoriteLanguage(langCode);
                             } else {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
-                                  content: Text('At least one favorite is required'),
+                                  content:
+                                      Text('At least one favorite is required'),
                                   duration: Duration(seconds: 2),
                                 ),
                               );
                             }
                           } else {
-                            ref.read(sttPreferencesProvider.notifier)
+                            ref
+                                .read(sttPreferencesProvider.notifier)
                                 .addFavoriteLanguage(langCode);
                           }
                         },
@@ -230,7 +255,8 @@ class _WearSetupScreenState extends ConsumerState<WearSetupScreen> {
                     padding: const EdgeInsets.all(8),
                     child: FilledButton(
                       onPressed: () => Navigator.pop(context),
-                      child: const Text('Done', style: TextStyle(fontSize: 12)),
+                      child:
+                          const Text('Done', style: TextStyle(fontSize: 12)),
                     ),
                   ),
                 ),
@@ -246,21 +272,37 @@ class _WearSetupScreenState extends ConsumerState<WearSetupScreen> {
   Widget build(BuildContext context) {
     final sttPrefs = ref.watch(sttPreferencesProvider);
     final state = ref.watch(appControllerProvider);
-    
+
     return Scaffold(
       body: ListView(
         padding: const EdgeInsets.fromLTRB(12, 32, 12, 16),
         children: [
-          // Header
           const Center(
             child: Text(
               'Setup',
               style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
             ),
           ),
-          const SizedBox(height: 16),
-          
-          // Server settings
+          const SizedBox(height: 12),
+
+          // ── Sync from phone (prominent, shown at top) ───────────────────
+          _SyncFromPhoneCard(
+            waiting: _waitingForSync,
+            onTap: () => setState(() => _waitingForSync = !_waitingForSync),
+          ),
+          const SizedBox(height: 12),
+
+          const Divider(),
+          const Center(
+            child: Text(
+              'or enter manually',
+              style: TextStyle(fontSize: 10),
+            ),
+          ),
+          const Divider(),
+          const SizedBox(height: 8),
+
+          // ── Manual config ───────────────────────────────────────────────
           TextField(
             controller: _hostController,
             decoration: const InputDecoration(
@@ -292,19 +334,20 @@ class _WearSetupScreenState extends ConsumerState<WearSetupScreen> {
             style: const TextStyle(fontSize: 12),
           ),
           const SizedBox(height: 16),
-          
+
           // Favorite Languages
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.language, size: 20),
-            title: const Text('Favorite Languages', style: TextStyle(fontSize: 12)),
+            title: const Text('Favorite Languages',
+                style: TextStyle(fontSize: 12)),
             subtitle: Text(
               sttPrefs.favoriteLanguages
-                  .take(3)
-                  .map(_getLanguageDisplayName)
-                  .join(', ') +
-                  (sttPrefs.favoriteLanguages.length > 3 
-                      ? ' +${sttPrefs.favoriteLanguages.length - 3}' 
+                      .take(3)
+                      .map(_getLanguageDisplayName)
+                      .join(', ') +
+                  (sttPrefs.favoriteLanguages.length > 3
+                      ? ' +${sttPrefs.favoriteLanguages.length - 3}'
                       : ''),
               style: TextStyle(
                 fontSize: 10,
@@ -315,31 +358,95 @@ class _WearSetupScreenState extends ConsumerState<WearSetupScreen> {
             dense: true,
             onTap: _loadingLanguages ? null : _showLanguageSelector,
           ),
-          
+
           const SizedBox(height: 16),
-          
-          // Connect button
           FilledButton(
             onPressed: _saveAndConnect,
             child: const Text('Connect', style: TextStyle(fontSize: 12)),
           ),
-          
           const SizedBox(height: 8),
-          
-          // Back to chat if connected
           if (state.connection == ConnectionStatus.online)
             OutlinedButton(
               onPressed: () {
                 if (state.activeConversation != null) {
-                  ref.read(appControllerProvider.notifier)
+                  ref
+                      .read(appControllerProvider.notifier)
                       .selectConversation(state.activeConversation!.id);
                 } else {
-                  ref.read(appControllerProvider.notifier).startNewConversation();
+                  ref
+                      .read(appControllerProvider.notifier)
+                      .startNewConversation();
                 }
               },
-              child: const Text('Back to Chat', style: TextStyle(fontSize: 12)),
+              child:
+                  const Text('Back to Chat', style: TextStyle(fontSize: 12)),
             ),
         ],
+      ),
+    );
+  }
+}
+
+class _SyncFromPhoneCard extends StatelessWidget {
+  const _SyncFromPhoneCard({required this.waiting, required this.onTap});
+
+  final bool waiting;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: Theme.of(context).colorScheme.primaryContainer,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              waiting
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Icon(
+                      Icons.phone_android,
+                      size: 20,
+                      color: Theme.of(context).colorScheme.onPrimaryContainer,
+                    ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      waiting ? 'Waiting for phone…' : 'Sync from phone',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color:
+                            Theme.of(context).colorScheme.onPrimaryContainer,
+                      ),
+                    ),
+                    Text(
+                      waiting
+                          ? 'Tap "Send to Watch" on phone app'
+                          : 'Tap to wait · Send from phone settings',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onPrimaryContainer
+                            .withValues(alpha: 0.7),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
