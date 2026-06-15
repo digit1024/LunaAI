@@ -14,6 +14,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev pkg-config
       - name: cargo check
         run: unset ARGV0 && cargo check --workspace
       - name: cargo clippy
