@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 /// Normalize cron string: 5-field (min hour dom month dow) -> 6-field (sec min hour dom month dow).
 fn normalize_cron(s: &str) -> String {
-    let parts: Vec<&str> = s.trim().split_whitespace().collect();
+    let parts: Vec<&str> = s.split_whitespace().collect();
     if parts.len() == 5 {
         format!("0 {}", s.trim())
     } else {
@@ -47,7 +47,10 @@ pub fn parse_run_at(s: &str) -> Result<i64> {
     // Relative: "in N minutes", "in N hours", "in N days"
     let lower = s.to_lowercase();
     if lower.starts_with("in ") {
-        let rest = lower["in ".len()..].trim();
+        let rest = lower
+            .strip_prefix("in ")
+            .ok_or_else(|| anyhow!("Invalid relative time: expected e.g. 'in 30 minutes'"))?
+            .trim();
         let (num_str, unit) = rest
             .split_once(|c: char| c.is_whitespace() || c == '_')
             .ok_or_else(|| anyhow!("Invalid relative time: expected e.g. 'in 30 minutes'"))?;
@@ -97,44 +100,46 @@ pub struct ScheduleService {
     storage: Arc<Mutex<Storage>>,
 }
 
+/// Parameters for scheduling a new task.
+pub struct ScheduleTaskRequest {
+    pub conversation_id: Option<Uuid>,
+    pub message: String,
+    pub run_at: String,
+    pub schedule: Option<String>,
+    pub profile_name: Option<String>,
+    pub title: Option<String>,
+    pub new_conversation: bool,
+}
+
 impl ScheduleService {
     pub fn new(storage: Arc<Mutex<Storage>>) -> Self {
         Self { storage }
     }
 
     /// Create and persist a scheduled job. Validates schedule (cron or "once").
-    /// When new_conversation is true, conversation_id is stored as None (fresh conversation at run time).
-    pub async fn schedule_task(
-        &self,
-        conversation_id: Option<Uuid>,
-        message: String,
-        run_at_str: &str,
-        schedule: Option<String>,
-        profile_name: Option<String>,
-        title: Option<String>,
-        new_conversation: bool,
-    ) -> Result<ScheduledJob> {
-        validate_schedule(schedule.as_deref())?;
-        let run_at_utc_secs = parse_run_at(run_at_str)?;
+    /// When `new_conversation` is true, conversation_id is stored as None (fresh conversation at run time).
+    pub async fn schedule_task(&self, req: ScheduleTaskRequest) -> Result<ScheduledJob> {
+        validate_schedule(req.schedule.as_deref())?;
+        let run_at_utc_secs = parse_run_at(&req.run_at)?;
 
         let now = Utc::now().timestamp();
-        let stored_conv_id = if new_conversation {
+        let stored_conv_id = if req.new_conversation {
             None
         } else {
-            conversation_id.map(|u| u.to_string())
+            req.conversation_id.map(|u| u.to_string())
         };
         let job = ScheduledJob {
             id: Uuid::new_v4().to_string(),
             conversation_id: stored_conv_id,
             run_at_utc_secs,
-            message,
-            profile_name,
-            title,
+            message: req.message,
+            profile_name: req.profile_name,
+            title: req.title,
             status: "pending".to_string(),
             created_at_utc_secs: now,
             updated_at_utc_secs: now,
             error_message: None,
-            schedule,
+            schedule: req.schedule,
         };
 
         let guard = self.storage.lock().await;

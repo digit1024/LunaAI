@@ -72,6 +72,7 @@ pub enum ServerEvent {
     HealthOk {
         timestamp: i64,
         profile: String,
+        static_token: String,
     },
     Error {
         message: String,

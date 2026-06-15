@@ -76,6 +76,9 @@ pub enum ServerEvent {
     HealthOk {
         timestamp: i64,
         profile: String,
+        /// Ephemeral token for `/api/static/` URLs; absent on older servers.
+        #[serde(default)]
+        static_token: String,
     },
     Error {
         message: String,

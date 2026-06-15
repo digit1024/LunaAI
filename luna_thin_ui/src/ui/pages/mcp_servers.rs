@@ -9,7 +9,7 @@ use cosmic::{
 use crate::server::dto::MCPServerStatus;
 use crate::ui::app::{LunaThinApp, Message, ConnectionStatus};
 
-pub fn mcp_servers_page(app: &LunaThinApp) -> Element<Message> {
+pub fn mcp_servers_page(app: &LunaThinApp) -> Element<'_, Message> {
     let mut content = Column::new().spacing(16).padding(16);
 
     // Header

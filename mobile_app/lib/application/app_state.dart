@@ -170,6 +170,7 @@ class AppState extends Equatable {
   final List<String> availableProfiles;
   final String defaultProfile;
   final String currentProfile; // Current server profile (from server, not config)
+  final String staticToken; // Ephemeral token for static file URLs (from HealthOk)
   final int
       connectionAttempt; // Current attempt (1, 2, 3) or 0 if not connecting
   final bool isDialogModeActive;
@@ -194,6 +195,7 @@ class AppState extends Equatable {
     required this.availableProfiles,
     required this.defaultProfile,
     required this.currentProfile,
+    required this.staticToken,
     required this.connectionAttempt,
     required this.isDialogModeActive,
     required this.dialogModeState,
@@ -218,6 +220,7 @@ class AppState extends Equatable {
         availableProfiles: [],
         defaultProfile: '',
         currentProfile: '',
+        staticToken: '',
         connectionAttempt: 0,
         isDialogModeActive: false,
         dialogModeState: DialogModeState.listening,
@@ -242,6 +245,7 @@ class AppState extends Equatable {
     List<String>? availableProfiles,
     String? defaultProfile,
     String? currentProfile,
+    String? staticToken,
     int? connectionAttempt,
     bool? isDialogModeActive,
     DialogModeState? dialogModeState,
@@ -267,6 +271,7 @@ class AppState extends Equatable {
       availableProfiles: availableProfiles ?? this.availableProfiles,
       defaultProfile: defaultProfile ?? this.defaultProfile,
       currentProfile: currentProfile ?? this.currentProfile,
+      staticToken: staticToken ?? this.staticToken,
       connectionAttempt: connectionAttempt ?? this.connectionAttempt,
       isDialogModeActive: isDialogModeActive ?? this.isDialogModeActive,
       dialogModeState: dialogModeState ?? this.dialogModeState,
@@ -295,6 +300,7 @@ class AppState extends Equatable {
         availableProfiles,
         defaultProfile,
         currentProfile,
+        staticToken,
         connectionAttempt,
         isDialogModeActive,
         dialogModeState,

@@ -14,6 +14,12 @@ pub struct MCPConfig {
     pub servers: HashMap<String, MCPServerConfig>,
 }
 
+impl Default for MCPConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MCPConfig {
     pub fn new() -> Self {
         Self {
@@ -28,8 +34,8 @@ impl MCPConfig {
             ));
         }
 
-        let content = std::fs::read_to_string(path).map_err(|e| AgenticLoopError::MCPConfigReadError(e))?;
-        let config: MCPConfig = serde_json::from_str(&content).map_err(|e| AgenticLoopError::MCPConfigParseError(e))?;
+        let content = std::fs::read_to_string(path).map_err(AgenticLoopError::MCPConfigReadError)?;
+        let config: MCPConfig = serde_json::from_str(&content).map_err(AgenticLoopError::MCPConfigParseError)?;
         Ok(config)
     }
 }

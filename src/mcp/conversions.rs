@@ -1,7 +1,7 @@
 
 
 use crate::llm::{ToolCall, ToolDefinition, ToolResult};
-use rust_mcp_sdk::schema::{CallToolRequestParams, CallToolResult, Tool, ToolInputSchema};
+use rust_mcp_sdk::schema::{CallToolRequestParams, CallToolResult, Tool};
 
 
 impl From<&Tool> for ToolDefinition {
@@ -132,19 +132,4 @@ pub fn tool_call_to_params(tool_call: &ToolCall) -> CallToolRequestParams {
 /// Convert a slice of SDK Tools to app ToolDefinitions
 pub fn tools_to_definitions(tools: &[Tool]) -> Vec<ToolDefinition> {
     tools.iter().map(From::from).collect()
-}
-
-/// Convert a slice of app ToolDefinitions to SDK Tools
-pub fn definitions_to_tools(defs: &[ToolDefinition]) -> Vec<Tool> {
-    defs.iter().map(From::from).collect()
-}
-
-/// Convert a Vec of SDK Tools to app ToolDefinitions
-pub fn tools_vec_to_definitions(tools: Vec<Tool>) -> Vec<ToolDefinition> {
-    tools.into_iter().map(From::from).collect()
-}
-
-/// Convert a Vec of app ToolDefinitions to SDK Tools
-pub fn definitions_vec_to_tools(defs: Vec<ToolDefinition>) -> Vec<Tool> {
-    defs.into_iter().map(From::from).collect()
 }

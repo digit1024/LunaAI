@@ -135,8 +135,8 @@ fn render_message_bubble<'a>(
     
     // For context, consider tool bubbles as "assistant-like" for styling
     let prev_is_user_msg = prev_msg.map(|m| m.bubble_type == BubbleType::User).unwrap_or(false);
-    let prev_is_assistant_msg = prev_msg.map(|m| is_assistant_like(m)).unwrap_or(false);
-    let next_is_assistant_msg = next_msg.map(|m| is_assistant_like(m)).unwrap_or(false);
+    let prev_is_assistant_msg = prev_msg.map(is_assistant_like).unwrap_or(false);
+    let next_is_assistant_msg = next_msg.map(is_assistant_like).unwrap_or(false);
     
     let ctx = BubbleContext {
         is_prev_user: prev_is_user_msg,

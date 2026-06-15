@@ -15,6 +15,12 @@ pub struct MCPServers {
     pub servers: HashMap<String, MCPServerConfig>,
 }
 
+impl Default for MCPServers {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MCPServers {
     pub fn new() -> Self {
         Self {

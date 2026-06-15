@@ -81,7 +81,7 @@ pub fn handle_chat_messages(
                             Err(e) => Message::FileUploadError(e.to_string()),
                         }
                     },
-                    |msg| cosmic::Action::App(msg),
+                    cosmic::Action::App,
                 ))
             } else {
                 None
@@ -256,7 +256,7 @@ fn handle_attach_file(_app: &mut LunaThinApp) -> Option<app::Task<Message>> {
                 Err(why) => Message::FileUploadError(format!("File chooser error: {}", why)),
             }
         },
-        |msg| cosmic::Action::App(msg),
+        cosmic::Action::App,
     ))
 }
 

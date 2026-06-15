@@ -154,7 +154,7 @@ impl LunaWsClient {
             is_streaming: is_streaming.clone(),
         });
 
-        *self.handle_slot.lock().unwrap() = Some(handle.clone());
+        *self.handle_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle.clone());
         let handle_slot = self.handle_slot.clone();
         let event_tx_clone = event_tx.clone();
         self.event_tx = Some(event_tx);
@@ -273,7 +273,7 @@ impl LunaWsClient {
                 }
             }
 
-            *handle_slot.lock().unwrap() = None;
+            *handle_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
             tracing::info!("WebSocket connection loop ended");
         });
 
@@ -285,19 +285,19 @@ impl LunaWsClient {
             task.abort();
             let _ = task.await;
         }
-        *self.handle_slot.lock().unwrap() = None;
+        *self.handle_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.event_tx = None;
     }
 
     pub fn set_streaming(&self, streaming: bool) {
-        if let Some(handle) = self.handle_slot.lock().unwrap().as_ref() {
+        if let Some(handle) = self.handle_slot.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             handle.is_streaming.store(streaming, Ordering::Relaxed);
             tracing::debug!("WebSocket streaming state: {}", streaming);
         }
     }
 
     pub fn send(&self, command: ClientCommand) {
-        if let Some(handle) = self.handle_slot.lock().unwrap().as_ref() {
+        if let Some(handle) = self.handle_slot.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             if let Err(e) = handle.command_tx.send(command) {
                 tracing::error!("Failed to send command: {}", e);
             }
@@ -307,7 +307,7 @@ impl LunaWsClient {
     }
 
     pub fn is_connected(&self) -> bool {
-        self.handle_slot.lock().unwrap().is_some()
+        self.handle_slot.lock().unwrap_or_else(|e| e.into_inner()).is_some()
     }
 }
 

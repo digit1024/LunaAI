@@ -102,7 +102,7 @@ impl MessageConverter {
                 let mut combined = msg.content.clone();
                 if let Some(ref result_json) = msg.tool_result_json {
                     if !combined.is_empty() {
-                        combined.push_str("\n");
+                        combined.push('\n');
                     }
                     combined.push_str(&result_json.to_string());
                 }

@@ -4,7 +4,6 @@ use crate::llm::observability::{classify_reqwest_error, CallOutcome, LlmCallSpan
 use crate::llm::tokenizer::TokenCounter;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::pin::Pin;
 use tracing;
 
 // Ollama uses OpenAI-compatible API format
@@ -66,21 +65,6 @@ struct OllamaChoice {
     message: OllamaMessage,
 }
 
-#[derive(Debug, Deserialize)]
-struct OllamaStreamResponse {
-    choices: Vec<OllamaStreamChoice>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OllamaStreamChoice {
-    delta: OllamaDelta,
-}
-
-#[derive(Debug, Deserialize)]
-struct OllamaDelta {
-    content: Option<String>,
-}
-
 pub struct OllamaClient {
     client: Client,
     preset: ModelPreset,
@@ -106,153 +90,6 @@ impl OllamaClient {
 
 #[async_trait]
 impl LlmClient for OllamaClient {
-    async fn send_message_stream(
-        &self,
-        messages: Vec<Message>,
-        temperature: Option<f32>,
-        max_tokens: Option<u32>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>, LlmError> {
-        let mut span = LlmCallSpan::start("ollama", self.preset.model.clone(), true);
-        let context_tokens = Self::estimate_context_tokens(&messages);
-        span.set_input_shape(messages.len(), 0, context_tokens);
-
-        let ollama_messages: Vec<OllamaMessage> = messages
-            .into_iter()
-            .map(|msg| {
-                tracing::debug!(
-                    role = ?msg.role,
-                    content_length = msg.content.len(),
-                    attachment_count = msg.attachments.as_ref().map(|a| a.len()).unwrap_or(0),
-                    "Converting message to Ollama format"
-                );
-                
-                // Handle attachments by including them in the content
-                let mut content = msg.content;
-                if let Some(attachments) = msg.attachments {
-                    for attachment in attachments {
-                        match attachment.mime_type.as_str() {
-                            mime if mime.starts_with("image/") => {
-                                content.push_str(&format!("\n[Image: {} - {} bytes]", attachment.file_name, attachment.file_size));
-                            }
-                            mime if mime.starts_with("text/") => {
-                                if let Some(file_content) = &attachment.content {
-                                    content.push_str(&format!("\n\nFile: {}\nContent:\n{}", attachment.file_name, file_content));
-                                }
-                            }
-                            _ => {
-                                content.push_str(&format!("\nFile attached: {} ({} bytes)", attachment.file_name, attachment.file_size));
-                            }
-                        }
-                    }
-                }
-                
-                OllamaMessage {
-                    role: match msg.role {
-                        Role::User => "user".to_string(),
-                        Role::Assistant => "assistant".to_string(),
-                        Role::System => "system".to_string(),
-                        Role::Tool => "tool".to_string(),
-                    },
-                    content: Some(content),
-                    tool_calls: None,
-                    tool_call_id: msg.tool_call_id,
-                }
-            })
-            .collect();
-
-        let request = OllamaRequest {
-            model: self.preset.model.clone(),
-            messages: ollama_messages,
-            temperature: temperature.or(self.preset.temperature),
-            max_tokens: max_tokens.or(self.preset.max_tokens),
-            stream: true,
-            tools: None,
-        };
-
-        let mut request_builder = self
-            .client
-            .post(&self.preset.endpoint)
-            .header("Content-Type", "application/json");
-
-        // Only add authorization header if API key is provided
-        if !self.preset.api_key.is_empty() {
-            request_builder =
-                request_builder.header("Authorization", format!("Bearer {}", self.preset.api_key));
-        }
-
-        let response = match request_builder.json(&request).send().await {
-            Ok(r) => r,
-            Err(e) => {
-                let (outcome, kind) = classify_reqwest_error(&e);
-                span.finish_error(outcome, kind, e.to_string());
-                return Err(LlmError::Http(e));
-            }
-        };
-
-        let status = response.status();
-        span.set_response_headers(status.as_u16(), None);
-
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            let msg = format!("Ollama API error (HTTP {}): {}", status.as_u16(), error_text);
-            span.finish_error(CallOutcome::HttpError, format!("http_{}", status.as_u16()), msg.clone());
-            return Err(LlmError::Api(msg));
-        }
-
-        // Ollama's local server is the most reliable provider; close span
-        // optimistically. transport-level keepalive still applies.
-        span.finish_success();
-
-        let stream = response.bytes_stream();
-        let stream = futures::StreamExt::map(stream, |chunk_result| {
-            chunk_result
-                .map_err(|e| LlmError::Http(e))
-                .and_then(|chunk| {
-                    let chunk_str = String::from_utf8(chunk.to_vec())
-                        .map_err(|e| LlmError::Api(format!("Invalid UTF-8: {}", e)))?;
-
-                    // Parse SSE format
-                    let lines: Vec<&str> = chunk_str.lines().collect();
-                    let mut content = String::new();
-
-                    for line in lines {
-                        if line.starts_with("data: ") {
-                            let data = &line[6..]; // Remove "data: " prefix
-                            if data == "[DONE]" {
-                                break;
-                            }
-
-                            // Parse JSON
-                            if let Ok(stream_response) =
-                                serde_json::from_str::<OllamaStreamResponse>(data)
-                            {
-                                if let Some(choice) = stream_response.choices.first() {
-                                    if let Some(content_delta) = &choice.delta.content {
-                                        content.push_str(content_delta);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if content.is_empty() {
-                        Ok(None)
-                    } else {
-                        Ok(Some(content))
-                    }
-                })
-        });
-        let stream = futures::StreamExt::filter_map(stream, |result| async move {
-            match result {
-                Ok(Some(content)) => Some(Ok(content)),
-                Ok(None) => None,
-                Err(e) => Some(Err(e)),
-            }
-        });
-
-        Ok(Box::pin(stream))
-    }
-
     async fn send_message_with_tools(
         &self,
         messages: Vec<Message>,
@@ -274,18 +111,14 @@ impl LlmClient for OllamaClient {
                     "Converting message to Ollama format (tools)"
                 );
                 
-                let tool_calls = if let Some(tool_calls) = msg.tool_calls {
-                    Some(tool_calls.into_iter().map(|tc| OllamaToolCall {
+                let tool_calls = msg.tool_calls.map(|tool_calls| tool_calls.into_iter().map(|tc| OllamaToolCall {
                         id: tc.id,
                         r#type: "function".to_string(),
                         function: OllamaToolCallFunction {
                             name: tc.name,
                             arguments: serde_json::to_string(&tc.parameters).unwrap_or_else(|_| "{}".to_string()),
                         },
-                    }).collect())
-                } else {
-                    None
-                };
+                    }).collect());
                 
                 // Handle attachments by including them in the content
                 let mut content = msg.content;

@@ -6,7 +6,7 @@ use crate::ui::app::{MenuAction, Message};
 use cosmic::{Element, widget::{menu, RcElementWrapper}};
 
 /// Create the application menu bar
-pub fn create_menu_bar(key_binds: &std::collections::HashMap<menu::KeyBind, MenuAction>) -> Element<Message> {
+pub fn create_menu_bar(key_binds: &std::collections::HashMap<menu::KeyBind, MenuAction>) -> Element<'_, Message> {
     use cosmic::widget::menu::{items, root, Item, ItemHeight, ItemWidth, MenuBar, Tree};
 
     MenuBar::new(vec![

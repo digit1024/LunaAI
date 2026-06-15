@@ -182,11 +182,7 @@ impl TokenCounter {
                 } else if model_lower.contains("gpt-3.5-turbo") {
                     16_385
                 } else if model_lower.contains("deepseek") {
-                    if model_lower.contains("reasoner") {
-                        131_072
-                    } else if model_lower.contains("chat") || model_lower.contains("v2") {
-                        131_072
-                    } else if model_lower.contains("v1") {
+                    if model_lower.contains("v1") {
                         64_000
                     } else {
                         131_072
@@ -196,21 +192,22 @@ impl TokenCounter {
                 }
             }
             "anthropic" => {
-                if model_lower.contains("claude-3-5-sonnet") || model_lower.contains("claude-3-opus") {
-                    200_000
-                } else if model_lower.contains("claude-3") {
-                    200_000
-                } else if model_lower.contains("claude-2") {
+                if model_lower.contains("claude-3")
+                    || model_lower.contains("claude-3-5-sonnet")
+                    || model_lower.contains("claude-3-opus")
+                    || model_lower.contains("claude-2")
+                {
                     200_000
                 } else {
                     100_000 // Older Claude
                 }
             }
             "gemini" => {
-                if model_lower.contains("1.5-pro") || model_lower.contains("1.5-flash") {
-                    1_000_000 // Gemini 1.5
-                } else if model_lower.contains("2.0") {
-                    1_000_000 // Gemini 2.0
+                if model_lower.contains("1.5-pro")
+                    || model_lower.contains("1.5-flash")
+                    || model_lower.contains("2.0")
+                {
+                    1_000_000
                 } else {
                     32_768 // Gemini 1.0
                 }
@@ -220,10 +217,11 @@ impl TokenCounter {
                 let model_lower = model_lower.as_str();
                 if model_lower.contains("llama3.1") || model_lower.contains("llama3") {
                     128_000 // Llama 3.1
-                } else if model_lower.contains("mistral") || model_lower.contains("mixtral") {
-                    32_768 // Mistral/Mixtral
-                } else if model_lower.contains("qwen") {
-                    32_768 // Qwen
+                } else if model_lower.contains("mistral")
+                    || model_lower.contains("mixtral")
+                    || model_lower.contains("qwen")
+                {
+                    32_768
                 } else {
                     4_096 // Conservative default
                 }
@@ -298,7 +296,7 @@ mod tests {
         let text = "Hello, world! This is a test.";
         let tokens = TokenCounter::estimate_tokens(text);
         // Should be roughly 7-10 tokens
-        assert!(tokens >= 5 && tokens <= 15);
+        assert!((5..=15).contains(&tokens));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 pub mod conversation_subscriptions;
+pub mod context_pipeline;
 pub mod dto;
 mod handlers;
 mod http;
@@ -17,6 +18,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
+use uuid::Uuid;
 
 pub struct ServerOptions {
     pub config_path: Option<PathBuf>,
@@ -28,18 +30,61 @@ pub fn run(options: ServerOptions) -> Result<()> {
 }
 
 async fn launch(options: ServerOptions) -> Result<()> {
-    let raw_config = load_config(options.config_path.as_ref()).unwrap_or_else(|err| {
+    let config = Arc::new(load_config_or_default(options.config_path.as_ref()));
+    warn_if_default_profile_unresolved(&config);
+
+    let prompt_manager = load_prompt_manager(&config);
+    let (sqlite_settings, embedding_provider) = build_sqlite_and_embedding_settings(&config);
+    let storage = init_storage(sqlite_settings).await?;
+    let llm_observer = init_llm_audit_writer(storage.clone());
+    let mcp_registry = Arc::new(RwLock::new(MCPServerRegistry::new()));
+    let mcp_config = load_mcp_config(&config);
+    let default_allowed_tool_names =
+        initialize_mcp_registry(&mcp_registry, &mcp_config, &config).await;
+
+    let ctx = build_server_context(
+        config,
+        prompt_manager,
+        storage,
+        mcp_registry,
+        default_allowed_tool_names,
+        embedding_provider,
+        llm_observer,
+    )?;
+
+    spawn_background_workers(ctx.clone());
+
+    let bind_addr = format!("{}:{}", ctx.config.server.host, ctx.config.server.port);
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
+        .await
+        .context("failed to bind server")?;
+    tracing::info!(address = %bind_addr, "Luna server listening (HTTP + WebSocket on /ws)");
+
+    let app = http::create_http_router(ctx);
+    axum::serve(listener, app)
+        .await
+        .context("server error")?;
+    Ok(())
+}
+
+fn load_config_or_default(path: Option<&PathBuf>) -> AppConfig {
+    load_config(path).unwrap_or_else(|err| {
         tracing::warn!("Failed to load config: {}. Falling back to defaults.", err);
         AppConfig::default()
-    });
-    let config = Arc::new(raw_config);
+    })
+}
+
+fn warn_if_default_profile_unresolved(config: &AppConfig) {
     if config.resolve_default_profile().is_none() {
         tracing::warn!(
             default = %config.default,
             "Default profile does not resolve (missing profile or model_preset). WebSocket connections will fail until config is fixed. See docs/sample_config.toml."
         );
     }
-    let prompt_manager = PromptManager::load_from_config(&config.prompts).unwrap_or_else(|err| {
+}
+
+fn load_prompt_manager(config: &AppConfig) -> PromptManager {
+    PromptManager::load_from_config(&config.prompts).unwrap_or_else(|err| {
         tracing::warn!("Failed to load prompts: {}", err);
         PromptManager::load_from_config(&crate::prompts::PromptConfig::default())
             .unwrap_or_else(|e| {
@@ -48,16 +93,19 @@ async fn launch(options: ServerOptions) -> Result<()> {
                     system_prompt: None,
                 }
             })
-    });
+    })
+}
+
+fn build_sqlite_and_embedding_settings(
+    config: &AppConfig,
+) -> (SqliteSettings, Option<Arc<dyn crate::embeddings::EmbeddingProvider>>) {
     let mut sqlite_settings = SqliteSettings::from(&config.server);
-    if config.embedding.is_active() {
+    let embedding_provider = if config.embedding.is_active() {
         sqlite_settings.embedding_dimension = Some(config.embedding.dimensions);
         tracing::info!(
             dimensions = config.embedding.dimensions,
             "Embedding enabled for memory vector search"
         );
-    }
-    let embedding_provider = if config.embedding.is_active() {
         match crate::embeddings::OpenAiEmbeddingProvider::from_config(&config.embedding) {
             Ok(p) => Some(p),
             Err(e) => {
@@ -69,83 +117,93 @@ async fn launch(options: ServerOptions) -> Result<()> {
     } else {
         None
     };
-    let storage =
-        Storage::new_default_with_settings(sqlite_settings.clone()).unwrap_or_else(|err| {
+    (sqlite_settings, embedding_provider)
+}
+
+async fn init_storage(sqlite_settings: SqliteSettings) -> Result<Arc<Mutex<Storage>>> {
+    let storage = Storage::new_default_with_settings(sqlite_settings.clone())
+        .or_else(|err| {
             tracing::error!("SQLite init failed: {}. Using temp db.", err);
             Storage::new_with_settings(
                 std::env::temp_dir().join("cosmic_llm_server.db"),
                 sqlite_settings,
             )
-            .unwrap_or_else(|e| {
-                tracing::error!(error = %e, "Failed to create temporary database");
-                std::process::exit(1);
-            })
-        });
+        })?;
 
-    let storage = Arc::new(Mutex::new(storage));
+    Ok(Arc::new(Mutex::new(storage)))
+}
 
-    // Wire up the LLM call audit log. Every LlmCallSpan finish forwards a
-    // record into this channel; the writer below drains it asynchronously
-    // so the LLM hot path never blocks on SQLite.
-    spawn_llm_call_audit_writer(storage.clone());
+fn init_llm_audit_writer(
+    storage: Arc<Mutex<Storage>>,
+) -> Arc<dyn crate::llm::LlmObserver> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::llm::LlmCallRecord>();
+    let observer: Arc<dyn crate::llm::LlmObserver> =
+        Arc::new(LlmCallAuditObserver { tx });
 
-    let mcp_registry = Arc::new(RwLock::new(MCPServerRegistry::new()));
-    let subscriptions = Arc::new(conversation_subscriptions::ConversationSubscriptions::new());
-    let schedule_service = Arc::new(ScheduleService::new(storage.clone()));
-    let mcp_config = load_mcp_config(&config);
-    let default_allowed_tool_names = initialize_mcp_registry(&mcp_registry, &mcp_config, &config).await;
+    tokio::spawn(async move {
+        while let Some(record) = rx.recv().await {
+            let storage_guard = storage.lock().await;
+            if let Err(e) = storage_guard.insert_llm_call(&record) {
+                tracing::warn!(
+                    error = %e,
+                    call_id = %record.call_id,
+                    "Failed to persist llm_call audit row"
+                );
+            }
+        }
+        tracing::debug!("LLM audit writer channel closed; exiting");
+    });
 
-    let ctx = Arc::new(ServerContext {
+    observer
+}
+
+fn build_server_context(
+    config: Arc<AppConfig>,
+    prompt_manager: PromptManager,
+    storage: Arc<Mutex<Storage>>,
+    mcp_registry: Arc<RwLock<MCPServerRegistry>>,
+    default_allowed_tool_names: std::collections::HashSet<String>,
+    embedding_provider: Option<Arc<dyn crate::embeddings::EmbeddingProvider>>,
+    llm_observer: Arc<dyn crate::llm::LlmObserver>,
+) -> Result<Arc<ServerContext>> {
+    crate::llm::set_llm_observer(llm_observer.clone());
+
+    Ok(Arc::new(ServerContext {
         config: config.clone(),
         server_cfg: Arc::new(config.server.clone()),
+        static_token: Uuid::new_v4().to_string(),
         prompt_manager,
         storage: storage.clone(),
         mcp_registry,
-        subscriptions,
-        schedule_service,
+        subscriptions: Arc::new(conversation_subscriptions::ConversationSubscriptions::new()),
+        schedule_service: Arc::new(ScheduleService::new(storage)),
         default_allowed_tool_names,
         embedding_provider,
         active_agent_runs: Arc::new(RwLock::new(HashMap::new())),
-    });
+    }))
+}
 
-    // Spawn background title generation thread only if profile is configured
-    if config.title_summary.title_generation_profile.is_some() {
-        spawn_title_generation_thread(config.clone(), storage);
+fn spawn_background_workers(ctx: Arc<ServerContext>) {
+    if ctx.config.title_summary.title_generation_profile.is_some() {
+        spawn_title_generation_thread(ctx.config.clone(), ctx.storage.clone());
     }
-
-    // Scheduler loop: run due scheduled jobs every 45s
     spawn_scheduler_loop(ctx.clone());
-
-    // Deep sleep loop: periodic memory maintenance
-    if config.deep_sleep.enabled {
-        if let Some(ref profile_name) = config.deep_sleep.profile {
+    if ctx.config.deep_sleep.enabled {
+        if ctx.config.deep_sleep.profile.is_some() {
             tracing::info!(
-                profile = %profile_name,
-                interval_hours = config.deep_sleep.interval_hours,
-                max_conversations = config.deep_sleep.max_conversations_per_run,
+                profile = %ctx.config.deep_sleep.profile.as_deref().unwrap_or(""),
+                interval_hours = ctx.config.deep_sleep.interval_hours,
+                max_conversations = ctx.config.deep_sleep.max_conversations_per_run,
                 "Deep Sleep: enabled, first check in {}s",
                 DEEP_SLEEP_POLL_SECS
             );
-            spawn_deep_sleep_loop(ctx.clone());
+            spawn_deep_sleep_loop(ctx);
         } else {
             tracing::warn!("Deep sleep is enabled but no profile configured -- skipping");
         }
     } else {
         tracing::info!("Deep Sleep: disabled (set [deep_sleep] enabled=true in config)");
     }
-
-    // Single server on host:port: HTTP (/api/*) and WebSocket (/ws)
-    let bind_addr = format!("{}:{}", config.server.host, config.server.port);
-    let listener = tokio::net::TcpListener::bind(&bind_addr)
-        .await
-        .context("failed to bind server")?;
-    tracing::info!(address = %bind_addr, "Luna server listening (HTTP + WebSocket on /ws)");
-
-    let app = http::create_http_router(ctx);
-    axum::serve(listener, app)
-        .await
-        .context("server error")?;
-    Ok(())
 }
 
 fn load_config(path: Option<&PathBuf>) -> Result<AppConfig, config::ConfigError> {
@@ -377,25 +435,6 @@ impl crate::llm::LlmObserver for LlmCallAuditObserver {
             tracing::warn!(error = %err, "LLM audit log receiver dropped; record lost");
         }
     }
-}
-
-fn spawn_llm_call_audit_writer(storage: Arc<Mutex<Storage>>) {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::llm::LlmCallRecord>();
-    crate::llm::set_llm_observer(Arc::new(LlmCallAuditObserver { tx }));
-
-    tokio::spawn(async move {
-        while let Some(record) = rx.recv().await {
-            let storage_guard = storage.lock().await;
-            if let Err(e) = storage_guard.insert_llm_call(&record) {
-                tracing::warn!(
-                    error = %e,
-                    call_id = %record.call_id,
-                    "Failed to persist llm_call audit row"
-                );
-            }
-        }
-        tracing::debug!("LLM audit writer channel closed; exiting");
-    });
 }
 
 fn spawn_title_generation_thread(

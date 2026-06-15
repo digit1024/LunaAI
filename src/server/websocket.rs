@@ -8,7 +8,6 @@ use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use serde_json;
 
 /// Runs the WebSocket command loop after upgrade. Auth is performed by the HTTP layer before upgrade.
 pub async fn handle_ws_upgraded(socket: WebSocket, ctx: Arc<ServerContext>) -> Result<()> {

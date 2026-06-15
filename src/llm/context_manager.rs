@@ -93,7 +93,7 @@ impl MessageWithImportance {
         token_counter: &TokenCounter,
     ) -> Self {
         let is_system = msg.role == Role::System;
-        let has_tool_calls = msg.tool_calls.as_ref().map_or(false, |calls| !calls.is_empty());
+        let has_tool_calls = msg.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty());
         let has_tool_result = msg.tool_call_id.is_some();
         let _tool_call_id = msg.tool_call_id.clone();
 

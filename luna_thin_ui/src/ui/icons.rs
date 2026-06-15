@@ -28,6 +28,12 @@ pub struct IconCache {
     bundled_icons: std::collections::HashSet<String>,
 }
 
+impl Default for IconCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IconCache {
     pub fn new() -> Self {
         let mut bundled_icons = std::collections::HashSet::new();

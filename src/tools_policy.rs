@@ -116,5 +116,5 @@ pub async fn compute_allowed_tool_names(
         .cloned()
         .unwrap_or_else(ToolsPolicy::default);
     let guard = registry.read().await;
-    compute_policy_result(&*guard, &policy).await
+    compute_policy_result(&guard, &policy).await
 }

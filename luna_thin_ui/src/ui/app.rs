@@ -413,6 +413,8 @@ pub struct LunaThinApp {
     pub messages: Vec<ChatMessage>,
     pub profiles: Vec<String>,
     pub current_profile: String,
+    /// Ephemeral token for static file URLs (from HealthOk).
+    pub static_token: Option<String>,
     pub mcp_servers: Vec<crate::server::dto::MCPServerInfo>,
 
     // History page
@@ -514,6 +516,7 @@ impl LunaThinApp {
             messages: Vec::new(),
             profiles: Vec::new(),
             current_profile: String::new(),
+            static_token: None,
             mcp_servers: Vec::new(),
             history_search: String::new(),
             history_search_results: Vec::new(),
@@ -729,7 +732,7 @@ impl LunaThinApp {
                 // data: URI or file:// — resolve synchronously inside the task
                 tasks.push(app::Task::perform(
                     async move { msg },
-                    |msg| cosmic::Action::App(msg),
+                    cosmic::Action::App,
                 ));
             } else {
                 // Remote http/https
@@ -752,7 +755,7 @@ impl LunaThinApp {
                             },
                         }
                     },
-                    |msg| cosmic::Action::App(msg),
+                    cosmic::Action::App,
                 ));
             }
         }
@@ -935,9 +938,9 @@ impl LunaThinApp {
         let mut result = Vec::new();
         
         for m in messages {
-            if m.tool_call_id.is_some() {
+            if let Some(tool_call_id) = m.tool_call_id.as_deref() {
                 // Tool message - single bubble with params and result
-                let tool_call_id = m.tool_call_id.clone().unwrap();
+                let tool_call_id = tool_call_id.to_string();
                 let tool_name = m.tool_name.clone().unwrap_or_else(|| "tool".to_string());
                 let tool_status = m.tool_status.clone().unwrap_or_else(|| "done".to_string());
                 let params = m.tool_params_json.as_ref()
@@ -1178,10 +1181,11 @@ impl LunaThinApp {
 
     pub(crate) fn handle_server_event(&mut self, event: ServerEvent) -> app::Task<Message> {
         match event {
-            ServerEvent::HealthOk { profile, .. } => {
+            ServerEvent::HealthOk { profile, static_token, .. } => {
                 tracing::debug!("HealthOk received, profile: {}", profile);
                 self.connection_status = ConnectionStatus::Connected;
                 self.current_profile = profile;
+                self.static_token = (!static_token.is_empty()).then_some(static_token);
             }
             ServerEvent::Error { message } => {
                 if let Some(id) = self.current_conversation_id.clone() {
@@ -1653,14 +1657,14 @@ impl Application for LunaThinApp {
                                 Err(e) => Message::MCPServersLoadError(e.to_string()),
                             }
                         },
-                        |msg| cosmic::Action::App(msg),
+                        cosmic::Action::App,
                     );
                 } else {
                     return app::Task::perform(
                         async move {
                             Message::MCPServersLoadError("Not connected to server".to_string())
                         },
-                        |msg| cosmic::Action::App(msg),
+                        cosmic::Action::App,
                     );
                 }
             }
@@ -1790,7 +1794,7 @@ impl Application for LunaThinApp {
         Subscription::batch(subscriptions)
     }
 
-    fn view(&self) -> Element<Self::Message> {
+    fn view(&self) -> Element<'_, Self::Message> {
         match self.current_page {
             Page::Chat => chat_page(self),
             Page::History => history_page(self),
@@ -1800,7 +1804,7 @@ impl Application for LunaThinApp {
         }
     }
 
-    fn header_start(&self) -> Vec<Element<Self::Message>> {
+    fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
         vec![crate::ui::widgets::menu_bar::create_menu_bar(&self.key_binds)]
     }
 
@@ -1810,7 +1814,7 @@ impl Application for LunaThinApp {
 
     fn context_drawer(
         &self,
-    ) -> Option<app::context_drawer::ContextDrawer<Self::Message>> {
+    ) -> Option<app::context_drawer::ContextDrawer<'_, Self::Message>> {
         if self.show_about {
             Some(
                 app::context_drawer::about(
@@ -1840,13 +1844,13 @@ impl Application for LunaThinApp {
                     if page == Page::MCPServers && self.connection_status == ConnectionStatus::Connected {
                         return app::Task::perform(
                             async { Message::LoadMCPServers },
-                            |msg| cosmic::Action::App(msg),
+                            cosmic::Action::App,
                         );
                     }
                     if page == Page::Memories && self.connection_status == ConnectionStatus::Connected {
                         return app::Task::perform(
                             async { Message::LoadMemories },
-                            |msg| cosmic::Action::App(msg),
+                            cosmic::Action::App,
                         );
                     }
                 }

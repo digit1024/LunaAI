@@ -476,7 +476,7 @@ async fn step2_evaluate_memories(
                                 }
                             }
                         }
-                        "keep" | _ => {
+                        _ => {
                             kept += 1;
                         }
                     }

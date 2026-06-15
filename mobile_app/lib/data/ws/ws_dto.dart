@@ -9,6 +9,7 @@ sealed class ServerEvent {
         return HealthOkEvent(
           timestamp: json['timestamp'] as int? ?? 0,
           profile: json['profile'] as String? ?? '',
+          staticToken: json['static_token'] as String? ?? '',
         );
       case 'error':
         return ErrorEvent(json['message'] as String? ?? 'Unknown error');
@@ -123,8 +124,13 @@ sealed class ServerEvent {
 class HealthOkEvent extends ServerEvent {
   final int timestamp;
   final String profile;
+  final String staticToken;
 
-  const HealthOkEvent({required this.timestamp, required this.profile});
+  const HealthOkEvent({
+    required this.timestamp,
+    required this.profile,
+    required this.staticToken,
+  });
 }
 
 class ErrorEvent extends ServerEvent {

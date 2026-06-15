@@ -93,7 +93,6 @@ struct OpenAIToolCallFunction {
 struct OpenAIToolCallDelta {
     index: Option<usize>,
     id: Option<String>,
-    r#type: Option<String>,
     function: Option<OpenAIToolCallFunctionDelta>,
 }
 
@@ -108,11 +107,6 @@ struct OpenAIResponse {
     choices: Vec<OpenAIChoice>,
     #[serde(default)]
     usage: Option<OpenAIUsage>,
-    /// Server-reported routed model (sometimes differs from what we asked
-    /// for; not surfaced today but useful for debugging via raw bodies).
-    #[serde(default)]
-    #[allow(dead_code)]
-    model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -445,13 +439,13 @@ impl OpenAIClient {
 
         if let Some(content_delta) = choice.delta.content {
             if !content_delta.is_empty() {
-                events.push(ChatStreamEvent::ContentDelta(content_delta));
+                events.push(ChatStreamEvent::Content(content_delta));
             }
         }
 
         if let Some(reasoning_delta) = choice.delta.reasoning_content {
             if !reasoning_delta.is_empty() {
-                events.push(ChatStreamEvent::ReasoningContentDelta(reasoning_delta));
+                events.push(ChatStreamEvent::Reasoning(reasoning_delta));
             }
         }
 
@@ -471,7 +465,7 @@ impl OpenAIClient {
                     }
                 }
                 if let Some(tool_call) = state.try_into_tool_call() {
-                    events.push(ChatStreamEvent::ToolCallDelta(tool_call));
+                    events.push(ChatStreamEvent::ToolCall(tool_call));
                     tool_states.remove(&idx);
                 }
             }
@@ -637,199 +631,6 @@ impl OpenAIClient {
 
 #[async_trait]
 impl LlmClient for OpenAIClient {
-    async fn send_message_stream(
-        &self,
-        messages: Vec<Message>,
-        temperature: Option<f32>,
-        max_tokens: Option<u32>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>, LlmError> {
-        let mut span = LlmCallSpan::start("openai", self.preset.model.clone(), true);
-        let messages_in = messages.len();
-        let context_tokens = Self::estimate_context_tokens(&messages);
-        span.set_input_shape(messages_in, 0, context_tokens);
-
-        let request = self.build_request(OpenAIRequestParams {
-            messages: Self::map_messages(messages),
-            temperature,
-            max_tokens,
-            stream: true,
-            tools: None,
-        });
-
-        if let Ok(payload) = serde_json::to_string(&request) {
-            tracing::debug!(target: "llm.body", payload = %payload, "OpenAI stream request");
-        }
-
-        let response = match self
-            .client
-            .post(&self.preset.endpoint)
-            .header("Authorization", format!("Bearer {}", self.preset.api_key))
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                let (outcome, kind) = classify_reqwest_error(&e);
-                span.finish_error(outcome, kind, e.to_string());
-                return Err(LlmError::Http(e));
-            }
-        };
-
-        let status = response.status();
-        let request_id = Self::extract_request_id(&response);
-        let retry_after = Self::extract_retry_after(&response);
-        span.set_response_headers(status.as_u16(), request_id);
-
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            let (err, outcome, kind) = Self::classify_http_error(status, retry_after, error_text);
-            span.finish_error(outcome, kind, err.to_string());
-            return Err(err);
-        }
-
-        // Stream into a channel so we can run truncation detection out-of-band.
-        let mut bytes_stream = response.bytes_stream();
-        let (tx, rx) = mpsc::unbounded_channel::<Result<String, LlmError>>();
-
-        let call_id = span.call_id();
-        let model_for_log = self.preset.model.clone();
-        tokio::spawn(async move {
-            let mut saw_done = false;
-            let mut bytes_in: usize = 0;
-            let mut last_event = Instant::now();
-            let mut finish_reason: Option<String> = None;
-            let mut usage: Option<OpenAIUsage> = None;
-            let mut tool_states: HashMap<usize, StreamedToolCallState> = HashMap::new();
-            let mut content_chars: usize = 0;
-            let mut body_capture = SseBodyCapture::new(SSE_BODY_CAPTURE_CAP);
-
-            while let Some(chunk_result) = bytes_stream.next().await {
-                match chunk_result {
-                    Ok(chunk) => {
-                        bytes_in += chunk.len();
-                        span.observe_bytes(chunk.len());
-                        body_capture.append(&chunk);
-                        let chunk_str = match String::from_utf8(chunk.to_vec()) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                let msg = format!("Invalid UTF-8 in stream: {}", e);
-                                log_response_body_on_failure(
-                                    &body_capture,
-                                    call_id,
-                                    "openai",
-                                    &model_for_log,
-                                    "utf8",
-                                );
-                                span.finish_error(CallOutcome::Parse, "utf8", msg.clone());
-                                let _ = tx.send(Err(LlmError::Api(msg)));
-                                return;
-                            }
-                        };
-
-                        // P2: count SSE comment / data lines as liveness.
-                        if Self::chunk_has_liveness_signal(&chunk_str) {
-                            last_event = Instant::now();
-                        }
-
-                        let mut content = String::new();
-                        let events = OpenAIClient::parse_stream_chunk(
-                            &chunk_str,
-                            &mut tool_states,
-                            &mut finish_reason,
-                            &mut usage,
-                            &mut saw_done,
-                        );
-                        for ev in events {
-                            if let ChatStreamEvent::ContentDelta(c) = ev {
-                                content.push_str(&c);
-                            }
-                        }
-                        if !content.is_empty() {
-                            content_chars += content.chars().count();
-                            if tx.send(Ok(content)).is_err() {
-                                return;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log_response_body_on_failure(
-                            &body_capture,
-                            call_id,
-                            "openai",
-                            &model_for_log,
-                            "transport_error",
-                        );
-                        let (outcome, kind) = classify_reqwest_error(&e);
-                        span.finish_error(outcome, kind, e.to_string());
-                        let _ = tx.send(Err(LlmError::Http(e)));
-                        return;
-                    }
-                }
-            }
-
-            // Stream ended. Was it a clean end?
-            if !saw_done && usage.is_none() {
-                let age = last_event.elapsed().as_millis();
-                let reason = format!(
-                    "no [DONE] sentinel and no terminal usage frame received after {} bytes",
-                    bytes_in
-                );
-                log_response_body_on_failure(
-                    &body_capture,
-                    call_id,
-                    "openai",
-                    &model_for_log,
-                    "stream_truncated",
-                );
-                span.finish_error(
-                    CallOutcome::StreamTruncated,
-                    "stream_truncated",
-                    reason.clone(),
-                );
-                let _ = tx.send(Err(LlmError::StreamTruncated {
-                    bytes_read: bytes_in,
-                    last_event_age_ms: age,
-                    reason,
-                }));
-                return;
-            }
-
-            // P1: finish_reason=length with no content is degraded.
-            if finish_reason.as_deref() == Some("length") && content_chars == 0 {
-                let reason = "model hit max_tokens before emitting any content".to_string();
-                log_response_body_on_failure(
-                    &body_capture,
-                    call_id,
-                    "openai",
-                    &model_for_log,
-                    "length_truncated",
-                );
-                span.finish_error(
-                    CallOutcome::StreamTruncated,
-                    "length_truncated",
-                    reason,
-                );
-                let _ = tx.send(Err(LlmError::LengthTruncated {
-                    partial_tool_calls: 0,
-                    content_chars: 0,
-                }));
-                return;
-            }
-
-            if let Some(u) = usage.as_ref() {
-                span.set_usage(u.prompt_tokens, u.completion_tokens, u.total_tokens);
-            }
-            if let Some(reason) = finish_reason {
-                span.set_finish_reason(reason);
-            }
-            span.finish_success();
-        });
-
-        Ok(Box::pin(UnboundedReceiverStream::new(rx)))
-    }
-
     async fn send_message_with_tools(
         &self,
         messages: Vec<Message>,
@@ -1147,14 +948,14 @@ impl LlmClient for OpenAIClient {
                                 );
                                 for event in events {
                                     match &event {
-                                        ChatStreamEvent::ToolCallDelta(_) => {
+                                        ChatStreamEvent::ToolCall(_) => {
                                             span.observe_tool_call();
                                             completed_tool_calls += 1;
                                         }
-                                        ChatStreamEvent::ContentDelta(c) => {
+                                        ChatStreamEvent::Content(c) => {
                                             content_chars += c.chars().count();
                                         }
-                                        ChatStreamEvent::ReasoningContentDelta(_) => {}
+                                        ChatStreamEvent::Reasoning(_) => {}
                                     }
                                     if tx.send(Ok(event)).is_err() {
                                         return;

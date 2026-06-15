@@ -13,9 +13,6 @@ use std::sync::Arc;
 pub trait EmbeddingProvider: Send + Sync {
     /// Embed a single text string. Returns a vector of dimension matching the configured model.
     async fn embed(&self, text: &str) -> Result<Vec<f32>>;
-
-    /// Expected dimension of the embedding vector.
-    fn dimensions(&self) -> usize;
 }
 
 /// OpenAI-compatible embeddings API client.
@@ -113,9 +110,5 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
         }
 
         Ok(embedding)
-    }
-
-    fn dimensions(&self) -> usize {
-        self.dimensions
     }
 }

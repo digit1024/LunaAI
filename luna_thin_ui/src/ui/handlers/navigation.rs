@@ -17,13 +17,13 @@ pub fn handle_navigation_messages(
             if page == crate::ui::app::Page::MCPServers && app.connection_status == crate::ui::app::ConnectionStatus::Connected {
                 return Some(app::Task::perform(
                     async { Message::LoadMCPServers },
-                    |msg| cosmic::Action::App(msg),
+                    cosmic::Action::App,
                 ));
             }
             if page == crate::ui::app::Page::Memories && app.connection_status == crate::ui::app::ConnectionStatus::Connected {
                 return Some(app::Task::perform(
                     async { Message::LoadMemories },
-                    |msg| cosmic::Action::App(msg),
+                    cosmic::Action::App,
                 ));
             }
             None

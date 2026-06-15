@@ -16,7 +16,10 @@ use multer::Multipart;
 use serde::Serialize;
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 use uuid::Uuid;
+
+const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024; // 50 MB
 
 #[derive(Debug, Serialize)]
 pub struct AttachFileResponse {
@@ -67,7 +70,7 @@ fn extract_api_key(headers: &HeaderMap) -> Option<String> {
 
 fn authorize(headers: &HeaderMap, expected_key: &str) -> bool {
     extract_api_key(headers)
-        .map(|provided| provided == expected_key)
+        .map(|provided| bool::from(provided.as_bytes().ct_eq(expected_key.as_bytes())))
         .unwrap_or(false)
 }
 
@@ -88,9 +91,9 @@ pub async fn attach_file_handler(
         .strip_prefix("multipart/form-data; boundary=")
         .ok_or(StatusCode::BAD_REQUEST)?;
 
-    let body_bytes = axum::body::to_bytes(body, usize::MAX)
+    let body_bytes = axum::body::to_bytes(body, MAX_UPLOAD_BYTES)
         .await
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+        .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)?;
     let body_stream = stream::once(async move { Ok::<_, std::io::Error>(body_bytes) });
     let mut multipart = Multipart::new(body_stream, boundary);
 
@@ -142,9 +145,13 @@ pub async fn attach_file_handler(
 
     let uploads_base = ctx.config.uploads_dir();
     let target_dir = uploads_base.join(subdir);
-    std::fs::create_dir_all(&target_dir).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tokio::fs::create_dir_all(&target_dir)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let path = target_dir.join(&storage_name);
-    std::fs::write(&path, &data).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tokio::fs::write(&path, &data)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let stored_path = path.display().to_string();
 
@@ -175,18 +182,18 @@ pub async fn remove_file_handler(
     let uploads_base = ctx.config.uploads_dir();
     let prefix = format!("{}.", uid);
     let mut removed = false;
-    if let Ok(rd) = std::fs::read_dir(&uploads_base) {
-        for sub in rd.flatten() {
+    if let Ok(mut rd) = tokio::fs::read_dir(&uploads_base).await {
+        while let Ok(Some(sub)) = rd.next_entry().await {
             let path = sub.path();
             if !path.is_dir() {
                 continue;
             }
-            if let Ok(inner) = std::fs::read_dir(&path) {
-                for e in inner.flatten() {
+            if let Ok(mut inner) = tokio::fs::read_dir(&path).await {
+                while let Ok(Some(e)) = inner.next_entry().await {
                     let name = e.file_name();
                     if let Some(s) = name.to_str() {
                         if s.starts_with(&prefix) {
-                            if std::fs::remove_file(e.path()).is_ok() {
+                            if tokio::fs::remove_file(e.path()).await.is_ok() {
                                 removed = true;
                                 tracing::info!("Removed upload {}", s);
                             }
@@ -274,13 +281,13 @@ async fn ws_handler(
     .into_response()
 }
 
-/// Serve static files from config_dir/static at /api/static/{api_key}/{*path}.
-/// Auth: api_key is the first path segment (e.g. /api/static/YourKey/conv-id/image.jpg).
+/// Serve static files from config_dir/static at /api/static/{static_token}/{*path}.
+/// Auth: ephemeral capability token from HealthOk (not the permanent API key).
 pub async fn static_file_handler(
-    Path((api_key, path)): Path<(String, String)>,
+    Path((token, path)): Path<(String, String)>,
     State(ctx): State<Arc<ServerContext>>,
 ) -> Response {
-    if api_key != ctx.server_cfg.api_key {
+    if token != ctx.static_token {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
     let path = path.trim_start_matches('/');
@@ -316,7 +323,7 @@ pub fn create_http_router(ctx: Arc<ServerContext>) -> Router {
         .route("/api/attach-file", post(attach_file_handler))
         .route("/api/attach-file/{file_id}", delete(remove_file_handler))
         .route("/api/mcp-servers", get(list_mcp_servers_handler))
-        .route("/api/static/{api_key}/{*path}", get(static_file_handler))
+        .route("/api/static/{static_token}/{*path}", get(static_file_handler))
         .route("/ws", get(ws_handler))
         .with_state(ctx)
 }

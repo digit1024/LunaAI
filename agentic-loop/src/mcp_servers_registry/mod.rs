@@ -15,6 +15,12 @@ pub struct MCPServerRegistry {
     pub failed_servers: HashMap<String, String>, // server_name -> error_message
 }
 
+impl Default for MCPServerRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MCPServerRegistry {
     pub fn new() -> Self {
         Self {
@@ -77,14 +83,14 @@ impl MCPServerRegistry {
     pub async fn get_all_tools(&self) -> Result<Vec<rust_mcp_sdk::schema::Tool>> {
         let mut tools = Vec::new();
         for (_, server_connection) in self.servers.iter() {
-            let server_tools = server_connection.read().await.tools().iter().cloned().collect::<Vec<rust_mcp_sdk::schema::Tool>>();
+            let server_tools = server_connection.read().await.tools().to_vec();
             tools.extend(server_tools.clone());
         }
         Ok(tools)
     }
     pub async fn get_all_tools_by_server_name(&self, server_name: &str) -> Result<Vec<rust_mcp_sdk::schema::Tool>> {
         if let Some(server_connection) = self.servers.get(server_name) {
-            let server_tools = server_connection.read().await.tools().iter().cloned().collect::<Vec<rust_mcp_sdk::schema::Tool>>();
+            let server_tools = server_connection.read().await.tools().to_vec();
             Ok(server_tools)
         } else {
             Ok(Vec::new()) // Return empty vec if server not found
@@ -121,7 +127,7 @@ impl MCPServerRegistry {
     pub async fn  enable_all_tools(&mut self) {
         let mut tools = Vec::new();
         for (_, server_connection) in self.servers.iter() {
-            let server_tools = server_connection.read().await.tools().iter().cloned().collect::<Vec<rust_mcp_sdk::schema::Tool>>();
+            let server_tools = server_connection.read().await.tools().to_vec();
             tools.extend(server_tools.clone());
         }
         self.tools_white_list.extend(tools.iter().map(|tool| tool.name.clone()));
@@ -234,7 +240,7 @@ mod tests {
     async fn test_initialize_from_config() {
         let mut mcp_server_registry = MCPServerRegistry::new();
         let path = test_data_path("sample_config.json");
-        let config = MCPConfig::load_from_json(&path.as_path()).unwrap();
+        let config = MCPConfig::load_from_json(path.as_path()).unwrap();
         mcp_server_registry.initialize_from_config(&config).await.unwrap();
 
         // 1 server shoudl be connected - one shoudl be failed
@@ -267,7 +273,10 @@ mod tests {
         //call tool list_directory
         let result = mcp_server_registry.call_tool("list_directory".into(), serde_json::json!({"path":"/tmp"}).as_object().unwrap().clone()).await.unwrap();
         // shoudl be successfull 
-        assert!(result.is_error== Some(false) ||result.is_error== None, "Expected tool call to be successful");
+        assert!(
+            result.is_error == Some(false) || result.is_error.is_none(),
+            "Expected tool call to be successful"
+        );
         
 
 

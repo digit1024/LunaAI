@@ -1,7 +1,7 @@
 use super::protocol::{AgentUpdate, PlannedTool, RunContext};
 use crate::llm::{ChatStreamEvent, LlmClient, LlmError, Message, Role, ToolCall, ToolDefinition, ToolResult};
 use crate::mcp::conversions::{tool_call_to_params, tools_to_definitions};
-use crate::services::ScheduleService;
+use crate::services::{ScheduleService, ScheduleTaskRequest};
 use agentic_loop::mcp_servers_registry::MCPServerRegistry;
 use anyhow::{Context, Result};
 use futures::StreamExt;
@@ -512,7 +512,7 @@ impl AgenticLoop {
 
             while let Some(event) = stream.next().await {
                 match event {
-                    Ok(ChatStreamEvent::ContentDelta(chunk)) => {
+                    Ok(ChatStreamEvent::Content(chunk)) => {
                         if chunk.is_empty() {
                             continue;
                         }
@@ -525,7 +525,7 @@ impl AgenticLoop {
                             });
                         }
                     }
-                    Ok(ChatStreamEvent::ReasoningContentDelta(chunk)) => {
+                    Ok(ChatStreamEvent::Reasoning(chunk)) => {
                         if !chunk.is_empty() {
                             reasoning_content.push_str(&chunk);
                             // Send reasoning content delta during streaming
@@ -536,7 +536,7 @@ impl AgenticLoop {
                             }
                         }
                     }
-                    Ok(ChatStreamEvent::ToolCallDelta(tool_call)) => {
+                    Ok(ChatStreamEvent::ToolCall(tool_call)) => {
                         if let Some(tx) = agent_tx.as_ref() {
                             let planned = PlannedTool {
                                 id: tool_call.id.clone(),
@@ -942,15 +942,15 @@ impl AgenticLoop {
         }
 
         match svc
-            .schedule_task(
-                ctx.conversation_id,
+            .schedule_task(ScheduleTaskRequest {
+                conversation_id: ctx.conversation_id,
                 message,
-                &run_at,
+                run_at,
                 schedule,
-                Some(ctx.profile_name.clone()),
+                profile_name: Some(ctx.profile_name.clone()),
                 title,
                 new_conversation,
-            )
+            })
             .await
         {
             Ok(job) => {
@@ -1163,9 +1163,7 @@ impl AgenticLoop {
                     );
                     if let Some(tx) = agent_tx.as_ref() {
                         let _ = tx.send(AgentUpdate::ModelError {
-                            error: format!(
-                                "Model hit max_tokens before producing any usable output. Consider raising max_tokens."
-                            ),
+                            error: "Model hit max_tokens before producing any usable output. Consider raising max_tokens.".to_string(),
                         });
                     }
                     return Err(anyhow::anyhow!(

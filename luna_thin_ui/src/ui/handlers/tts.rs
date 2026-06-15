@@ -50,7 +50,7 @@ pub fn handle_tts_messages(
                             }
                         }
                     },
-                    |msg| cosmic::Action::App(msg),
+                    cosmic::Action::App,
                 ));
             } else {
                 tracing::warn!("TTS client not available");
@@ -76,7 +76,7 @@ pub fn handle_tts_messages(
                             }
                         }
                     },
-                    |msg| cosmic::Action::App(msg),
+                    cosmic::Action::App,
                 ));
             } else {
                 tracing::warn!("TTS client not available for stop");

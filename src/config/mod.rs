@@ -1,4 +1,3 @@
-use anyhow::Context;
 use config::{Config, ConfigError, File};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -146,18 +145,12 @@ pub struct MCPServerConfig {
 }
 
 #[derive(Debug, Deserialize, Clone, Serialize)]
+#[derive(Default)]
 pub struct MCPConfig {
     #[serde(rename = "mcpServers")]
     pub servers: HashMap<String, MCPServerConfig>,
 }
 
-impl Default for MCPConfig {
-    fn default() -> Self {
-        Self {
-            servers: HashMap::new(),
-        }
-    }
-}
 
 #[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct ServerConfig {
@@ -622,10 +615,6 @@ impl AppConfig {
         Self::config_dir().join("config.toml")
     }
 
-    pub fn config_toml_path() -> PathBuf {
-        Self::config_dir().join("config.toml")
-    }
-
     /// Directory for uploaded files: `config_dir/uploads`
     pub fn uploads_dir(&self) -> PathBuf {
         Self::config_dir().join("uploads")
@@ -659,14 +648,6 @@ impl AppConfig {
         config.try_deserialize()
     }
 
-    pub fn get_default_profile(&self) -> Option<&LlmProfile> {
-        self.profiles.get(&self.default)
-    }
-
-    pub fn get_profile(&self, name: &str) -> Option<&LlmProfile> {
-        self.profiles.get(name)
-    }
-
     /// Resolve profile by name to profile + model preset. Use for building LLM client.
     pub fn resolve_profile(&self, name: &str) -> Option<ResolvedProfile> {
         let profile = self.profiles.get(name)?.clone();
@@ -677,38 +658,6 @@ impl AppConfig {
     /// Resolve default profile to profile + model preset.
     pub fn resolve_default_profile(&self) -> Option<ResolvedProfile> {
         self.resolve_profile(&self.default)
-    }
-
-    #[allow(dead_code)] // Public API method
-    pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
-        use chrono::Local;
-        use std::fs;
-        use toml;
-
-        let config_path = Self::config_toml_path();
-
-        // Create config directory if it doesn't exist
-        if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        // Create backup if config file exists
-        if config_path.exists() {
-            let now = Local::now();
-            let backup_filename = format!("config_bcp_{}.toml", now.format("%Y_%m_%d_%H_%M_%S"));
-            let backup_path = config_path
-                .parent()
-                .ok_or_else(|| anyhow::anyhow!("Config path has no parent directory"))
-                .with_context(|| {
-                    format!("Failed to create backup path for {}", config_path.display())
-                })?
-                .join(backup_filename);
-            fs::copy(&config_path, &backup_path)?;
-        }
-
-        let toml_string = toml::to_string_pretty(self)?;
-        fs::write(config_path, toml_string)?;
-        Ok(())
     }
 
     pub fn resolve_config_path(path: &str) -> PathBuf {
@@ -745,19 +694,6 @@ impl MCPConfig {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("cosmic_llm")
             .join("mcp_config.json")
-    }
-
-    /// Save MCP configuration to mcp_config.json
-    pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let mcp_config_path = Self::mcp_config_path();
-
-        if let Some(parent) = mcp_config_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let json_string = serde_json::to_string_pretty(self)?;
-        std::fs::write(mcp_config_path, json_string)?;
-        Ok(())
     }
 
     /// Expand environment variables in format ${env:VAR_NAME}

@@ -8,7 +8,7 @@ use cosmic::{
 
 use crate::ui::app::{LunaThinApp, Message, ConnectionStatus};
 
-pub fn settings_page(app: &LunaThinApp) -> Element<Message> {
+pub fn settings_page(app: &LunaThinApp) -> Element<'_, Message> {
     let mut content = Column::new().spacing(16).padding(16);
 
     // Header

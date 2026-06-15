@@ -95,17 +95,6 @@ enum AnthropicResponseBlock {
     },
 }
 
-// Streaming event minimal structs (we only care about text deltas)
-#[derive(Debug, Deserialize)]
-struct AnthropicSseDelta {
-    delta: Option<AnthropicDelta>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AnthropicDelta {
-    text: Option<String>,
-}
-
 #[derive(Debug, Serialize)]
 struct AnthropicToolDefinition {
     name: String,
@@ -179,158 +168,6 @@ impl AnthropicClient {
 
 #[async_trait]
 impl LlmClient for AnthropicClient {
-    async fn send_message_stream(
-        &self,
-        messages: Vec<Message>,
-        temperature: Option<f32>,
-        max_tokens: Option<u32>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>, LlmError> {
-        let mut span = LlmCallSpan::start("anthropic", self.preset.model.clone(), true);
-        let context_tokens = Self::estimate_context_tokens(&messages);
-        span.set_input_shape(messages.len(), 0, context_tokens);
-
-        // Extract first system prompt if present; Anthropic expects it separately
-        let mut system_prompt: Option<String> = None;
-        let mut user_assistant: Vec<Message> = Vec::new();
-        for msg in messages {
-            match msg.role {
-                Role::System => {
-                    if system_prompt.is_none() {
-                        system_prompt = Some(msg.content);
-                    }
-                }
-                _ => user_assistant.push(msg),
-            }
-        }
-
-        let anthropic_messages: Vec<AnthropicMessage> = user_assistant
-            .into_iter()
-            .map(|m| {
-                tracing::debug!(
-                    role = ?m.role,
-                    content_length = m.content.len(),
-                    attachment_count = m.attachments.as_ref().map(|a| a.len()).unwrap_or(0),
-                    "Converting message to Anthropic format"
-                );
-                
-                let mut content_blocks = Vec::new();
-                if !m.content.is_empty() {
-                    content_blocks.push(AnthropicContentBlock::Text { text: m.content });
-                }
-                if let Some(attachments) = m.attachments {
-                    Self::push_user_attachments(&mut content_blocks, attachments);
-                }
-                if content_blocks.is_empty() {
-                    content_blocks.push(AnthropicContentBlock::Text {
-                        text: String::new(),
-                    });
-                }
-
-                AnthropicMessage {
-                    role: match m.role {
-                        Role::User => "user".to_string(),
-                        Role::Assistant => "assistant".to_string(),
-                        Role::System => "user".to_string(),
-                        Role::Tool => "user".to_string(),
-                    },
-                    content: content_blocks,
-                }
-            })
-            .collect();
-
-        let request = AnthropicRequest {
-            model: self.preset.model.clone(),
-            messages: anthropic_messages,
-            max_tokens: max_tokens.or(self.preset.max_tokens),
-            temperature: temperature.or(self.preset.temperature),
-            system: system_prompt,
-            tools: None,
-            tool_choice: None,
-            stream: true,
-        };
-
-        let response = match self
-            .client
-            .post(&self.preset.endpoint)
-            .header("x-api-key", &self.preset.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                let (outcome, kind) = classify_reqwest_error(&e);
-                span.finish_error(outcome, kind, e.to_string());
-                return Err(LlmError::Http(e));
-            }
-        };
-
-        let status = response.status();
-        let request_id = Self::extract_request_id(&response);
-        span.set_response_headers(status.as_u16(), request_id);
-
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            let msg = format!("Anthropic API error (HTTP {}): {}", status.as_u16(), error_text);
-            span.finish_error(CallOutcome::HttpError, format!("http_{}", status.as_u16()), msg.clone());
-            return Err(LlmError::Api(msg));
-        }
-
-        // NOTE: This streaming path doesn't currently parse Anthropic's
-        // `message_stop` / final `usage` event, so it can't observe
-        // truncation as precisely as OpenAI. The shared client's
-        // tcp_keepalive + http2 ping configuration ensures dead
-        // connections at least surface as a transport error rather than
-        // a silent close. Finishing the span on stream end is good
-        // enough until we add full SSE event parsing here.
-        span.finish_success();
-
-        let stream = response.bytes_stream();
-        let stream = futures::StreamExt::map(stream, |chunk_result| {
-            chunk_result
-                .map_err(|e| LlmError::Http(e))
-                .and_then(|chunk| {
-                    let chunk_str = String::from_utf8(chunk.to_vec())
-                        .map_err(|e| LlmError::Api(format!("Invalid UTF-8: {}", e)))?;
-
-                    // SSE format: lines beginning with "data: "
-                    let mut content = String::new();
-                    for line in chunk_str.lines() {
-                        if let Some(data) = line.strip_prefix("data: ") {
-                            if data == "[DONE]" {
-                                continue;
-                            }
-                            // Try parse minimal delta structure
-                            if let Ok(delta) = serde_json::from_str::<AnthropicSseDelta>(data) {
-                                if let Some(d) = delta.delta {
-                                    if let Some(t) = d.text {
-                                        content.push_str(&t);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if content.is_empty() {
-                        Ok(None)
-                    } else {
-                        Ok(Some(content))
-                    }
-                })
-        });
-        let stream = futures::StreamExt::filter_map(stream, |result| async move {
-            match result {
-                Ok(Some(content)) => Some(Ok(content)),
-                Ok(None) => None,
-                Err(e) => Some(Err(e)),
-            }
-        });
-
-        Ok(Box::pin(stream))
-    }
-
     async fn send_message_with_tools(
         &self,
         messages: Vec<Message>,
@@ -561,10 +398,10 @@ impl LlmClient for AnthropicClient {
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             if !response.content.is_empty() {
-                let _ = tx.send(Ok(ChatStreamEvent::ContentDelta(response.content)));
+                let _ = tx.send(Ok(ChatStreamEvent::Content(response.content)));
             }
             for tool_call in response.tool_calls {
-                let _ = tx.send(Ok(ChatStreamEvent::ToolCallDelta(tool_call)));
+                let _ = tx.send(Ok(ChatStreamEvent::ToolCall(tool_call)));
             }
         });
 

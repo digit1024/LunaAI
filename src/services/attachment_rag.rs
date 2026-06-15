@@ -2,6 +2,7 @@
 
 use crate::config::AttachmentRagConfig;
 use crate::embeddings::EmbeddingProvider;
+use crate::storage::sqlite_storage_simple::AttachmentDocChunk;
 use crate::llm::file_utils::FileType;
 use crate::storage::Storage;
 use anyhow::{Context, Result};
@@ -68,9 +69,7 @@ pub fn full_extract_for_indexing(path: &str) -> Option<String> {
 
 /// Trim attachment text for the LLM when over threshold; point model at search tool.
 pub fn trim_extracted_text_for_inline(content: Option<String>, max_chars: usize) -> Option<String> {
-    let Some(c) = content else {
-        return None;
-    };
+    let c = content?;
     if c.chars().count() <= max_chars {
         return Some(c);
     }
@@ -121,15 +120,15 @@ pub async fn index_large_attachment_if_needed(
             .await
             .with_context(|| format!("embed attachment chunk {}", idx))?;
         let guard = storage.lock().await;
-        guard.insert_attachment_doc_chunk_with_embedding(
+        guard.insert_attachment_doc_chunk(AttachmentDocChunk {
             conversation_id,
             attachment_uid,
             file_name,
-            idx as i32,
-            chunk,
-            &content_hash,
-            &emb,
-        )?;
+            chunk_index: idx as i32,
+            text: chunk,
+            content_hash: &content_hash,
+            embedding: &emb,
+        })?;
     }
 
     Ok(())

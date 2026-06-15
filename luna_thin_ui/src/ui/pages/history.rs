@@ -41,7 +41,7 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
     }
 }
 
-pub fn history_page(app: &LunaThinApp) -> Element<Message> {
+pub fn history_page(app: &LunaThinApp) -> Element<'_, Message> {
     let searching = !app.history_search.trim().is_empty();
     let search_results = grouped_search_results(&app.history_search_results);
 

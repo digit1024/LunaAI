@@ -14,6 +14,7 @@ use crate::ui::widgets::selectable_text;
 
 /// Context for rendering message bubbles with smart corners
 #[derive(Debug, Clone, Copy)]
+#[derive(Default)]
 pub struct BubbleContext {
     pub is_prev_user: bool,
     pub is_prev_assistant: bool,
@@ -21,16 +22,6 @@ pub struct BubbleContext {
     pub has_next: bool,
 }
 
-impl Default for BubbleContext {
-    fn default() -> Self {
-        Self {
-            is_prev_user: false,
-            is_prev_assistant: false,
-            is_next_assistant: false,
-            has_next: false,
-        }
-    }
-}
 
 fn bubble_markdown_style() -> widget::markdown::Style {
     let iced_theme = if cosmic::theme::is_dark() {
@@ -125,6 +116,15 @@ pub fn user_bubble<'a>(
 // Assistant bubble
 // ============================================================================
 
+/// Copy, reasoning toggle, and TTS actions for an assistant bubble.
+pub struct AssistantBubbleActions {
+    pub on_copy: Message,
+    pub on_toggle_reasoning: Option<Message>,
+    pub is_current_tts_message: bool,
+    pub on_start_tts: Option<Message>,
+    pub on_stop_tts: Option<Message>,
+}
+
 /// Message bubble for assistant messages (left-aligned, smart corners)
 pub fn assistant_bubble<'a>(
     markdown_items: &'a [markdown::Item],
@@ -133,12 +133,7 @@ pub fn assistant_bubble<'a>(
     reasoning: Option<&str>,
     is_reasoning_expanded: bool,
     ctx: BubbleContext,
-    on_copy: Message,
-    on_toggle_reasoning: Option<Message>,
-    _on_regenerate: Option<Message>,
-    is_current_tts_message: bool,
-    on_start_tts: Option<Message>,
-    on_stop_tts: Option<Message>,
+    actions: AssistantBubbleActions,
 ) -> Element<'a, Message> {
     let reasoning_owned = reasoning.map(|s| s.to_string());
 
@@ -185,7 +180,7 @@ pub fn assistant_bubble<'a>(
                 if is_reasoning_expanded { "▼" } else { "▶" }
             );
 
-            if let Some(on_toggle) = on_toggle_reasoning {
+            if let Some(on_toggle) = actions.on_toggle_reasoning {
                 col = col.push(
                     button::text(toggle_text)
                         .on_press(on_toggle)
@@ -215,8 +210,8 @@ pub fn assistant_bubble<'a>(
 
     let mut buttons = Row::new().push(Space::new().width(Length::Fill));
 
-    if is_current_tts_message {
-        if let Some(on_stop) = on_stop_tts {
+    if actions.is_current_tts_message {
+        if let Some(on_stop) = actions.on_stop_tts {
             buttons = buttons.push(
                 button::icon(icons::get_handle("stop-symbolic", 16))
                     .on_press(on_stop)
@@ -224,7 +219,7 @@ pub fn assistant_bubble<'a>(
                     .padding(4),
             );
         }
-    } else if let Some(on_start) = on_start_tts {
+    } else if let Some(on_start) = actions.on_start_tts {
         buttons = buttons.push(
             button::icon(icons::get_handle("playback-symbolic", 16))
                 .on_press(on_start)
@@ -236,7 +231,7 @@ pub fn assistant_bubble<'a>(
     buttons = buttons
         .push(
             button::icon(icons::get_handle("copy-symbolic", 16))
-                .on_press(on_copy)
+                .on_press(actions.on_copy)
                 .class(cosmic::style::Button::Text)
                 .padding(4),
         )
@@ -340,7 +335,7 @@ pub fn message_bubble<'a>(
     on_copy: Message,
     on_toggle_reasoning: Option<Message>,
     on_toggle_summary: Option<Message>,
-    on_regenerate: Option<Message>,
+    _on_regenerate: Option<Message>,
     is_current_tts_message: bool,
     on_start_tts: Option<Message>,
     on_stop_tts: Option<Message>,
@@ -364,12 +359,13 @@ pub fn message_bubble<'a>(
             reasoning,
             is_reasoning_expanded,
             ctx,
-            on_copy,
-            on_toggle_reasoning,
-            on_regenerate,
-            is_current_tts_message,
-            on_start_tts,
-            on_stop_tts,
+            AssistantBubbleActions {
+                on_copy,
+                on_toggle_reasoning,
+                is_current_tts_message,
+                on_start_tts,
+                on_stop_tts,
+            },
         )
     }
 }

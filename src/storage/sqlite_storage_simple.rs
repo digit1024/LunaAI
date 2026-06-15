@@ -113,6 +113,17 @@ pub struct ScheduledJob {
     pub schedule: Option<String>,
 }
 
+/// One indexed attachment text chunk plus its embedding vector.
+pub struct AttachmentDocChunk<'a> {
+    pub conversation_id: &'a str,
+    pub attachment_uid: &'a str,
+    pub file_name: &'a str,
+    pub chunk_index: i32,
+    pub text: &'a str,
+    pub content_hash: &'a str,
+    pub embedding: &'a [f32],
+}
+
 /// SQLite-based storage implementation
 pub struct SqliteStorage {
     conn: Connection,
@@ -177,10 +188,10 @@ impl SqliteStorage {
 
     fn configure_connection(conn: &Connection, settings: &SqliteSettings) -> SqliteResult<()> {
         if settings.wal_enabled {
-            conn.pragma_update(None, "journal_mode", &"WAL")?;
-            conn.pragma_update(None, "wal_autocheckpoint", &settings.wal_autocheckpoint)?;
+            conn.pragma_update(None, "journal_mode", "WAL")?;
+            conn.pragma_update(None, "wal_autocheckpoint", settings.wal_autocheckpoint)?;
         } else {
-            conn.pragma_update(None, "journal_mode", &"DELETE")?;
+            conn.pragma_update(None, "journal_mode", "DELETE")?;
         }
 
         conn.busy_timeout(Duration::from_millis(settings.busy_timeout_ms))?;
@@ -541,11 +552,6 @@ impl SqliteStorage {
         Ok(())
     }
 
-    /// Insert a new conversation
-    pub fn insert_conversation(&self, title: &str) -> SqliteResult<String> {
-        self.insert_conversation_with_profile(title, None)
-    }
-
     /// Insert a new conversation with profile
     pub fn insert_conversation_with_profile(
         &self,
@@ -563,23 +569,6 @@ impl SqliteStorage {
         Ok(id)
     }
 
-    /// Insert a new message (returns rowid; use insert_message_with_metadata for full control)
-    pub fn insert_message(
-        &self,
-        conversation_id: &str,
-        role: &str,
-        content: &str,
-        embedding: Option<&[f32]>,
-    ) -> SqliteResult<i64> {
-        self.insert_message_with_metadata(
-            conversation_id,
-            role,
-            content,
-            embedding,
-            &MessageMetadata::default(),
-        )
-    }
-
     pub fn insert_message_with_metadata(
         &self,
         conversation_id: &str,
@@ -591,15 +580,9 @@ impl SqliteStorage {
         let created_at = Utc::now().timestamp();
 
         // Convert embedding to bytes if provided
-        let embedding_bytes = if let Some(emb) = embedding {
-            Some(
-                emb.iter()
+        let embedding_bytes = embedding.map(|emb| emb.iter()
                     .flat_map(|&f| f.to_le_bytes())
-                    .collect::<Vec<u8>>(),
-            )
-        } else {
-            None
-        };
+                    .collect::<Vec<u8>>());
 
         let tool_calls_json = if let Some(calls) = metadata.tool_calls {
             Some(
@@ -683,16 +666,10 @@ impl SqliteStorage {
 
         let message_iter = stmt.query_map(params![conversation_id], |row| {
             let embedding_bytes: Option<Vec<u8>> = row.get(4)?;
-            let embedding = if let Some(bytes) = embedding_bytes {
-                Some(
-                    bytes
+            let embedding = embedding_bytes.map(|bytes| bytes
                         .chunks_exact(4)
                         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-                        .collect(),
-                )
-            } else {
-                None
-            };
+                        .collect());
 
             let tool_calls_json: Option<String> = row.get(6)?;
             let tool_calls = tool_calls_json
@@ -809,42 +786,6 @@ impl SqliteStorage {
         )?;
 
         Ok(changes > 0)
-    }
-
-    /// Insert a summary message (replaces old messages)
-    pub fn insert_summary_message(
-        &self,
-        conversation_id: &str,
-        summary_content: &str,
-        summarized_message_ids: &[i64],
-        earliest_timestamp: i64,
-    ) -> SqliteResult<()> {
-        let summarized_count = summarized_message_ids.len();
-        let summarized_ids_json = serde_json::to_string(summarized_message_ids)
-            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
-
-        self.conn.execute(
-            "INSERT INTO messages (conversation_id, role, content, created_at, is_summary, summarized_message_ids, summarized_count) 
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                conversation_id,
-                "system", // Summary messages use "system" role
-                summary_content,
-                earliest_timestamp,
-                1, // is_summary = true
-                summarized_ids_json,
-                summarized_count as i64,
-            ],
-        )?;
-
-        // Update conversation's last_message timestamp to now (when summary is created)
-        let now = Utc::now().timestamp();
-        self.conn.execute(
-            "UPDATE conversations SET last_message = ?1 WHERE id = ?2",
-            params![now, conversation_id],
-        )?;
-
-        Ok(())
     }
 
     /// Delete messages by IDs (used during summarization)
@@ -987,11 +928,6 @@ impl SqliteStorage {
         .optional()
     }
 
-    /// List all conversations ordered by creation date (newest first)
-    pub fn list_conversations(&self) -> SqliteResult<Vec<Conversation>> {
-        self.list_conversations_paginated(None, None)
-    }
-
     /// List conversations with pagination (offset, limit)
     pub fn list_conversations_paginated(
         &self,
@@ -1038,11 +974,6 @@ impl SqliteStorage {
         )?;
 
         Ok(changes > 0)
-    }
-
-    /// Get the database connection (for advanced operations)
-    pub fn connection(&self) -> &Connection {
-        &self.conn
     }
 
     /// Get conversations without generated titles (only those that have at least one message)
@@ -1254,7 +1185,7 @@ impl SqliteStorage {
 
         let validated_max_distance = match max_distance {
             Some(dist) => {
-                if !dist.is_finite() || dist < 0.0 || dist > 2.0 {
+                if !dist.is_finite() || !(0.0..=2.0).contains(&dist) {
                     tracing::warn!(
                         max_distance = dist,
                         "Invalid max_distance, ignoring filter (must be 0.0-2.0)"
@@ -1283,13 +1214,12 @@ impl SqliteStorage {
 
         let mut stmt = self.conn.prepare(&sql)?;
         let rowids: Vec<i64> = stmt
-            .query_map(params![json, limit as i64], |row| Ok(row.get::<_, i64>(0)?))?
+            .query_map(params![json, limit as i64], |row| row.get::<_, i64>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         if rowids.is_empty() {
             return Ok(Vec::new());
         }
-        let placeholders = std::iter::repeat("?")
-            .take(rowids.len())
+        let placeholders = std::iter::repeat_n("?", rowids.len())
             .collect::<Vec<_>>()
             .join(", ");
         let sql2 = format!(
@@ -1340,15 +1270,9 @@ impl SqliteStorage {
     }
 
     /// Insert one text chunk and its embedding row (rowid = chunk id).
-    pub fn insert_attachment_doc_chunk_with_embedding(
+    pub fn insert_attachment_doc_chunk(
         &self,
-        conversation_id: &str,
-        attachment_uid: &str,
-        file_name: &str,
-        chunk_index: i32,
-        text: &str,
-        content_hash: &str,
-        embedding: &[f32],
+        chunk: AttachmentDocChunk<'_>,
     ) -> SqliteResult<()> {
         if self.embedding_dimension.is_none() {
             return Ok(());
@@ -1356,16 +1280,16 @@ impl SqliteStorage {
         self.conn.execute(
             "INSERT INTO attachment_doc_chunk (conversation_id, attachment_uid, file_name, chunk_index, text, content_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
-                conversation_id,
-                attachment_uid,
-                file_name,
-                chunk_index,
-                text,
-                content_hash
+                chunk.conversation_id,
+                chunk.attachment_uid,
+                chunk.file_name,
+                chunk.chunk_index,
+                chunk.text,
+                chunk.content_hash
             ],
         )?;
         let rowid = self.conn.last_insert_rowid();
-        let json = serde_json::to_string(embedding)
+        let json = serde_json::to_string(chunk.embedding)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         self.conn.execute(
             "INSERT INTO attachment_doc_vec(rowid, embedding) VALUES (?1, ?2)",
@@ -1389,16 +1313,7 @@ impl SqliteStorage {
         let json = serde_json::to_string(embedding)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
-        let validated_max_distance = match max_distance {
-            Some(dist) => {
-                if !dist.is_finite() || dist < 0.0 || dist > 2.0 {
-                    None
-                } else {
-                    Some(dist)
-                }
-            }
-            None => None,
-        };
+        let validated_max_distance = max_distance.filter(|&dist| !(!dist.is_finite() || !(0.0..=2.0).contains(&dist)));
 
         let fetch_limit = ((limit as i64).saturating_mul(8)).max(limit as i64);
         // See note in search_memory_by_vector: sqlite-vec needs `k = ?` (not `LIMIT ?`) when
@@ -1609,14 +1524,6 @@ impl SqliteStorage {
         rows.collect()
     }
 
-    /// Get the maximum message ID in the database.
-    pub fn get_max_message_id(&self) -> SqliteResult<i64> {
-        self.conn
-            .query_row("SELECT COALESCE(MAX(id), 0) FROM messages", [], |row| {
-                row.get(0)
-            })
-    }
-
     /// Record that the given memories were recalled (injected) in this conversation.
     pub fn record_memory_recalls(
         &self,
@@ -1634,15 +1541,6 @@ impl SqliteStorage {
             stmt.execute(params![conversation_id, mid, now])?;
         }
         Ok(())
-    }
-
-    /// Get memory IDs that were previously recalled in this conversation (for dedup across restarts).
-    pub fn get_recalled_memory_ids(&self, conversation_id: &str) -> SqliteResult<Vec<i64>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT memory_id FROM conversation_memory_recalls WHERE conversation_id = ?1 ORDER BY recalled_at ASC",
-        )?;
-        let rows = stmt.query_map(params![conversation_id], |row| row.get(0))?;
-        rows.collect()
     }
 
     /// Insert a scheduled job
@@ -1759,12 +1657,24 @@ mod tests {
         let storage = SqliteStorage::new(&db_path)?;
 
         // Test conversation creation
-        let conv_id = storage.insert_conversation("Test Conversation")?;
+        let conv_id = storage.insert_conversation_with_profile("Test Conversation", None)?;
         assert!(!conv_id.is_empty());
 
         // Test message insertion
-        storage.insert_message(&conv_id, "user", "Hello, world!", None)?;
-        storage.insert_message(&conv_id, "assistant", "Hi there!", None)?;
+        storage.insert_message_with_metadata(
+            &conv_id,
+            "user",
+            "Hello, world!",
+            None,
+            &MessageMetadata::default(),
+        )?;
+        storage.insert_message_with_metadata(
+            &conv_id,
+            "assistant",
+            "Hi there!",
+            None,
+            &MessageMetadata::default(),
+        )?;
 
         // Test loading conversation
         let messages = storage.load_conversation(&conv_id)?;
@@ -1794,7 +1704,7 @@ mod tests {
         assert_eq!(conv.title, "Updated Title");
 
         // Test conversation listing
-        let conversations = storage.list_conversations()?;
+        let conversations = storage.list_conversations_paginated(None, None)?;
         assert_eq!(conversations.len(), 1);
 
         // Test conversation deletion
@@ -1802,7 +1712,7 @@ mod tests {
         assert!(deleted);
 
         // Verify deletion
-        let conversations_after = storage.list_conversations()?;
+        let conversations_after = storage.list_conversations_paginated(None, None)?;
         assert_eq!(conversations_after.len(), 0);
 
         // Clean up
@@ -1818,11 +1728,17 @@ mod tests {
         let _ = fs::remove_file(&db_path);
 
         let storage = SqliteStorage::new(&db_path)?;
-        let conv_id = storage.insert_conversation("Embedding Test")?;
+        let conv_id = storage.insert_conversation_with_profile("Embedding Test", None)?;
 
         // Test with embedding
         let embedding = vec![0.1, 0.2, 0.3, 0.4];
-        storage.insert_message(&conv_id, "user", "Test with embedding", Some(&embedding))?;
+        storage.insert_message_with_metadata(
+            &conv_id,
+            "user",
+            "Test with embedding",
+            Some(&embedding),
+            &MessageMetadata::default(),
+        )?;
 
         let messages = storage.load_conversation(&conv_id)?;
         assert_eq!(messages.len(), 1);
@@ -1857,6 +1773,7 @@ mod tests {
     }
 }
 
+#[derive(Default)]
 pub struct MessageMetadata<'a> {
     pub tool_calls: Option<&'a [ToolCall]>,
     pub tool_call_id: Option<&'a str>,
@@ -1868,20 +1785,6 @@ pub struct MessageMetadata<'a> {
     pub attachments: Option<&'a [Attachment]>,
 }
 
-impl<'a> Default for MessageMetadata<'a> {
-    fn default() -> Self {
-        Self {
-            tool_calls: None,
-            tool_call_id: None,
-            tool_name: None,
-            tool_status: None,
-            tool_params_json: None,
-            tool_result_json: None,
-            reasoning_content: None,
-            attachments: None,
-        }
-    }
-}
 
 impl SqliteStorage {
     fn read_json_value(raw: Option<String>) -> Option<Value> {

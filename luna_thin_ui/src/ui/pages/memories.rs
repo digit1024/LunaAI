@@ -17,7 +17,7 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
     }
 }
 
-pub fn memories_page(app: &LunaThinApp) -> Element<Message> {
+pub fn memories_page(app: &LunaThinApp) -> Element<'_, Message> {
     let searching = !app.memories_search.trim().is_empty();
 
     let mut content = Column::new().spacing(12);

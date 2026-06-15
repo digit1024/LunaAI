@@ -8,7 +8,7 @@ use cosmic::{
 
 use crate::ui::app::{LunaThinApp, Message};
 
-pub fn input_area(app: &LunaThinApp) -> Element<Message> {
+pub fn input_area(app: &LunaThinApp) -> Element<'_, Message> {
     container(
         Column::new()
             .push(

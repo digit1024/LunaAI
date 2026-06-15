@@ -10,7 +10,6 @@ pub use observability::{
     LlmObserver,
 };
 
-use crate::config::LlmProfile;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -262,21 +261,13 @@ pub struct ToolResult {
 
 #[derive(Debug, Clone)]
 pub enum ChatStreamEvent {
-    ContentDelta(String),
-    ToolCallDelta(ToolCall),
-    ReasoningContentDelta(String), // For DeepSeek thinking/reasoning content
+    Content(String),
+    ToolCall(ToolCall),
+    Reasoning(String),
 }
 
 #[async_trait]
 pub trait LlmClient: Send + Sync {
-    async fn send_message_stream(
-        &self,
-        messages: Vec<Message>,
-        temperature: Option<f32>,
-        max_tokens: Option<u32>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>, LlmError>;
-
-    // Legacy non-streaming tool path
     async fn send_message_with_tools(
         &self,
         messages: Vec<Message>,

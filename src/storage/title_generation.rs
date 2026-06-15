@@ -66,27 +66,28 @@ pub async fn generate_title_from_messages(
     let llm_client = build_llm_client(preset);
 
     // Build messages: System prompt + User message (transcript)
-    let mut llm_messages = Vec::new();
-    llm_messages.push(LlmMessage {
-        role: Role::System,
-        content: system_prompt.to_string(),
-        timestamp: None,
-        is_prompt: false,
-        tool_call_id: None,
-        tool_calls: None,
-        attachments: None,
-        reasoning_content: None,
-    });
-    llm_messages.push(LlmMessage {
-        role: Role::User,
-        content: transcript,
-        timestamp: None,
-        is_prompt: false,
-        tool_call_id: None,
-        tool_calls: None,
-        attachments: None,
-        reasoning_content: None,
-    });
+    let llm_messages = vec![
+        LlmMessage {
+            role: Role::System,
+            content: system_prompt.to_string(),
+            timestamp: None,
+            is_prompt: false,
+            tool_call_id: None,
+            tool_calls: None,
+            attachments: None,
+            reasoning_content: None,
+        },
+        LlmMessage {
+            role: Role::User,
+            content: transcript,
+            timestamp: None,
+            is_prompt: false,
+            tool_call_id: None,
+            tool_calls: None,
+            attachments: None,
+            reasoning_content: None,
+        },
+    ];
 
     // Call LLM with empty tools vector
     let response = llm_client

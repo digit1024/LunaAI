@@ -236,7 +236,7 @@ mod tests {
     //Step 2: Get the tools list
      mcp_connection.update_tools().await.unwrap();
      let tools = mcp_connection.tools();
-    assert!(tools.len() > 0 , "Tools list should not be empty for shell server");
+    assert!(!tools.is_empty(), "Tools list should not be empty for shell server");
     assert!(tools.iter().any(|tool| tool.name == "shell_execute"), "shell_execute tool should be available");
     
     //Step 3: Call the tools

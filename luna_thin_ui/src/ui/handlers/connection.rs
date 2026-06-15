@@ -52,7 +52,7 @@ pub fn handle_connection_messages(
                         Err(e) => Message::ServerError(e.to_string()),
                     }
                 },
-                |msg| cosmic::Action::App(msg),
+                cosmic::Action::App,
             ))
         }
         Message::Disconnect => {
@@ -146,7 +146,7 @@ pub fn handle_connection_messages(
                         "Could not reconnect to server after 3 attempts.".to_string(),
                     )
                 },
-                |msg| cosmic::Action::App(msg),
+                cosmic::Action::App,
             ))
         }
         Message::ServerError(error) => {

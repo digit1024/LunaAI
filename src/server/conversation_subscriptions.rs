@@ -17,13 +17,16 @@ impl ConnectionId {
     }
 }
 
+type ConversationSubscribers =
+    Vec<(ConnectionId, UnboundedSender<ServerEvent>)>;
+
 /// Tracks which connection is viewing which conversation and broadcasts
 /// conversation-scoped events to all subscribers of that conversation.
 pub struct ConversationSubscriptions {
     /// connection_id -> conversation_id they are currently viewing
     viewing: RwLock<HashMap<ConnectionId, Uuid>>,
     /// conversation_id -> list of (connection_id, sender) subscribed to that conversation
-    subscribers: RwLock<HashMap<Uuid, Vec<(ConnectionId, UnboundedSender<ServerEvent>)>>>,
+    subscribers: RwLock<HashMap<Uuid, ConversationSubscribers>>,
 }
 
 impl ConversationSubscriptions {
@@ -107,5 +110,36 @@ impl ConversationSubscriptions {
 impl Default for ConversationSubscriptions {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn broadcast_prunes_dead_subscribers() {
+        let subs = ConversationSubscriptions::new();
+        let conn_id = ConnectionId::new();
+        let conv_id = Uuid::new_v4();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        subs.set_viewing(conn_id, Some(conv_id), tx).await;
+        drop(rx);
+
+        subs.broadcast(
+            conv_id,
+            ServerEvent::ConversationComplete {
+                conversation_id: conv_id.to_string(),
+            },
+        )
+        .await;
+
+        subs.broadcast(
+            conv_id,
+            ServerEvent::Info {
+                message: "should not panic".into(),
+            },
+        )
+        .await;
     }
 }

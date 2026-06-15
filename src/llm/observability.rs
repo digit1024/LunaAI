@@ -98,7 +98,6 @@ pub enum CallOutcome {
     NetworkError,
     Timeout,
     Parse,
-    Config,
 }
 
 impl CallOutcome {
@@ -110,7 +109,6 @@ impl CallOutcome {
             CallOutcome::NetworkError => "network_error",
             CallOutcome::Timeout => "timeout",
             CallOutcome::Parse => "parse_error",
-            CallOutcome::Config => "config_error",
         }
     }
 }

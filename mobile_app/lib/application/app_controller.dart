@@ -575,6 +575,7 @@ class AppController extends Notifier<AppState> {
         pane: shouldChangePane ? ActivePane.conversations : state.pane,
         error: null,
         currentProfile: event.profile, // Track server's current profile
+        staticToken: event.staticToken,
         connectionAttempt: 0, // Clear connection attempt on success
       );
       // Start connection guard to keep connection alive

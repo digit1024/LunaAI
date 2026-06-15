@@ -23,7 +23,7 @@ impl From<&StorageMessage> for LlmMessage {
                 // Combine content AND tool_result_json (both may contain data)
                 if let Some(ref result_json) = storage_msg.tool_result_json {
                     if !content.is_empty() {
-                        content.push_str("\n");
+                        content.push('\n');
                     }
                     content.push_str(&result_json.to_string());
                 }

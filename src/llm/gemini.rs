@@ -222,14 +222,13 @@ impl GeminiClient {
 
             // If role changes, push accumulated content
             if let Some(prev_role) = &current_role {
-                if prev_role != role {
-                    if !current_parts.is_empty() {
+                if prev_role != role
+                    && !current_parts.is_empty() {
                         gemini_contents.push(GeminiContent {
                             role: prev_role.clone(),
                             parts: std::mem::take(&mut current_parts),
                         });
                     }
-                }
             }
 
             // Add message parts
@@ -310,121 +309,6 @@ impl GeminiClient {
 
 #[async_trait]
 impl LlmClient for GeminiClient {
-    async fn send_message_stream(
-        &self,
-        messages: Vec<Message>,
-        temperature: Option<f32>,
-        max_tokens: Option<u32>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, LlmError>> + Send>>, LlmError> {
-        let mut span = LlmCallSpan::start("gemini", self.preset.model.clone(), true);
-        let context_tokens = Self::estimate_context_tokens(&messages);
-        span.set_input_shape(messages.len(), 0, context_tokens);
-
-        let contents = self.convert_messages_to_gemini(messages);
-
-        let generation_config = GeminiGenerationConfig {
-            temperature: temperature.or(self.preset.temperature),
-            max_output_tokens: max_tokens.or(self.preset.max_tokens),
-        };
-
-        let request = GeminiRequest {
-            contents,
-            generation_config: Some(generation_config),
-            tools: None,
-        };
-
-        // Build endpoint with model
-        let endpoint = self.build_endpoint("streamGenerateContent");
-
-        let response = match self
-            .client
-            .post(&endpoint)
-            .header("Content-Type", "application/json")
-            .header("x-goog-api-key", &self.preset.api_key)
-            .json(&request)
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                let (outcome, kind) = classify_reqwest_error(&e);
-                span.finish_error(outcome, kind, e.to_string());
-                return Err(LlmError::Http(e));
-            }
-        };
-
-        let status = response.status();
-        let request_id = Self::extract_request_id(&response);
-        span.set_response_headers(status.as_u16(), request_id);
-
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            let msg = if error_text.is_empty() {
-                format!(
-                    "Gemini API error: HTTP {} {}",
-                    status.as_u16(),
-                    status.canonical_reason().unwrap_or("Unknown")
-                )
-            } else {
-                format!("Gemini API error (HTTP {}): {}", status.as_u16(), error_text)
-            };
-            span.finish_error(CallOutcome::HttpError, format!("http_{}", status.as_u16()), msg.clone());
-            return Err(LlmError::Api(msg));
-        }
-
-        // Stream succeeded to first byte. Gemini's streaming chunk parser
-        // below uses the high-level Stream API, so we cannot easily detect
-        // a truncated stream here without restructuring. Mark span as
-        // successful at the headers stage; transport-level keepalive will
-        // turn silent drops into reqwest errors that subscribers see.
-        span.finish_success();
-
-        let stream = response.bytes_stream();
-        let stream = futures::StreamExt::map(stream, |chunk_result| {
-            chunk_result
-                .map_err(|e| LlmError::Http(e))
-                .and_then(|chunk| {
-                    let chunk_str = String::from_utf8(chunk.to_vec())
-                        .map_err(|e| LlmError::Api(format!("Invalid UTF-8: {}", e)))?;
-
-                    let mut content = String::new();
-
-                    // Gemini streaming returns JSON objects separated by newlines
-                    for line in chunk_str.lines() {
-                        if line.trim().is_empty() {
-                            continue;
-                        }
-
-                        if let Ok(response) = serde_json::from_str::<GeminiResponse>(line) {
-                            if let Some(candidate) = response.candidates.first() {
-                                for part in &candidate.content.parts {
-                                    if let GeminiPart::Text { text } = part {
-                                        content.push_str(text);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if content.is_empty() {
-                        Ok(None)
-                    } else {
-                        Ok(Some(content))
-                    }
-                })
-        });
-
-        let stream = futures::StreamExt::filter_map(stream, |result| async move {
-            match result {
-                Ok(Some(content)) => Some(Ok(content)),
-                Ok(None) => None,
-                Err(e) => Some(Err(e)),
-            }
-        });
-
-        Ok(Box::pin(stream))
-    }
-
     async fn send_message_with_tools(
         &self,
         messages: Vec<Message>,
@@ -581,10 +465,10 @@ impl LlmClient for GeminiClient {
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             if !response.content.is_empty() {
-                let _ = tx.send(Ok(ChatStreamEvent::ContentDelta(response.content)));
+                let _ = tx.send(Ok(ChatStreamEvent::Content(response.content)));
             }
             for tool_call in response.tool_calls {
-                let _ = tx.send(Ok(ChatStreamEvent::ToolCallDelta(tool_call)));
+                let _ = tx.send(Ok(ChatStreamEvent::ToolCall(tool_call)));
             }
         });
 
