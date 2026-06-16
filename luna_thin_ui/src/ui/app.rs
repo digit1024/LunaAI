@@ -737,7 +737,7 @@ impl LunaThinApp {
             }
 
             if url.starts_with("luna-static:") {
-                let Some(fetch_url) = self.resolve_luna_static_fetch_url(&url) else {
+                let Some(fetch_urls) = self.resolve_luna_static_fetch_urls(&url) else {
                     // No static_token yet — leave uncached so we retry after health_ok.
                     continue;
                 };
@@ -745,25 +745,34 @@ impl LunaThinApp {
                 let marker = url.clone();
                 tasks.push(app::Task::perform(
                     async move {
-                        match reqwest::get(&fetch_url).await {
-                            Ok(resp) => match resp.bytes().await {
-                                Ok(bytes) => {
-                                    let is_svg = Self::is_svg_bytes(&bytes);
-                                    Message::ImageLoaded {
-                                        url: marker,
-                                        data: bytes.to_vec(),
-                                        is_svg,
+                        let mut last_err = String::new();
+                        for fetch_url in &fetch_urls {
+                            match reqwest::get(fetch_url).await {
+                                Ok(resp) if resp.status().is_success() => {
+                                    match resp.bytes().await {
+                                        Ok(bytes) => {
+                                            let is_svg = Self::is_svg_bytes(&bytes);
+                                            return Message::ImageLoaded {
+                                                url: marker,
+                                                data: bytes.to_vec(),
+                                                is_svg,
+                                            };
+                                        }
+                                        Err(e) => last_err = e.to_string(),
                                     }
                                 }
-                                Err(e) => Message::ImageLoadFailed {
-                                    url: marker,
-                                    error: e.to_string(),
-                                },
-                            },
-                            Err(e) => Message::ImageLoadFailed {
-                                url: marker,
-                                error: e.to_string(),
-                            },
+                                Ok(resp) => last_err = format!("HTTP {}", resp.status()),
+                                Err(e) => last_err = e.to_string(),
+                            }
+                            tracing::debug!(
+                                fetch_url = %fetch_url,
+                                error = %last_err,
+                                "Static image fetch attempt failed"
+                            );
+                        }
+                        Message::ImageLoadFailed {
+                            url: marker,
+                            error: last_err,
                         }
                     },
                     cosmic::Action::App,
@@ -802,17 +811,24 @@ impl LunaThinApp {
         app::Task::batch(tasks)
     }
 
-    /// Rewrite a token-free `luna-static:{conv}/{file}` marker to a fetchable URL.
-    fn resolve_luna_static_fetch_url(&self, marker: &str) -> Option<String> {
+    /// Rewrite a token-free `luna-static:{conv}/{file}` marker to fetchable URL(s).
+    fn resolve_luna_static_fetch_urls(&self, marker: &str) -> Option<Vec<String>> {
         let rest = marker.strip_prefix("luna-static:")?;
         let token = self.static_token.as_ref()?;
-        let base = self.server_config.http_uri();
-        Some(format!(
-            "{}/api/static/{}/{}",
-            base.trim_end_matches('/'),
-            token,
-            rest
-        ))
+        Some(
+            self.server_config
+                .http_rest_base_uris()
+                .into_iter()
+                .map(|base| {
+                    format!(
+                        "{}/api/static/{}/{}",
+                        base.trim_end_matches('/'),
+                        token,
+                        rest
+                    )
+                })
+                .collect(),
+        )
     }
 
     /// Resolve a `data:` URI or `file://` URL into an `ImageLoaded` /
@@ -1239,6 +1255,14 @@ impl LunaThinApp {
                 self.connection_status = ConnectionStatus::Connected;
                 self.current_profile = profile;
                 self.static_token = (!static_token.is_empty()).then_some(static_token);
+                let chunk_items: Vec<_> = self
+                    .messages
+                    .iter()
+                    .flat_map(|m| m.markdown_items.iter().cloned())
+                    .collect();
+                if !chunk_items.is_empty() {
+                    return self.fetch_missing_images(&chunk_items);
+                }
             }
             ServerEvent::Error { message } => {
                 if let Some(id) = self.current_conversation_id.clone() {

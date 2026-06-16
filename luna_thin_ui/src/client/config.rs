@@ -33,9 +33,33 @@ impl ServerConfig {
         self.websocket_uri_secure()
     }
 
-    /// HTTP API (attach-file, mcp-servers) – same port as WebSocket
+    /// HTTP API (attach-file, static files) – plain HTTP for local dev.
     pub fn http_uri(&self) -> String {
         format!("http://{}:{}", self.host, self.port)
+    }
+
+    /// HTTPS API base – same host/port semantics as [Self::websocket_uri_secure].
+    pub fn http_uri_secure(&self) -> String {
+        if self.port == 443 {
+            format!("https://{}", self.host)
+        } else {
+            format!("https://{}:{}", self.host, self.port)
+        }
+    }
+
+    /// True for loopback / emulator hosts that typically speak plain HTTP.
+    pub fn is_local_rest_host(&self) -> bool {
+        let h = self.host.to_lowercase();
+        h == "127.0.0.1" || h == "localhost"
+    }
+
+    /// REST bases to try for static files and uploads (HTTPS first on remote hosts).
+    pub fn http_rest_base_uris(&self) -> Vec<String> {
+        if self.is_local_rest_host() {
+            vec![self.http_uri(), self.http_uri_secure()]
+        } else {
+            vec![self.http_uri_secure(), self.http_uri()]
+        }
     }
 
     pub fn config_path() -> PathBuf {

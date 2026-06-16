@@ -75,6 +75,20 @@ class ServerConfig {
     );
   }
 
+  /// True for loopback / emulator hosts that typically speak plain HTTP.
+  bool get isLocalRestHost {
+    final h = host.toLowerCase();
+    return h == '127.0.0.1' || h == 'localhost' || h == '10.0.2.2';
+  }
+
+  /// REST bases to try for static files and uploads (matches [FileClient] order).
+  List<Uri> httpRestBaseUris() {
+    if (isLocalRestHost) {
+      return [httpBaseUriInsecure(), httpBaseUriSecure()];
+    }
+    return [httpBaseUriSecure(), httpBaseUriInsecure()];
+  }
+
   ServerConfig copyWith({
     String? host,
     int? port,

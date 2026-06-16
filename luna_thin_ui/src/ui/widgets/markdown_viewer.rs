@@ -320,7 +320,8 @@ fn render_image<'a>(
 // ============================================================================
 
 fn is_supported_url(url: &str) -> bool {
-    url.starts_with("http://")
+    url.starts_with("luna-static:")
+        || url.starts_with("http://")
         || url.starts_with("https://")
         || url.starts_with("file://")
         || url.starts_with("data:")

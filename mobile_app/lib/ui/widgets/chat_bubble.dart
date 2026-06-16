@@ -261,6 +261,8 @@ class _AssistantBubble extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final maxWidth = MediaQuery.of(context).size.width * 0.85;
     final colorScheme = Theme.of(context).colorScheme;
+    final staticToken = ref.watch(appControllerProvider.select((s) => s.staticToken));
+    final serverConfig = ref.watch(serverConfigProvider);
 
     // Smart corner rounding - 0 when adjacent to AI/tool messages
     final topLeftRadius = isPrevAssistant ? 0.0 : 18.0;
@@ -318,8 +320,13 @@ class _AssistantBubble extends ConsumerWidget {
                         styleSheet: MarkdownStyleSheet(
                           p: Theme.of(context).textTheme.bodyMedium,
                         ),
-                        imageBuilder: (uri, title, alt) =>
-                            _buildMarkdownImage(context, ref, uri, alt),
+                        imageBuilder: (uri, title, alt) => _buildMarkdownImage(
+                          context,
+                          serverConfig,
+                          staticToken,
+                          uri,
+                          alt,
+                        ),
                       ),
                   // Only show timestamp and actions if message has content
                   if (message.content.isNotEmpty ||
@@ -820,25 +827,19 @@ class _CollapsiblePayload extends StatelessWidget {
 
 Widget _buildMarkdownImage(
   BuildContext context,
-  WidgetRef ref,
+  ServerConfig config,
+  String staticToken,
   Uri uri,
   String? alt,
 ) {
   final src = uri.toString();
   if (src.startsWith('luna-static:')) {
-    final staticToken = ref.read(appControllerProvider).staticToken;
-    if (staticToken.isEmpty) {
-      return _staticImagePlaceholder(context);
-    }
     final rest = src.substring('luna-static:'.length);
-    final config = ref.read(serverConfigProvider);
-    final resolved =
-        config.httpBaseUriInsecure().resolve('/api/static/$staticToken/$rest');
-    return Image.network(
-      resolved.toString(),
-      semanticLabel: alt,
-      errorBuilder: (context, error, stackTrace) =>
-          _staticImagePlaceholder(context),
+    return _LunaStaticImage(
+      config: config,
+      staticToken: staticToken,
+      rest: rest,
+      alt: alt,
     );
   }
 
@@ -848,12 +849,112 @@ Widget _buildMarkdownImage(
     return Image.network(
       src,
       semanticLabel: alt,
-      errorBuilder: (context, error, stackTrace) =>
-          _staticImagePlaceholder(context),
+      errorBuilder: (context, error, stackTrace) {
+        debugPrint('🖼️ Markdown image load failed ($src): $error');
+        return _staticImagePlaceholder(context);
+      },
     );
   }
 
   return _staticImagePlaceholder(context);
+}
+
+/// Loads a `luna-static:` marker via `/api/static/{token}/...`, trying HTTPS
+/// first on remote hosts (same strategy as [FileClient] and the WS client).
+class _LunaStaticImage extends StatefulWidget {
+  const _LunaStaticImage({
+    required this.config,
+    required this.staticToken,
+    required this.rest,
+    this.alt,
+  });
+
+  final ServerConfig config;
+  final String staticToken;
+  final String rest;
+  final String? alt;
+
+  @override
+  State<_LunaStaticImage> createState() => _LunaStaticImageState();
+}
+
+class _LunaStaticImageState extends State<_LunaStaticImage> {
+  int _urlIndex = 0;
+  bool _tryingNext = false;
+  late List<String> _urls;
+
+  @override
+  void initState() {
+    super.initState();
+    _urls = _buildUrls();
+  }
+
+  @override
+  void didUpdateWidget(covariant _LunaStaticImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.staticToken != widget.staticToken ||
+        oldWidget.rest != widget.rest ||
+        oldWidget.config != widget.config) {
+      _urlIndex = 0;
+      _tryingNext = false;
+      _urls = _buildUrls();
+    }
+  }
+
+  List<String> _buildUrls() {
+    return widget.config
+        .httpRestBaseUris()
+        .map(
+          (base) => base
+              .resolve('/api/static/${widget.staticToken}/${widget.rest}')
+              .toString(),
+        )
+        .toList();
+  }
+
+  void _scheduleNextUrl(Object error) {
+    if (_tryingNext || _urlIndex + 1 >= _urls.length || !mounted) {
+      return;
+    }
+    _tryingNext = true;
+    debugPrint('🖼️ Static image load failed (${_urls[_urlIndex]}): $error');
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {
+        _urlIndex++;
+        _tryingNext = false;
+      });
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.staticToken.isEmpty) {
+      return _staticImagePlaceholder(context);
+    }
+
+    final url = _urls[_urlIndex];
+    return Image.network(
+      url,
+      key: ValueKey(url),
+      semanticLabel: widget.alt,
+      errorBuilder: (context, error, stackTrace) {
+        if (_urlIndex + 1 < _urls.length) {
+          _scheduleNextUrl(error);
+          return const SizedBox(
+            width: 24,
+            height: 24,
+            child: Padding(
+              padding: EdgeInsets.all(4),
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          );
+        }
+        debugPrint('🖼️ Static image load failed (${_urls[_urlIndex]}): $error');
+        return _staticImagePlaceholder(context);
+      },
+    );
+  }
 }
 
 Widget _staticImagePlaceholder(BuildContext context) {
