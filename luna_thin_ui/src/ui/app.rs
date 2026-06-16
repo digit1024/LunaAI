@@ -705,6 +705,7 @@ impl LunaThinApp {
     /// `Fetching`, and returns a batched `Task` that resolves each one.
     ///
     /// Supported URL schemes:
+    /// - `luna-static:`           — rewritten to `/api/static/{token}/...` at fetch time
     /// - `http://` / `https://`  — fetched via reqwest
     /// - `file://`               — read from the local filesystem
     /// - `data:<mime>;base64,`   — decoded inline (no I/O)
@@ -725,41 +726,93 @@ impl LunaThinApp {
                 Some(ImageState::Fetching) => continue,
                 Some(ImageState::Error(_)) | None => {}
             }
-            self.image_cache.insert(url.clone(), ImageState::Fetching);
-            let url_clone = url.clone();
 
             if let Some(msg) = Self::try_resolve_inline(&url) {
-                // data: URI or file:// — resolve synchronously inside the task
+                self.image_cache.insert(url.clone(), ImageState::Fetching);
                 tasks.push(app::Task::perform(
                     async move { msg },
                     cosmic::Action::App,
                 ));
-            } else {
-                // Remote http/https
+                continue;
+            }
+
+            if url.starts_with("luna-static:") {
+                let Some(fetch_url) = self.resolve_luna_static_fetch_url(&url) else {
+                    // No static_token yet — leave uncached so we retry after health_ok.
+                    continue;
+                };
+                self.image_cache.insert(url.clone(), ImageState::Fetching);
+                let marker = url.clone();
                 tasks.push(app::Task::perform(
                     async move {
-                        match reqwest::get(&url_clone).await {
+                        match reqwest::get(&fetch_url).await {
                             Ok(resp) => match resp.bytes().await {
                                 Ok(bytes) => {
                                     let is_svg = Self::is_svg_bytes(&bytes);
-                                    Message::ImageLoaded { url: url_clone, data: bytes.to_vec(), is_svg }
+                                    Message::ImageLoaded {
+                                        url: marker,
+                                        data: bytes.to_vec(),
+                                        is_svg,
+                                    }
                                 }
                                 Err(e) => Message::ImageLoadFailed {
-                                    url: url_clone,
+                                    url: marker,
                                     error: e.to_string(),
                                 },
                             },
                             Err(e) => Message::ImageLoadFailed {
-                                url: url_clone,
+                                url: marker,
                                 error: e.to_string(),
                             },
                         }
                     },
                     cosmic::Action::App,
                 ));
+                continue;
             }
+
+            if !(url.starts_with("http://") || url.starts_with("https://")) {
+                continue;
+            }
+
+            self.image_cache.insert(url.clone(), ImageState::Fetching);
+            let url_clone = url.clone();
+            tasks.push(app::Task::perform(
+                async move {
+                    match reqwest::get(&url_clone).await {
+                        Ok(resp) => match resp.bytes().await {
+                            Ok(bytes) => {
+                                let is_svg = Self::is_svg_bytes(&bytes);
+                                Message::ImageLoaded { url: url_clone, data: bytes.to_vec(), is_svg }
+                            }
+                            Err(e) => Message::ImageLoadFailed {
+                                url: url_clone,
+                                error: e.to_string(),
+                            },
+                        },
+                        Err(e) => Message::ImageLoadFailed {
+                            url: url_clone,
+                            error: e.to_string(),
+                        },
+                    }
+                },
+                cosmic::Action::App,
+            ));
         }
         app::Task::batch(tasks)
+    }
+
+    /// Rewrite a token-free `luna-static:{conv}/{file}` marker to a fetchable URL.
+    fn resolve_luna_static_fetch_url(&self, marker: &str) -> Option<String> {
+        let rest = marker.strip_prefix("luna-static:")?;
+        let token = self.static_token.as_ref()?;
+        let base = self.server_config.http_uri();
+        Some(format!(
+            "{}/api/static/{}/{}",
+            base.trim_end_matches('/'),
+            token,
+            rest
+        ))
     }
 
     /// Resolve a `data:` URI or `file://` URL into an `ImageLoaded` /

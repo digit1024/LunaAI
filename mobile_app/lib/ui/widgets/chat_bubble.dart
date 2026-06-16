@@ -6,6 +6,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../application/app_state.dart';
+import '../../core/config/server_config.dart';
 import '../../services/tts_provider_resolver.dart';
 
 /// Slide direction for bubble animations
@@ -316,6 +317,8 @@ class _AssistantBubble extends ConsumerWidget {
                         styleSheet: MarkdownStyleSheet(
                           p: Theme.of(context).textTheme.bodyMedium,
                         ),
+                        imageBuilder: (uri, title, alt) =>
+                            _buildMarkdownImage(context, ref, uri, alt),
                       ),
                   // Only show timestamp and actions if message has content
                   if (message.content.isNotEmpty ||
@@ -812,6 +815,51 @@ class _CollapsiblePayload extends StatelessWidget {
       ),
     );
   }
+}
+
+Widget _buildMarkdownImage(
+  BuildContext context,
+  WidgetRef ref,
+  Uri uri,
+  String? alt,
+) {
+  final src = uri.toString();
+  if (src.startsWith('luna-static:')) {
+    final staticToken = ref.read(appControllerProvider).staticToken;
+    if (staticToken.isEmpty) {
+      return _staticImagePlaceholder(context);
+    }
+    final rest = src.substring('luna-static:'.length);
+    final config = ref.read(serverConfigProvider);
+    final resolved =
+        config.httpBaseUriInsecure().resolve('/api/static/$staticToken/$rest');
+    return Image.network(
+      resolved.toString(),
+      semanticLabel: alt,
+      errorBuilder: (context, error, stackTrace) =>
+          _staticImagePlaceholder(context),
+    );
+  }
+
+  if (src.startsWith('http://') ||
+      src.startsWith('https://') ||
+      src.startsWith('data:')) {
+    return Image.network(
+      src,
+      semanticLabel: alt,
+      errorBuilder: (context, error, stackTrace) =>
+          _staticImagePlaceholder(context),
+    );
+  }
+
+  return _staticImagePlaceholder(context);
+}
+
+Widget _staticImagePlaceholder(BuildContext context) {
+  return Icon(
+    Icons.image_not_supported_outlined,
+    color: Theme.of(context).colorScheme.onSurfaceVariant,
+  );
 }
 
 // Helper functions

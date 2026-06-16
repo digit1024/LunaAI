@@ -251,6 +251,34 @@ fn cancel_scheduled_task_tool_definition() -> ToolDefinition {
     }
 }
 
+fn publish_image_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "publish_image".to_string(),
+        description: "Publish a local image file so it can be embedded in a markdown reply to the user. Copies the file into static storage for the current conversation and returns a token-free luna-static: marker plus ready markdown. Never construct /api/static/ URLs yourself — embed the returned markdown verbatim.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute path to an existing local image file (jpg, jpeg, png, gif, webp, bmp, or svg)."
+                },
+                "alt": {
+                    "type": "string",
+                    "description": "Optional alt text for the markdown image (default: 'image')."
+                }
+            },
+            "required": ["path"]
+        }),
+    }
+}
+
+fn is_publishable_image_extension(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "svg"
+    )
+}
+
 pub struct AgenticLoop {
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
     pub llm_client: Arc<dyn LlmClient>,
@@ -318,6 +346,9 @@ impl AgenticLoop {
         }
         if allow("cancel_scheduled_task") {
             upsert_tool_definition(&mut defs, cancel_scheduled_task_tool_definition());
+        }
+        if allow("publish_image") {
+            upsert_tool_definition(&mut defs, publish_image_tool_definition());
         }
         if self.storage.is_some() {
             if allow("store_memory") {
@@ -746,6 +777,9 @@ impl AgenticLoop {
                         .await
                 } else if tool_call.name == "search_history" {
                     self.execute_search_history_tool(&tool_call).await
+                } else if tool_call.name == "publish_image" {
+                    self.execute_publish_image(&tool_call, run_context_clone.as_ref())
+                        .await
                 } else {
                     self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref()).await
                 };
@@ -907,6 +941,150 @@ impl AgenticLoop {
                 content: format!("search_history failed: {}", e),
                 is_error: true,
             },
+        }
+    }
+
+    async fn execute_publish_image(
+        &self,
+        tool_call: &ToolCall,
+        run_context: Option<&RunContext>,
+    ) -> ToolResult {
+        let Some(ctx) = run_context else {
+            return ToolResult {
+                content: "publish_image requires run context (conversation_id)".to_string(),
+                is_error: true,
+            };
+        };
+        let Some(conv_id) = ctx.conversation_id else {
+            return ToolResult {
+                content: "publish_image requires an active conversation".to_string(),
+                is_error: true,
+            };
+        };
+
+        let params = &tool_call.parameters;
+        let path_str = params
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if path_str.is_empty() {
+            return ToolResult {
+                content: "publish_image requires non-empty 'path'".to_string(),
+                is_error: true,
+            };
+        }
+
+        let source = std::path::Path::new(path_str);
+        let Some(ext) = source
+            .extension()
+            .and_then(|e| e.to_str())
+            .filter(|e| is_publishable_image_extension(e))
+        else {
+            return ToolResult {
+                content: "publish_image: path must be an image file (jpg, jpeg, png, gif, webp, bmp, or svg)"
+                    .to_string(),
+                is_error: true,
+            };
+        };
+
+        match tokio::fs::metadata(source).await {
+            Ok(meta) if meta.is_file() => {}
+            Ok(_) => {
+                return ToolResult {
+                    content: "publish_image: path is not a file".to_string(),
+                    is_error: true,
+                };
+            }
+            Err(e) => {
+                return ToolResult {
+                    content: format!("publish_image: cannot read path: {}", e),
+                    is_error: true,
+                };
+            }
+        }
+
+        let static_base = crate::config::AppConfig::default().static_dir();
+        if let Err(e) = tokio::fs::create_dir_all(&static_base).await {
+            return ToolResult {
+                content: format!("publish_image: failed to prepare static dir: {}", e),
+                is_error: true,
+            };
+        }
+        let static_base_canon = match std::fs::canonicalize(&static_base) {
+            Ok(p) => p,
+            Err(e) => {
+                return ToolResult {
+                    content: format!("publish_image: failed to resolve static dir: {}", e),
+                    is_error: true,
+                };
+            }
+        };
+
+        let conv_dir = static_base.join(conv_id.to_string());
+        if let Err(e) = tokio::fs::create_dir_all(&conv_dir).await {
+            return ToolResult {
+                content: format!("publish_image: failed to create conversation dir: {}", e),
+                is_error: true,
+            };
+        }
+        let conv_dir_canon = match std::fs::canonicalize(&conv_dir) {
+            Ok(p) => p,
+            Err(e) => {
+                return ToolResult {
+                    content: format!("publish_image: failed to resolve conversation dir: {}", e),
+                    is_error: true,
+                };
+            }
+        };
+        if !conv_dir_canon.starts_with(&static_base_canon) {
+            return ToolResult {
+                content: "publish_image: destination outside static dir".to_string(),
+                is_error: true,
+            };
+        }
+
+        let dest_name = format!("{}.{}", uuid::Uuid::new_v4(), ext);
+        let dest = conv_dir.join(&dest_name);
+        if let Err(e) = tokio::fs::copy(source, &dest).await {
+            return ToolResult {
+                content: format!("publish_image: copy failed: {}", e),
+                is_error: true,
+            };
+        }
+
+        let dest_canon = match std::fs::canonicalize(&dest) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&dest).await;
+                return ToolResult {
+                    content: format!("publish_image: failed to verify copied file: {}", e),
+                    is_error: true,
+                };
+            }
+        };
+        if !dest_canon.starts_with(&static_base_canon) {
+            let _ = tokio::fs::remove_file(&dest).await;
+            return ToolResult {
+                content: "publish_image: copied file escaped static dir".to_string(),
+                is_error: true,
+            };
+        }
+
+        let marker = format!("luna-static:{}/{}", conv_id, dest_name);
+        let alt = params
+            .get("alt")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("image");
+        let markdown = format!("![{alt}]({marker})");
+        let json = serde_json::json!({
+            "marker": marker,
+            "markdown": markdown,
+        });
+        ToolResult {
+            content: json.to_string(),
+            is_error: false,
         }
     }
 
@@ -1343,6 +1521,9 @@ impl AgenticLoop {
                         .await
                 } else if tool_call.name == "search_history" {
                     self.execute_search_history_tool(&tool_call).await
+                } else if tool_call.name == "publish_image" {
+                    self.execute_publish_image(&tool_call, run_context.as_ref())
+                        .await
                 } else {
                     self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref()).await
                 };
