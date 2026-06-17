@@ -37,6 +37,9 @@ pub struct Conversation {
     pub title_generated: bool,
     pub profile_name: Option<String>,
     pub last_message: Option<i64>,
+    /// Internal worker conversations are stored for debugging but hidden from UI and deep sleep.
+    #[serde(default)]
+    pub internal: bool,
 }
 
 /// Represents a message in the database
@@ -215,7 +218,8 @@ impl SqliteStorage {
                 created_at INTEGER NOT NULL,
                 title_generated INTEGER NOT NULL DEFAULT 0,
                 profile_name TEXT,
-                last_message INTEGER
+                last_message INTEGER,
+                internal INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
@@ -228,6 +232,12 @@ impl SqliteStorage {
         // Migrate existing conversations: add last_message column if it doesn't exist
         let _ = self.conn.execute(
             "ALTER TABLE conversations ADD COLUMN last_message INTEGER",
+            [],
+        );
+
+        // Migrate existing conversations: add internal column if it doesn't exist
+        let _ = self.conn.execute(
+            "ALTER TABLE conversations ADD COLUMN internal INTEGER NOT NULL DEFAULT 0",
             [],
         );
 
@@ -566,6 +576,21 @@ impl SqliteStorage {
             params![id, title, created_at, 0, profile_name, None::<i64>],
         )?;
 
+        Ok(id)
+    }
+
+    /// Insert an internal (worker) conversation — hidden from UI and deep sleep.
+    pub fn create_internal_conversation(
+        &self,
+        title: &str,
+        profile_name: Option<&str>,
+    ) -> SqliteResult<Uuid> {
+        let id = Uuid::new_v4();
+        let created_at = Utc::now().timestamp();
+        self.conn.execute(
+            "INSERT INTO conversations (id, title, created_at, title_generated, profile_name, last_message, internal) VALUES (?1, ?2, ?3, 0, ?4, NULL, 1)",
+            params![id.to_string(), title, created_at, profile_name],
+        )?;
         Ok(id)
     }
 
@@ -913,7 +938,7 @@ impl SqliteStorage {
     pub fn get_conversation(&self, conversation_id: &str) -> SqliteResult<Option<Conversation>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, title, created_at, title_generated, profile_name, last_message FROM conversations WHERE id = ?1")?;
+            .prepare("SELECT id, title, created_at, title_generated, profile_name, last_message, internal FROM conversations WHERE id = ?1")?;
 
         stmt.query_row(params![conversation_id], |row| {
             Ok(Conversation {
@@ -923,6 +948,7 @@ impl SqliteStorage {
                 title_generated: row.get::<_, i32>(3)? != 0,
                 profile_name: row.get(4)?,
                 last_message: row.get(5)?,
+                internal: row.get::<_, i32>(6)? != 0,
             })
         })
         .optional()
@@ -936,7 +962,7 @@ impl SqliteStorage {
     ) -> SqliteResult<Vec<Conversation>> {
         // Order by last_message DESC first (most recently updated), then created_at DESC
         // Conversations with NULL last_message (no messages yet) appear at the end
-        let mut query = "SELECT id, title, created_at, title_generated, profile_name, last_message FROM conversations ORDER BY (last_message IS NULL), last_message DESC, created_at DESC".to_string();
+        let mut query = "SELECT id, title, created_at, title_generated, profile_name, last_message, internal FROM conversations WHERE internal = 0 ORDER BY (last_message IS NULL), last_message DESC, created_at DESC".to_string();
 
         if let Some(lim) = limit {
             query.push_str(&format!(" LIMIT {}", lim));
@@ -955,6 +981,7 @@ impl SqliteStorage {
                 title_generated: row.get::<_, i32>(3)? != 0,
                 profile_name: row.get(4)?,
                 last_message: row.get(5)?,
+                internal: row.get::<_, i32>(6)? != 0,
             })
         })?;
 
@@ -979,9 +1006,10 @@ impl SqliteStorage {
     /// Get conversations without generated titles (only those that have at least one message)
     pub fn get_conversations_without_title(&self) -> SqliteResult<Vec<Conversation>> {
         let mut stmt = self.conn.prepare(
-            "SELECT c.id, c.title, c.created_at, c.title_generated, c.profile_name, c.last_message
+            "SELECT c.id, c.title, c.created_at, c.title_generated, c.profile_name, c.last_message, c.internal
                  FROM conversations c
                  WHERE c.title_generated = 0
+                   AND c.internal = 0
                    AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)
                  ORDER BY c.created_at ASC",
         )?;
@@ -994,6 +1022,7 @@ impl SqliteStorage {
                 title_generated: row.get::<_, i32>(3)? != 0,
                 profile_name: row.get(4)?,
                 last_message: row.get(5)?,
+                internal: row.get::<_, i32>(6)? != 0,
             })
         })?;
 
@@ -1504,10 +1533,10 @@ impl SqliteStorage {
         limit: usize,
     ) -> SqliteResult<Vec<Conversation>> {
         let mut stmt = self.conn.prepare(
-            "SELECT DISTINCT c.id, c.title, c.created_at, c.title_generated, c.profile_name, c.last_message
+            "SELECT DISTINCT c.id, c.title, c.created_at, c.title_generated, c.profile_name, c.last_message, c.internal
              FROM conversations c
              JOIN messages m ON m.conversation_id = c.id
-             WHERE m.id > ?1
+             WHERE m.id > ?1 AND c.internal = 0
              ORDER BY c.last_message ASC
              LIMIT ?2",
         )?;
@@ -1519,6 +1548,7 @@ impl SqliteStorage {
                 title_generated: row.get::<_, i32>(3)? != 0,
                 profile_name: row.get(4)?,
                 last_message: row.get(5)?,
+                internal: row.get::<_, i32>(6)? != 0,
             })
         })?;
         rows.collect()

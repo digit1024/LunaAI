@@ -59,6 +59,16 @@ impl Storage {
             .map_err(|e| rusqlite::Error::InvalidParameterName(format!("Invalid UUID: {}", e)))
     }
 
+    /// Create an internal worker conversation (hidden from UI and deep sleep).
+    pub fn create_internal_conversation(
+        &self,
+        title: String,
+        profile_name: Option<&str>,
+    ) -> SqliteResult<Uuid> {
+        self.sqlite
+            .create_internal_conversation(&title, profile_name)
+    }
+
     /// Get a conversation by ID
     pub fn get_conversation(&self, id: &Uuid) -> SqliteResult<Option<FileConversation>> {
         let id_str = id.to_string();

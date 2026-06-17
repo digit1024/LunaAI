@@ -234,6 +234,35 @@ fn search_history_tool_definition() -> ToolDefinition {
     }
 }
 
+fn spawn_worker_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "spawn_worker".to_string(),
+        description: "Delegate a self-contained task to an isolated sub-agent that runs to \
+            completion and returns its final response. Use when a task is independent of the \
+            current conversation flow — e.g. deep research, writing a document, running a \
+            multi-step analysis, or any work where intermediate steps would clutter this \
+            conversation. The worker's available tools are determined by its profile's \
+            tools policy (which may differ from the current session if a profile is specified). Its \
+            internal reasoning and tool calls are stored separately and never shown in this \
+            conversation. Only the final result is returned here. \
+            Do NOT use for short tasks you can handle directly.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Complete, self-contained description of what the worker should do. Include all context it needs — it cannot access this conversation's history."
+                },
+                "profile": {
+                    "type": "string",
+                    "description": "Optional. Name of a configured profile to use for this worker (e.g. a coding-focused profile). If omitted, the current session profile is used."
+                }
+            },
+            "required": ["task"]
+        }),
+    }
+}
+
 fn cancel_scheduled_task_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "cancel_scheduled_task".to_string(),
@@ -279,11 +308,64 @@ fn is_publishable_image_extension(ext: &str) -> bool {
     )
 }
 
+fn parse_spawn_worker_args(
+    tool_call: &ToolCall,
+    run_context: Option<&RunContext>,
+    app_config: Option<&crate::config::AppConfig>,
+) -> Result<(String, String), ToolResult> {
+    let Some(parent_ctx) = run_context else {
+        return Err(ToolResult {
+            content: "spawn_worker requires run context".to_string(),
+            is_error: true,
+        });
+    };
+
+    let params = &tool_call.parameters;
+    let task = params
+        .get("task")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let Some(task) = task else {
+        return Err(ToolResult {
+            content: "spawn_worker requires non-empty 'task'".to_string(),
+            is_error: true,
+        });
+    };
+
+    let profile_name = if let Some(override_name) = params
+        .get("profile")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let Some(cfg) = app_config else {
+            return Err(ToolResult {
+                content: "spawn_worker requires app configuration to resolve profile".to_string(),
+                is_error: true,
+            });
+        };
+        if !cfg.profiles.contains_key(override_name) {
+            return Err(ToolResult {
+                content: format!("spawn_worker: profile '{}' is not configured", override_name),
+                is_error: true,
+            });
+        }
+        override_name.to_string()
+    } else {
+        parent_ctx.profile_name.clone()
+    };
+
+    Ok((task, profile_name))
+}
+
 pub struct AgenticLoop {
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
     pub llm_client: Arc<dyn LlmClient>,
     pub schedule_service: Option<Arc<ScheduleService>>,
     pub storage: Option<Arc<tokio::sync::Mutex<crate::storage::Storage>>>,
+    pub app_config: Option<Arc<crate::config::AppConfig>>,
     pub tool_call_timeout_secs: u64,
 }
 
@@ -299,12 +381,18 @@ impl AgenticLoop {
             llm_client,
             schedule_service,
             storage: None,
+            app_config: None,
             tool_call_timeout_secs,
         }
     }
 
     pub fn with_storage(mut self, storage: Arc<tokio::sync::Mutex<crate::storage::Storage>>) -> Self {
         self.storage = Some(storage);
+        self
+    }
+
+    pub fn with_app_config(mut self, app_config: Arc<crate::config::AppConfig>) -> Self {
+        self.app_config = Some(app_config);
         self
     }
 
@@ -368,6 +456,9 @@ impl AgenticLoop {
             }
             if allow("search_history") {
                 upsert_tool_definition(&mut defs, search_history_tool_definition());
+            }
+            if allow("spawn_worker") {
+                upsert_tool_definition(&mut defs, spawn_worker_tool_definition());
             }
         }
         tracing::debug!(tool_count = defs.len(), "Enabled tools");
@@ -780,6 +871,26 @@ impl AgenticLoop {
                 } else if tool_call.name == "publish_image" {
                     self.execute_publish_image(&tool_call, run_context_clone.as_ref())
                         .await
+                } else if tool_call.name == "spawn_worker" {
+                    let spawn_result = parse_spawn_worker_args(
+                        &tool_call,
+                        run_context_clone.as_ref(),
+                        self.app_config.as_deref(),
+                    );
+                    match spawn_result {
+                        Ok((task, profile_name)) => {
+                            Box::pin(crate::agentic::spawn_worker::execute_spawn_worker(
+                                self.app_config.clone(),
+                                self.storage.clone(),
+                                self.mcp_registry.clone(),
+                                self.tool_call_timeout_secs,
+                                task,
+                                profile_name,
+                            ))
+                            .await
+                        }
+                        Err(tool_result) => tool_result,
+                    }
                 } else {
                     self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref()).await
                 };

@@ -25,6 +25,7 @@ pub const INTERNAL_TOOL_NAMES: &[&str] = &[
     "delete_memory",
     "search_attachment_chunks",
     "search_history",
+    "spawn_worker",
 ];
 
 /// Returns true if `name` matches any of the glob `patterns`. Uses globset; empty patterns = no match.
