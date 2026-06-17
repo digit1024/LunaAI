@@ -4,8 +4,47 @@ use rust_mcp_sdk::schema::CallToolResult;
 use tokio::sync::RwLock;
 use tracing::error;
 
-use crate::{error::{AgenticLoopError, Result}, mcp_servers_registry::model::{ServerStatus, ServerWithStatus}};
+use crate::{
+    error::{AgenticLoopError, Result},
+    mcp_config::model::MCPServerConfig,
+    mcp_connection::MCPConnection,
+    mcp_servers_registry::model::{ServerStatus, ServerWithStatus},
+};
 pub mod model;
+
+enum ServerInitResult {
+    Connected {
+        name: String,
+        connection: MCPConnection,
+    },
+    Failed {
+        name: String,
+        error: String,
+    },
+}
+
+async fn init_server(name: String, config: MCPServerConfig) -> ServerInitResult {
+    let mut conn = MCPConnection::new(name.clone(), config);
+    match conn.connect().await {
+        Ok(_) => match conn.update_tools().await {
+            Ok(_) => ServerInitResult::Connected {
+                name,
+                connection: conn,
+            },
+            Err(e) => {
+                error!("Failed to update tools for MCP server '{}': {}", name, e);
+                ServerInitResult::Failed {
+                    name,
+                    error: e.to_string(),
+                }
+            }
+        },
+        Err(e) => ServerInitResult::Failed {
+            name,
+            error: e.to_string(),
+        },
+    }
+}
 //Registry of MCP servers with connections to the servers
 pub struct MCPServerRegistry {
     pub servers: HashMap<String, Arc<RwLock<crate::mcp_connection::MCPConnection>>>,
@@ -33,36 +72,24 @@ impl MCPServerRegistry {
 
     /// Initialize the MCP server registry from a configuration file
     pub async fn initialize_from_config(&mut self, config: &crate::mcp_config::MCPConfig) -> Result<&mut Self> {
-        for (server_name , server_config )in config.servers.clone() {
-            
-            
-            let mut server_connection = crate::mcp_connection::MCPConnection::new(server_name.clone(), server_config);
-            // When Connect returns error, insert the server_name into failed_servers and continue with the next server
-            match server_connection.connect().await {
-                Ok(_) => {
-                    
-                    // Discover tools
-                    match server_connection.update_tools().await {
-                        Ok(_) => {
-                            // WE WERE ABLE TO CONNECT AND DISCOVER TOOLS
-                            
-                            self.servers.insert(server_name.clone(), Arc::new(RwLock::new(server_connection)));
-                        },
-                        Err(e) => {
-                            error!("Failed to update tools for MCP server '{}': {}", server_name, e);
-                            self.failed_servers.insert(server_name.clone(), e.to_string());
-                            continue;
-                        }
-                    }
-                    
-                }, 
-                Err(e) => {
-                    self.failed_servers.insert(server_name, e.to_string());
+        let init_futures = config
+            .servers
+            .iter()
+            .map(|(server_name, server_config)| {
+                init_server(server_name.clone(), server_config.clone())
+            });
+        let results = futures::future::join_all(init_futures).await;
+
+        for result in results {
+            match result {
+                ServerInitResult::Connected { name, connection } => {
+                    self.servers
+                        .insert(name, Arc::new(RwLock::new(connection)));
+                }
+                ServerInitResult::Failed { name, error } => {
+                    self.failed_servers.insert(name, error);
                 }
             }
-            
-
-            
         }
         Ok(self)
     }
