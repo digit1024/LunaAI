@@ -18,6 +18,7 @@ use tokio::sync::RwLock;
 pub const INTERNAL_TOOL_NAMES: &[&str] = &[
     "schedule_task",
     "cancel_scheduled_task",
+    "list_scheduled_tasks",
     "publish_image",
     "store_memory",
     "search_memory",
@@ -25,6 +26,7 @@ pub const INTERNAL_TOOL_NAMES: &[&str] = &[
     "delete_memory",
     "search_attachment_chunks",
     "search_history",
+    "list_conversations",
     "spawn_worker",
 ];
 

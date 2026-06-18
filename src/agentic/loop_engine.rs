@@ -280,6 +280,49 @@ fn cancel_scheduled_task_tool_definition() -> ToolDefinition {
     }
 }
 
+fn list_scheduled_tasks_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "list_scheduled_tasks".to_string(),
+        description: "List scheduled tasks (reminders and recurring jobs). Use when the user asks what tasks are scheduled, wants to see upcoming reminders, or needs job IDs to cancel something. Defaults to showing only pending jobs.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "running", "completed", "failed", "all"],
+                    "description": "Filter by job status. 'pending' (default) = upcoming/active, 'all' = everything including completed/failed."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results (default: 20, max: 100)."
+                }
+            },
+            "required": []
+        }),
+    }
+}
+
+fn list_conversations_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "list_conversations".to_string(),
+        description: "List past conversations with their titles, dates, and IDs. Use when the user asks to see recent chats, browse history, or wants a conversation ID. Results are ordered by most recent activity first.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of conversations to return (default: 20, max: 100)."
+                },
+                "after_date": {
+                    "type": "string",
+                    "description": "Optional ISO 8601 date (e.g. '2026-01-01' or '2026-01-01T00:00:00Z'). Only return conversations created on or after this date."
+                }
+            },
+            "required": []
+        }),
+    }
+}
+
 fn publish_image_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "publish_image".to_string(),
@@ -435,6 +478,9 @@ impl AgenticLoop {
         if allow("cancel_scheduled_task") {
             upsert_tool_definition(&mut defs, cancel_scheduled_task_tool_definition());
         }
+        if self.storage.is_some() && allow("list_scheduled_tasks") {
+            upsert_tool_definition(&mut defs, list_scheduled_tasks_tool_definition());
+        }
         if allow("publish_image") {
             upsert_tool_definition(&mut defs, publish_image_tool_definition());
         }
@@ -456,6 +502,9 @@ impl AgenticLoop {
             }
             if allow("search_history") {
                 upsert_tool_definition(&mut defs, search_history_tool_definition());
+            }
+            if allow("list_conversations") {
+                upsert_tool_definition(&mut defs, list_conversations_tool_definition());
             }
             if allow("spawn_worker") {
                 upsert_tool_definition(&mut defs, spawn_worker_tool_definition());
@@ -857,6 +906,10 @@ impl AgenticLoop {
                     self.execute_schedule_task(&tool_call, run_context_clone.as_ref()).await
                 } else if tool_call.name == "cancel_scheduled_task" {
                     self.execute_cancel_scheduled_task(&tool_call).await
+                } else if tool_call.name == "list_scheduled_tasks" {
+                    self.execute_list_scheduled_tasks(&tool_call).await
+                } else if tool_call.name == "list_conversations" {
+                    self.execute_list_conversations(&tool_call).await
                 } else if tool_call.name == "store_memory"
                     || tool_call.name == "search_memory"
                     || tool_call.name == "search_memory_by_category"
@@ -1050,6 +1103,145 @@ impl AgenticLoop {
             }
             Err(e) => ToolResult {
                 content: format!("search_history failed: {}", e),
+                is_error: true,
+            },
+        }
+    }
+
+    async fn execute_list_scheduled_tasks(&self, tool_call: &ToolCall) -> ToolResult {
+        let Some(storage) = &self.storage else {
+            return ToolResult {
+                content: "list_scheduled_tasks requires storage".to_string(),
+                is_error: true,
+            };
+        };
+        let params = &tool_call.parameters;
+        let status_input = params.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
+        let status_filter: Option<&str> = if status_input == "all" { None } else { Some(status_input) };
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| (n as usize).min(100))
+            .unwrap_or(20);
+
+        let guard = storage.lock().await;
+        match guard.list_scheduled_jobs(status_filter, limit) {
+            Ok(jobs) if jobs.is_empty() => ToolResult {
+                content: format!("No scheduled tasks found (status: {}).", status_input),
+                is_error: false,
+            },
+            Ok(jobs) => {
+                let lines: Vec<String> = jobs
+                    .into_iter()
+                    .map(|j| {
+                        let run_at = chrono::DateTime::from_timestamp(j.run_at_utc_secs, 0)
+                            .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+                            .unwrap_or_else(|| "unknown time".to_string());
+                        let mut parts = vec![
+                            format!("id: {}", j.id),
+                            format!("status: {}", j.status),
+                            format!("run_at: {}", run_at),
+                            format!("message: {}", j.message),
+                        ];
+                        if let Some(sched) = &j.schedule {
+                            parts.push(format!("schedule: {}", sched));
+                        }
+                        if let Some(title) = &j.title {
+                            parts.push(format!("title: {}", title));
+                        }
+                        if let Some(profile) = &j.profile_name {
+                            parts.push(format!("profile: {}", profile));
+                        }
+                        if let Some(err) = &j.error_message {
+                            parts.push(format!("error: {}", err));
+                        }
+                        parts.join("\n")
+                    })
+                    .collect();
+                ToolResult {
+                    content: lines.join("\n\n---\n\n"),
+                    is_error: false,
+                }
+            }
+            Err(e) => ToolResult {
+                content: format!("list_scheduled_tasks failed: {}", e),
+                is_error: true,
+            },
+        }
+    }
+
+    async fn execute_list_conversations(&self, tool_call: &ToolCall) -> ToolResult {
+        let Some(storage) = &self.storage else {
+            return ToolResult {
+                content: "list_conversations requires storage".to_string(),
+                is_error: true,
+            };
+        };
+        let params = &tool_call.parameters;
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| (n as usize).min(100))
+            .unwrap_or(20);
+
+        let after_date_secs: Option<i64> = params
+            .get("after_date")
+            .and_then(|v| v.as_str())
+            .and_then(|s| {
+                // Accept full ISO 8601 or date-only strings
+                chrono::DateTime::parse_from_rfc3339(s)
+                    .map(|dt| dt.timestamp())
+                    .ok()
+                    .or_else(|| {
+                        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                            .ok()
+                            .map(|d| {
+                                d.and_hms_opt(0, 0, 0)
+                                    .map(|dt| {
+                                        chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+                                            dt,
+                                            chrono::Utc,
+                                        )
+                                        .timestamp()
+                                    })
+                                    .unwrap_or(0)
+                            })
+                    })
+            });
+
+        let guard = storage.lock().await;
+        match guard.list_conversations_metadata(limit, after_date_secs) {
+            Ok(convs) if convs.is_empty() => ToolResult {
+                content: "No conversations found.".to_string(),
+                is_error: false,
+            },
+            Ok(convs) => {
+                let lines: Vec<String> = convs
+                    .into_iter()
+                    .map(|c| {
+                        let created = chrono::DateTime::from_timestamp(c.created_at, 0)
+                            .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let last_active = c
+                            .last_message
+                            .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+                            .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+                            .unwrap_or_else(|| "no messages".to_string());
+                        let title = if c.title.is_empty() { "(untitled)" } else { &c.title };
+                        let profile = c.profile_name.as_deref().unwrap_or("default");
+                        format!(
+                            "id: {}\ntitle: {}\ncreated: {}\nlast_active: {}\nprofile: {}",
+                            c.id, title, created, last_active, profile
+                        )
+                    })
+                    .collect();
+                ToolResult {
+                    content: lines.join("\n\n---\n\n"),
+                    is_error: false,
+                }
+            }
+            Err(e) => ToolResult {
+                content: format!("list_conversations failed: {}", e),
                 is_error: true,
             },
         }
@@ -1621,6 +1813,10 @@ impl AgenticLoop {
                     self.execute_schedule_task(&tool_call, run_context.as_ref()).await
                 } else if tool_call.name == "cancel_scheduled_task" {
                     self.execute_cancel_scheduled_task(&tool_call).await
+                } else if tool_call.name == "list_scheduled_tasks" {
+                    self.execute_list_scheduled_tasks(&tool_call).await
+                } else if tool_call.name == "list_conversations" {
+                    self.execute_list_conversations(&tool_call).await
                 } else if tool_call.name == "store_memory"
                     || tool_call.name == "search_memory"
                     || tool_call.name == "search_memory_by_category"

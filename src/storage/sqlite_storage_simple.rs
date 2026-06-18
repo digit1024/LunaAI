@@ -1667,6 +1667,56 @@ impl SqliteStorage {
             .execute("DELETE FROM scheduled_jobs WHERE id = ?1", params![id])?;
         Ok(changes > 0)
     }
+
+    /// List scheduled jobs, optionally filtered by status. Ordered by run_at ASC.
+    /// Pass `None` for status to return all statuses.
+    pub fn list_scheduled_jobs(
+        &self,
+        status: Option<&str>,
+        limit: usize,
+    ) -> SqliteResult<Vec<ScheduledJob>> {
+        let sql = "SELECT id, conversation_id, run_at_utc_secs, message, profile_name, title, status, created_at_utc_secs, updated_at_utc_secs, error_message, schedule FROM scheduled_jobs WHERE (?1 IS NULL OR status = ?1) ORDER BY run_at_utc_secs ASC LIMIT ?2";
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(params![status, limit as i64], |row| {
+            Ok(ScheduledJob {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                run_at_utc_secs: row.get(2)?,
+                message: row.get(3)?,
+                profile_name: row.get(4)?,
+                title: row.get(5)?,
+                status: row.get(6)?,
+                created_at_utc_secs: row.get(7)?,
+                updated_at_utc_secs: row.get(8)?,
+                error_message: row.get(9)?,
+                schedule: row.get(10)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// List conversations (metadata only, no messages), optionally filtered by a minimum
+    /// `created_at` unix timestamp. Ordered by last_message DESC, created_at DESC.
+    pub fn list_conversations_metadata(
+        &self,
+        limit: usize,
+        after_date_secs: Option<i64>,
+    ) -> SqliteResult<Vec<Conversation>> {
+        let sql = "SELECT id, title, created_at, title_generated, profile_name, last_message, internal FROM conversations WHERE internal = 0 AND (?1 IS NULL OR created_at >= ?1) ORDER BY (last_message IS NULL), last_message DESC, created_at DESC LIMIT ?2";
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(params![after_date_secs, limit as i64], |row| {
+            Ok(Conversation {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                created_at: row.get(2)?,
+                title_generated: row.get::<_, i32>(3)? != 0,
+                profile_name: row.get(4)?,
+                last_message: row.get(5)?,
+                internal: row.get::<_, i32>(6)? != 0,
+            })
+        })?;
+        rows.collect()
+    }
 }
 
 #[cfg(test)]

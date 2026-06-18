@@ -336,6 +336,25 @@ impl Storage {
         self.sqlite.search_history(query, limit)
     }
 
+    /// List conversations (metadata only — no messages loaded), optionally filtered by
+    /// a minimum creation date expressed as a unix timestamp.
+    pub fn list_conversations_metadata(
+        &self,
+        limit: usize,
+        after_date_secs: Option<i64>,
+    ) -> SqliteResult<Vec<super::sqlite_storage_simple::Conversation>> {
+        self.sqlite.list_conversations_metadata(limit, after_date_secs)
+    }
+
+    /// List scheduled jobs, optionally filtered by status (pass `None` for all statuses).
+    pub fn list_scheduled_jobs(
+        &self,
+        status: Option<&str>,
+        limit: usize,
+    ) -> SqliteResult<Vec<super::sqlite_storage_simple::ScheduledJob>> {
+        self.sqlite.list_scheduled_jobs(status, limit)
+    }
+
     /// Get conversations without generated titles
     pub fn get_conversations_without_title(&self) -> SqliteResult<Vec<Uuid>> {
         let db_conversations = self.sqlite.get_conversations_without_title()?;
