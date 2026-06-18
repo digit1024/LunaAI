@@ -130,6 +130,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
         onStartNew: controller.startNewConversation,
         onHistory: controller.openConversations,
         onMemories: controller.openMemories,
+        onMcpServers: controller.openMcpServers,
         onSetup: controller.openSetup,
       ),
       body: Column(
@@ -137,6 +138,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
           _Header(
             status: state.connection,
             onMemories: controller.openMemories,
+            onMcpServers: controller.openMcpServers,
             onRefresh: () {
               setState(() {
                 _currentOffset = 0;
@@ -230,11 +232,13 @@ class _Header extends StatelessWidget {
     required this.status,
     required this.onRefresh,
     required this.onMemories,
+    required this.onMcpServers,
   });
 
   final ConnectionStatus status;
   final VoidCallback onRefresh;
   final VoidCallback onMemories;
+  final VoidCallback onMcpServers;
 
   @override
   Widget build(BuildContext context) {
@@ -271,6 +275,7 @@ class _Header extends StatelessWidget {
           PopupMenuButton<String>(
             onSelected: (value) {
               if (value == 'memories') onMemories();
+              if (value == 'mcp') onMcpServers();
             },
             itemBuilder: (context) => [
               const PopupMenuItem(
@@ -278,6 +283,14 @@ class _Header extends StatelessWidget {
                 child: ListTile(
                   leading: Icon(Icons.psychology_outlined),
                   title: Text('Memories'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'mcp',
+                child: ListTile(
+                  leading: Icon(Icons.hub_outlined),
+                  title: Text('MCP Servers'),
                   contentPadding: EdgeInsets.zero,
                 ),
               ),
@@ -396,6 +409,7 @@ class _ChatDrawer extends ConsumerStatefulWidget {
     required this.onStartNew,
     required this.onHistory,
     required this.onMemories,
+    required this.onMcpServers,
     required this.onSetup,
   });
 
@@ -405,6 +419,7 @@ class _ChatDrawer extends ConsumerStatefulWidget {
   final VoidCallback onStartNew;
   final VoidCallback onHistory;
   final VoidCallback onMemories;
+  final VoidCallback onMcpServers;
   final VoidCallback onSetup;
 
   @override
@@ -626,6 +641,15 @@ class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
             title: const Text('Memories'),
             onTap: () {
               widget.onMemories();
+              Navigator.pop(context);
+            },
+          ),
+          // MCP Servers
+          ListTile(
+            leading: const Icon(Icons.hub_outlined),
+            title: const Text('MCP Servers'),
+            onTap: () {
+              widget.onMcpServers();
               Navigator.pop(context);
             },
           ),

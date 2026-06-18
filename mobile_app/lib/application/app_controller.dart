@@ -254,6 +254,33 @@ class AppController extends Notifier<AppState> {
     refreshMemories();
   }
 
+  void openMcpServers() {
+    state = state.copyWith(pane: ActivePane.mcp);
+    unawaited(loadMcpServers());
+  }
+
+  Future<void> loadMcpServers() async {
+    final config = ref.read(serverConfigProvider);
+    final client = FileClient(config);
+    try {
+      final response = await client.listMcpServers();
+      state = state.copyWith(mcpServers: response.servers, error: null);
+    } catch (e) {
+      debugPrint('Failed to load MCP servers: $e');
+      state = state.copyWith(error: 'Failed to load MCP servers: $e');
+    }
+  }
+
+  void toggleMcpServerExpand(String serverName) {
+    final expanded = Set<String>.from(state.expandedMcpServers);
+    if (expanded.contains(serverName)) {
+      expanded.remove(serverName);
+    } else {
+      expanded.add(serverName);
+    }
+    state = state.copyWith(expandedMcpServers: expanded);
+  }
+
   void refreshMemories({String? query}) {
     final q = query ?? state.memoriesSearch;
     final trimmed = q.trim();

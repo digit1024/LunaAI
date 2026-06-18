@@ -45,6 +45,7 @@ pub enum MCPServerStatus {
 pub struct MCPServerInfo {
     pub name: String,
     pub tool_count: u32,
+    pub tools: Vec<String>,
     #[serde(flatten)]
     pub status: MCPServerStatus,
 }
@@ -226,29 +227,39 @@ pub async fn list_mcp_servers_handler(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // Get tool counts for connected servers
-    let mut tool_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    // Get tool names for connected servers
+    let mut tool_names_map: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     for (server_name, server_connection) in registry.servers.iter() {
         let connection_guard = server_connection.read().await;
-        let count = connection_guard.tools().len() as u32;
+        let names: Vec<String> = connection_guard
+            .tools()
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect();
         drop(connection_guard);
-        tool_counts.insert(server_name.clone(), count);
+        tool_names_map.insert(server_name.clone(), names);
     }
     drop(registry); // Release the read lock
 
     let servers: Vec<MCPServerInfo> = servers_with_status
         .into_iter()
         .map(|server| {
-            let tool_count = match &server.server_status {
+            let tools = match &server.server_status {
                 agentic_loop::mcp_servers_registry::model::ServerStatus::Connected => {
-                    tool_counts.get(&server.server_name).copied().unwrap_or(0)
+                    tool_names_map
+                        .get(&server.server_name)
+                        .cloned()
+                        .unwrap_or_default()
                 }
-                agentic_loop::mcp_servers_registry::model::ServerStatus::Failed(_) => 0,
+                agentic_loop::mcp_servers_registry::model::ServerStatus::Failed(_) => Vec::new(),
             };
-            
+            let tool_count = tools.len() as u32;
+
             MCPServerInfo {
                 name: server.server_name,
                 tool_count,
+                tools,
                 status: match server.server_status {
                     agentic_loop::mcp_servers_registry::model::ServerStatus::Connected => {
                         MCPServerStatus::Connected

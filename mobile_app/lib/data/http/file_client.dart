@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 
 import '../../core/config/server_config.dart';
+import 'mcp_dto.dart';
 
 /// Max file size accepted client-side before upload (50 MB).
 const int kMaxFileSizeBytes = 50 * 1024 * 1024;
@@ -101,6 +102,7 @@ class FileClient {
     final s = e.toString();
     return s.contains('File upload failed:') ||
         s.contains('File removal failed:') ||
+        s.contains('MCP servers request failed:') ||
         s.contains('Invalid response:');
   }
 
@@ -215,6 +217,44 @@ class FileClient {
         await _deleteUpload(config.httpBaseUriInsecure(), uid);
       } catch (e2) {
         debugPrint('Error removing file: $e2');
+        rethrow;
+      }
+    }
+  }
+
+  Future<MCPServersResponse> _fetchMcpServers(Uri apiBase) async {
+    final uri = apiBase.resolve('/api/mcp-servers');
+    final response = await http.get(
+      uri,
+      headers: {
+        'x-api-key': config.apiKey,
+        'authorization': 'Bearer ${config.apiKey}',
+      },
+    );
+
+    if (response.statusCode == 200) {
+      final json = jsonDecode(response.body) as Map<String, dynamic>;
+      return MCPServersResponse.fromJson(json);
+    }
+    throw Exception(
+      'MCP servers request failed: ${response.statusCode} - ${response.body}',
+    );
+  }
+
+  /// List MCP servers and their tool names.
+  Future<MCPServersResponse> listMcpServers() async {
+    try {
+      return await _fetchMcpServers(config.httpBaseUriSecure());
+    } catch (e) {
+      if (_isHttpLevelFailure(e)) {
+        debugPrint('Error loading MCP servers: $e');
+        rethrow;
+      }
+      debugPrint('HTTPS MCP servers request failed ($e), trying HTTP...');
+      try {
+        return await _fetchMcpServers(config.httpBaseUriInsecure());
+      } catch (e2) {
+        debugPrint('Error loading MCP servers: $e2');
         rethrow;
       }
     }

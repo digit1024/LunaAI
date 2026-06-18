@@ -119,6 +119,7 @@ pub enum Message {
     LoadMCPServers,
     MCPServersLoaded(Vec<crate::server::dto::MCPServerInfo>),
     MCPServersLoadError(String),
+    ToggleMCPServerExpand(String),
 
     // Tick for animations
     Tick(cosmic::iced::time::Instant),
@@ -416,6 +417,7 @@ pub struct LunaThinApp {
     /// Ephemeral token for static file URLs (from HealthOk).
     pub static_token: Option<String>,
     pub mcp_servers: Vec<crate::server::dto::MCPServerInfo>,
+    pub mcp_expanded_servers: HashSet<String>,
 
     // History page
     pub history_search: String,
@@ -518,6 +520,7 @@ impl LunaThinApp {
             current_profile: String::new(),
             static_token: None,
             mcp_servers: Vec::new(),
+            mcp_expanded_servers: HashSet::new(),
             history_search: String::new(),
             history_search_results: Vec::new(),
             renaming_conversation: None,
@@ -1751,6 +1754,14 @@ impl Application for LunaThinApp {
             }
             Message::MCPServersLoadError(error) => {
                 self.inline_error = Some(format!("Failed to load MCP servers: {}", error));
+                return app::Task::none();
+            }
+            Message::ToggleMCPServerExpand(name) => {
+                if self.mcp_expanded_servers.contains(&name) {
+                    self.mcp_expanded_servers.remove(&name);
+                } else {
+                    self.mcp_expanded_servers.insert(name);
+                }
                 return app::Task::none();
             }
             _ => {}

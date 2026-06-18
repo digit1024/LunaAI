@@ -112,6 +112,7 @@ class _WearHomeRouter extends ConsumerWidget {
       ActivePane.conversations => const WearConversationsScreen(),
       ActivePane.chat => const WearChatScreen(),
       ActivePane.memories => const WearChatScreen(),
+      ActivePane.mcp => const WearConversationsScreen(),
       ActivePane.settings => const WearSetupScreen(),
     };
 

@@ -751,6 +751,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           onStartNew: controller.startNewConversation,
           onHistory: controller.openConversations,
           onMemories: controller.openMemories,
+          onMcpServers: controller.openMcpServers,
           onSetup: controller.openSetup,
         ),
         body: Column(
@@ -1021,6 +1022,7 @@ class _ChatDrawer extends ConsumerStatefulWidget {
     required this.onStartNew,
     required this.onHistory,
     required this.onMemories,
+    required this.onMcpServers,
     required this.onSetup,
   });
 
@@ -1030,6 +1032,7 @@ class _ChatDrawer extends ConsumerStatefulWidget {
   final VoidCallback onStartNew;
   final VoidCallback onHistory;
   final VoidCallback onMemories;
+  final VoidCallback onMcpServers;
   final VoidCallback onSetup;
 
   @override
@@ -1293,6 +1296,15 @@ class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
             title: const Text('Memories'),
             onTap: () {
               widget.onMemories();
+              Navigator.pop(context);
+            },
+          ),
+          // MCP Servers
+          ListTile(
+            leading: const Icon(Icons.hub_outlined),
+            title: const Text('MCP Servers'),
+            onTap: () {
+              widget.onMcpServers();
               Navigator.pop(context);
             },
           ),

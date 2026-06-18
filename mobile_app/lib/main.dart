@@ -14,6 +14,7 @@ import 'ui/screens/chat_screen.dart';
 import 'ui/screens/connecting_screen.dart';
 import 'ui/screens/conversations_screen.dart';
 import 'ui/screens/memories_screen.dart';
+import 'ui/screens/mcp_servers_screen.dart';
 import 'ui/screens/setup_screen.dart';
 
 void main() async {
@@ -99,6 +100,7 @@ class _HomeRouter extends ConsumerWidget {
       ActivePane.conversations => const ConversationsScreen(),
       ActivePane.chat => const ChatScreen(),
       ActivePane.memories => const MemoriesScreen(),
+      ActivePane.mcp => const McpServersScreen(),
       ActivePane.settings => const SetupScreen(),
     };
 

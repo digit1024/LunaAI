@@ -1,11 +1,12 @@
 import 'package:equatable/equatable.dart';
 
 import '../data/http/file_client.dart';
+import '../data/http/mcp_dto.dart';
 import '../data/ws/ws_dto.dart';
 
 enum ConnectionStatus { connecting, online, error }
 
-enum ActivePane { setup, connecting, conversations, chat, memories, settings }
+enum ActivePane { setup, connecting, conversations, chat, memories, settings, mcp }
 
 enum DialogModeState { listening, processing, speaking }
 
@@ -179,6 +180,8 @@ class AppState extends Equatable {
   final List<MemoryView> memories;
   final String memoriesSearch;
   final int? editingMemoryId;
+  final List<MCPServerInfo> mcpServers;
+  final Set<String> expandedMcpServers;
 
   const AppState({
     required this.connection,
@@ -203,6 +206,8 @@ class AppState extends Equatable {
     required this.memories,
     required this.memoriesSearch,
     required this.editingMemoryId,
+    required this.mcpServers,
+    required this.expandedMcpServers,
   });
 
   factory AppState.initial() => const AppState(
@@ -228,6 +233,8 @@ class AppState extends Equatable {
         memories: [],
         memoriesSearch: '',
         editingMemoryId: null,
+        mcpServers: [],
+        expandedMcpServers: {},
       );
 
   AppState copyWith({
@@ -253,6 +260,8 @@ class AppState extends Equatable {
     List<MemoryView>? memories,
     String? memoriesSearch,
     Object? editingMemoryId = _infoMessageUnset,
+    List<MCPServerInfo>? mcpServers,
+    Set<String>? expandedMcpServers,
   }) {
     return AppState(
       connection: connection ?? this.connection,
@@ -281,6 +290,8 @@ class AppState extends Equatable {
       editingMemoryId: identical(editingMemoryId, _infoMessageUnset)
           ? this.editingMemoryId
           : editingMemoryId as int?,
+      mcpServers: mcpServers ?? this.mcpServers,
+      expandedMcpServers: expandedMcpServers ?? this.expandedMcpServers,
     );
   }
 
@@ -308,5 +319,7 @@ class AppState extends Equatable {
         memories,
         memoriesSearch,
         editingMemoryId,
+        mcpServers,
+        expandedMcpServers,
       ];
 }

@@ -291,6 +291,8 @@ pub enum MCPServerStatus {
 pub struct MCPServerInfo {
     pub name: String,
     pub tool_count: u32,
+    #[serde(default)]
+    pub tools: Vec<String>,
     #[serde(flatten)]
     pub status: MCPServerStatus,
 }

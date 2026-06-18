@@ -5,11 +5,13 @@ class LunaBottomBar extends StatelessWidget {
     super.key,
     required this.onConversations,
     required this.onStartNew,
+    required this.onMcpServers,
     required this.onSettings,
   });
 
   final VoidCallback onConversations;
   final VoidCallback onStartNew;
+  final VoidCallback onMcpServers;
   final VoidCallback onSettings;
 
   @override
@@ -38,6 +40,13 @@ Expanded(
     onPressed: onStartNew,
     icon: const Icon(Icons.add),
     tooltip: 'Start New',
+  ),
+),
+Expanded(
+  child: IconButton(
+    onPressed: onMcpServers,
+    icon: const Icon(Icons.hub_outlined),
+    tooltip: 'MCP Servers',
   ),
 ),
 Expanded(

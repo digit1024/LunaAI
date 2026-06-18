@@ -2,12 +2,12 @@
 
 use cosmic::{
     iced::Length,
-    widget::{self, container, text, Column, Row},
+    widget::{self, button, container, text, Column, Row},
     Element,
 };
 
 use crate::server::dto::MCPServerStatus;
-use crate::ui::app::{LunaThinApp, Message, ConnectionStatus};
+use crate::ui::app::{ConnectionStatus, LunaThinApp, Message};
 
 pub fn mcp_servers_page(app: &LunaThinApp) -> Element<'_, Message> {
     let mut content = Column::new().spacing(16).padding(16);
@@ -59,34 +59,62 @@ pub fn mcp_servers_page(app: &LunaThinApp) -> Element<'_, Message> {
                     ),
                 };
 
-                content = content.push(
-                    container(
-                        Column::new()
+                let is_expanded = app.mcp_expanded_servers.contains(&server.name);
+                let toggle_label = if is_expanded {
+                    format!("▼ {} tools", server.tool_count)
+                } else {
+                    format!("▶ {} tools", server.tool_count)
+                };
+
+                let mut server_column = Column::new()
+                    .push(
+                        Row::new()
+                            .push(text(&server.name).size(16).width(Length::Fill))
                             .push(
-                                Row::new()
-                                    .push(text(&server.name).size(16).width(Length::Fill))
-                                    .push(
-                                        text(status_text)
-                                            .size(14)
-                                            .class(cosmic::style::Text::Color(status_color)),
-                                    )
-                                    .spacing(8)
-                                    .align_y(cosmic::iced::Alignment::Center)
-                                    .width(Length::Fill),
+                                text(status_text)
+                                    .size(14)
+                                    .class(cosmic::style::Text::Color(status_color)),
                             )
-                            .push(
-                                text(status_desc)
-                                    .size(12)
-                                    .class(cosmic::style::Text::Color(
-                                        cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6),
-                                    )),
-                            )
-                            .spacing(4)
+                            .spacing(8)
+                            .align_y(cosmic::iced::Alignment::Center)
                             .width(Length::Fill),
                     )
-                    .padding(16)
-                    .width(Length::Fill)
-                    .class(cosmic::style::Container::Card),
+                    .push(
+                        text(status_desc)
+                            .size(12)
+                            .class(cosmic::style::Text::Color(
+                                cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6),
+                            )),
+                    )
+                    .spacing(4)
+                    .width(Length::Fill);
+
+                if server.tool_count > 0 {
+                    server_column = server_column.push(
+                        button::text(toggle_label)
+                            .on_press(Message::ToggleMCPServerExpand(server.name.clone())),
+                    );
+                }
+
+                if is_expanded && !server.tools.is_empty() {
+                    let mut tools_column = Column::new().spacing(2).padding([4, 0, 0, 12]);
+                    for tool_name in &server.tools {
+                        tools_column = tools_column.push(
+                            text(format!("• {tool_name}"))
+                                .size(12)
+                                .class(cosmic::style::Text::Color(
+                                    cosmic::iced::Color::from_rgb(0.75, 0.75, 0.75),
+                                )),
+                        );
+                    }
+                    server_column = server_column.push(tools_column);
+                }
+
+                content = content.push(
+                    container(server_column)
+                        .padding(16)
+                        .width(Length::Fill)
+                        .class(cosmic::style::Container::Card),
                 );
             }
         }
@@ -94,4 +122,3 @@ pub fn mcp_servers_page(app: &LunaThinApp) -> Element<'_, Message> {
 
     widget::scrollable(content).into()
 }
-
