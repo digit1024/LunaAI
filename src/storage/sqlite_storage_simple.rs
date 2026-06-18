@@ -1695,6 +1695,73 @@ impl SqliteStorage {
         rows.collect()
     }
 
+    /// Load the most recent `limit` messages from a conversation, skipping already-summarized
+    /// messages (they are superseded by a summary message). Ordered oldest-first for readability.
+    pub fn load_conversation_messages_limited(
+        &self,
+        conversation_id: &str,
+        limit: usize,
+    ) -> SqliteResult<Vec<Message>> {
+        // Fetch the last `limit` rows DESC, then reverse so the caller gets oldest-first order.
+        let mut stmt = self.conn.prepare(
+            "SELECT id, conversation_id, role, content, embedding, created_at, tool_calls, tool_call_id, tool_name, tool_status, tool_params_json, tool_result_json, reasoning_content, is_summary, is_summarized, summarized_message_ids, summarized_count, attachments_json
+             FROM messages
+             WHERE conversation_id = ?1 AND is_summarized = 0
+             ORDER BY created_at DESC
+             LIMIT ?2",
+        )?;
+        let message_iter = stmt.query_map(params![conversation_id, limit as i64], |row| {
+            let embedding_bytes: Option<Vec<u8>> = row.get(4)?;
+            let embedding = embedding_bytes.map(|bytes| {
+                bytes
+                    .chunks_exact(4)
+                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                    .collect()
+            });
+            let tool_calls_json: Option<String> = row.get(6)?;
+            let tool_calls = tool_calls_json
+                .as_deref()
+                .map(|json| serde_json::from_str(json).ok())
+                .unwrap_or(None);
+            let tool_params_json = Self::read_json_value(row.get(10)?);
+            let tool_result_json = Self::read_json_value(row.get(11)?);
+            let is_summary: i64 = row.get(13).unwrap_or(0);
+            let is_summarized: i64 = row.get(14).unwrap_or(0);
+            let summarized_message_ids_json: Option<String> = row.get(15)?;
+            let summarized_message_ids = summarized_message_ids_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<Vec<i64>>(json).ok());
+            let summarized_count: Option<i64> = row.get(16)?;
+            let attachments_json: Option<String> = row.get(17)?;
+            let attachments = attachments_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<Vec<Attachment>>(json).ok());
+            Ok(Message {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                role: row.get(2)?,
+                content: row.get(3)?,
+                embedding,
+                created_at: row.get(5)?,
+                tool_calls,
+                tool_call_id: row.get(7)?,
+                tool_name: row.get(8)?,
+                tool_status: row.get(9)?,
+                tool_params_json,
+                tool_result_json,
+                reasoning_content: row.get(12)?,
+                is_summary: is_summary != 0,
+                is_summarized: is_summarized != 0,
+                summarized_message_ids,
+                summarized_count: summarized_count.map(|c| c as usize),
+                attachments,
+            })
+        })?;
+        let mut messages: Vec<Message> = message_iter.collect::<SqliteResult<_>>()?;
+        messages.reverse();
+        Ok(messages)
+    }
+
     /// List conversations (metadata only, no messages), optionally filtered by a minimum
     /// `created_at` unix timestamp. Ordered by last_message DESC, created_at DESC.
     pub fn list_conversations_metadata(

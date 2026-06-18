@@ -336,6 +336,16 @@ impl Storage {
         self.sqlite.search_history(query, limit)
     }
 
+    /// Load the most recent `limit` messages from a conversation (oldest-first order).
+    pub fn load_conversation_messages_limited(
+        &self,
+        conversation_id: &str,
+        limit: usize,
+    ) -> SqliteResult<Vec<super::sqlite_storage_simple::Message>> {
+        self.sqlite
+            .load_conversation_messages_limited(conversation_id, limit)
+    }
+
     /// List conversations (metadata only — no messages loaded), optionally filtered by
     /// a minimum creation date expressed as a unix timestamp.
     pub fn list_conversations_metadata(

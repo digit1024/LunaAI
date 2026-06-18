@@ -27,6 +27,7 @@ pub const INTERNAL_TOOL_NAMES: &[&str] = &[
     "search_attachment_chunks",
     "search_history",
     "list_conversations",
+    "get_conversation_messages",
     "spawn_worker",
 ];
 

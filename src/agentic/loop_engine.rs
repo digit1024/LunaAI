@@ -323,6 +323,27 @@ fn list_conversations_tool_definition() -> ToolDefinition {
     }
 }
 
+fn get_conversation_messages_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "get_conversation_messages".to_string(),
+        description: "Fetch messages from a specific past conversation by its ID. Use after list_conversations to read what was discussed. Returns messages in chronological order, most recent `limit` messages only.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "conversation_id": {
+                    "type": "string",
+                    "description": "UUID of the conversation to fetch (as returned by list_conversations or search_history)."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of messages to return, counting from the end (default: 50, max: 200)."
+                }
+            },
+            "required": ["conversation_id"]
+        }),
+    }
+}
+
 fn publish_image_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "publish_image".to_string(),
@@ -505,6 +526,9 @@ impl AgenticLoop {
             }
             if allow("list_conversations") {
                 upsert_tool_definition(&mut defs, list_conversations_tool_definition());
+            }
+            if allow("get_conversation_messages") {
+                upsert_tool_definition(&mut defs, get_conversation_messages_tool_definition());
             }
             if allow("spawn_worker") {
                 upsert_tool_definition(&mut defs, spawn_worker_tool_definition());
@@ -910,6 +934,8 @@ impl AgenticLoop {
                     self.execute_list_scheduled_tasks(&tool_call).await
                 } else if tool_call.name == "list_conversations" {
                     self.execute_list_conversations(&tool_call).await
+                } else if tool_call.name == "get_conversation_messages" {
+                    self.execute_get_conversation_messages(&tool_call).await
                 } else if tool_call.name == "store_memory"
                     || tool_call.name == "search_memory"
                     || tool_call.name == "search_memory_by_category"
@@ -1242,6 +1268,91 @@ impl AgenticLoop {
             }
             Err(e) => ToolResult {
                 content: format!("list_conversations failed: {}", e),
+                is_error: true,
+            },
+        }
+    }
+
+    async fn execute_get_conversation_messages(&self, tool_call: &ToolCall) -> ToolResult {
+        let Some(storage) = &self.storage else {
+            return ToolResult {
+                content: "get_conversation_messages requires storage".to_string(),
+                is_error: true,
+            };
+        };
+        let params = &tool_call.parameters;
+        let conversation_id = params
+            .get("conversation_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let Some(conv_id) = conversation_id else {
+            return ToolResult {
+                content: "get_conversation_messages requires non-empty 'conversation_id'".to_string(),
+                is_error: true,
+            };
+        };
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| (n as usize).min(200))
+            .unwrap_or(50);
+
+        let guard = storage.lock().await;
+        match guard.load_conversation_messages_limited(&conv_id, limit) {
+            Ok(messages) if messages.is_empty() => ToolResult {
+                content: format!("No messages found for conversation {}.", conv_id),
+                is_error: false,
+            },
+            Ok(messages) => {
+                const MAX_CONTENT_LEN: usize = 2000;
+                let lines: Vec<String> = messages
+                    .into_iter()
+                    .filter_map(|m| {
+                        // Skip pure tool-result noise (tool role with no user-visible content)
+                        // but keep user/assistant/summary messages.
+                        let ts = chrono::DateTime::from_timestamp(m.created_at, 0)
+                            .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+
+                        let label = if m.is_summary {
+                            format!("[summary] {}", ts)
+                        } else if m.role == "tool" {
+                            let name = m.tool_name.as_deref().unwrap_or("tool");
+                            format!("[tool: {}] {}", name, ts)
+                        } else {
+                            format!("[{}] {}", m.role, ts)
+                        };
+
+                        let body = if m.content.len() > MAX_CONTENT_LEN {
+                            format!("{}… (truncated)", &m.content[..MAX_CONTENT_LEN])
+                        } else {
+                            m.content.clone()
+                        };
+
+                        if body.trim().is_empty() {
+                            None
+                        } else {
+                            Some(format!("{}\n{}", label, body))
+                        }
+                    })
+                    .collect();
+
+                if lines.is_empty() {
+                    return ToolResult {
+                        content: format!("Conversation {} has no displayable messages.", conv_id),
+                        is_error: false,
+                    };
+                }
+
+                ToolResult {
+                    content: lines.join("\n\n---\n\n"),
+                    is_error: false,
+                }
+            }
+            Err(e) => ToolResult {
+                content: format!("get_conversation_messages failed: {}", e),
                 is_error: true,
             },
         }
@@ -1817,6 +1928,8 @@ impl AgenticLoop {
                     self.execute_list_scheduled_tasks(&tool_call).await
                 } else if tool_call.name == "list_conversations" {
                     self.execute_list_conversations(&tool_call).await
+                } else if tool_call.name == "get_conversation_messages" {
+                    self.execute_get_conversation_messages(&tool_call).await
                 } else if tool_call.name == "store_memory"
                     || tool_call.name == "search_memory"
                     || tool_call.name == "search_memory_by_category"
