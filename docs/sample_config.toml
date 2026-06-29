@@ -37,7 +37,7 @@ effort = "high"        # none | minimal | low | medium | high | xhigh (max on su
 
 [model_presets.anthropic_claude]
 backend = "anthropic"
-model = "claude-3-5-sonnet-20241022"
+model = "claude-sonnet-4-5"
 endpoint = "https://api.anthropic.com/v1/messages"
 api_key = "sk-ant-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 max_tokens = 4000
@@ -53,8 +53,8 @@ max_tokens = 4000
 
 [model_presets.gemini]
 backend = "gemini"
-model = "gemini-1.5-pro"
-endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent"
+model = "gemini-2.5-flash"
+endpoint = "https://generativelanguage.googleapis.com/v1beta/models"
 api_key = "AIzaSyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 max_tokens = 4000
 temperature = 0.7
@@ -64,7 +64,7 @@ temperature = 0.7
 
 [tools_policies.default]
 # Server ids must match mcp_config.json keys; empty = no MCP tools allowed
-enabled_mcp = ["filesystem", "shell", "cosmic-llm-memory"]
+enabled_mcp = ["shell", "filesystem", "fetch", "skills", "markitdown", "search", "cosmic-llm-memory"]
 enabled_tools = ["*"]
 disabled_tools = []
 

@@ -11,6 +11,7 @@ class ConversationCard extends StatelessWidget {
     required this.onTap,
     this.onEdit,
     this.onDelete,
+    this.onToggleTransient,
   });
 
   final ConversationSummary summary;
@@ -18,6 +19,7 @@ class ConversationCard extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
+  final VoidCallback? onToggleTransient;
 
   @override
   Widget build(BuildContext context) {
@@ -29,13 +31,39 @@ class ConversationCard extends StatelessWidget {
     return ListTile(
       selected: isSelected,
       onTap: onTap,
-      leading: const CircleAvatar(child: Icon(Icons.chat_bubble_outline)),
-      title: Text(summary.title),
+      leading: CircleAvatar(
+        child: Icon(
+          summary.internal ? Icons.visibility_off_outlined : Icons.chat_bubble_outline,
+        ),
+      ),
+      title: Row(
+        children: [
+          Expanded(child: Text(summary.title)),
+          if (summary.internal)
+            Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: Text(
+                'transient',
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+            ),
+        ],
+      ),
       subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (onEdit != null)
+          if (onToggleTransient != null)
+            IconButton(
+              icon: Icon(
+                summary.internal
+                    ? Icons.visibility_outlined
+                    : Icons.visibility_off_outlined,
+                size: 20,
+              ),
+              tooltip: summary.internal ? 'Remove transient' : 'Mark transient',
+              onPressed: onToggleTransient,
+            ),
             IconButton(
               icon: const Icon(Icons.edit_outlined, size: 20),
               tooltip: 'Rename',

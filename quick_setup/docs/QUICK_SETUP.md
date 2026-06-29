@@ -52,7 +52,7 @@ temperature = 0.3
 max_tokens = 4000
 
 [tools_policies.default]
-enabled_mcp = ["shell", "filesystem", "fetch", "skills", "markitdown", "cosmic-llm-memory"]
+enabled_mcp = ["shell", "filesystem", "fetch", "skills", "markitdown", "search", "cosmic-llm-memory"]
 enabled_tools = ["*"]
 disabled_tools = []
 
@@ -105,6 +105,7 @@ sqlite_busy_timeout_ms = 5000
 | fetch | URL → markdown via `uvx mcp-server-fetch` |
 | skills | Agent skills via `uvx agent-skills-mcp` (`SKILL_FOLDER` under cosmic_llm) |
 | markitdown | PDF/Office/URL → markdown via `npx markitdown-mcp-npx` |
+| search | Web search (no API key) via `uvx free-search-mcp` (DuckDuckGo / Mojeek / Startpage) |
 | cosmic-llm-memory | *(separate prompt, default on)* Luna history MCP binary |
 
 ## Architecture (modular)

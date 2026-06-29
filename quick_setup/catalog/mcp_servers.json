@@ -45,6 +45,14 @@
       "args": ["-y", "markitdown-mcp-npx"],
       "env": {},
       "note": "Microsoft MarkItDown; converts files and URLs to Markdown for LLMs"
+    },
+    {
+      "id": "search",
+      "label": "Search (web search, no API key)",
+      "command": "uvx",
+      "args": ["free-search-mcp"],
+      "env": {},
+      "note": "DuckDuckGo / Mojeek / Startpage; no API key, no account required"
     }
   ]
 }

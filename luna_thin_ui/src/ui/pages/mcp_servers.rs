@@ -8,12 +8,22 @@ use cosmic::{
 
 use crate::server::dto::MCPServerStatus;
 use crate::ui::app::{ConnectionStatus, LunaThinApp, Message};
+use crate::ui::widgets::page_header;
 
 pub fn mcp_servers_page(app: &LunaThinApp) -> Element<'_, Message> {
     let mut content = Column::new().spacing(16).padding(16);
 
-    // Header
-    content = content.push(text("🔌 MCP Servers").size(24));
+    let trailing = if app.connection_status == ConnectionStatus::Connected {
+        format!("{} servers", app.mcp_servers.len())
+    } else {
+        "Connect to view servers".to_string()
+    };
+
+    content = content.push(page_header::subpage_header(
+        "MCP Servers",
+        "network-server-symbolic",
+        Some(trailing),
+    ));
 
     // Info message
     if app.connection_status != ConnectionStatus::Connected {

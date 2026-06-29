@@ -562,18 +562,20 @@ impl SqliteStorage {
         Ok(())
     }
 
-    /// Insert a new conversation with profile
+    /// Insert a new conversation with profile.
     pub fn insert_conversation_with_profile(
         &self,
         title: &str,
         profile_name: Option<&str>,
+        internal: bool,
     ) -> SqliteResult<String> {
         let id = Uuid::new_v4().to_string();
         let created_at = Utc::now().timestamp();
+        let internal_flag: i32 = if internal { 1 } else { 0 };
 
         self.conn.execute(
-            "INSERT INTO conversations (id, title, created_at, title_generated, profile_name, last_message) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, title, created_at, 0, profile_name, None::<i64>],
+            "INSERT INTO conversations (id, title, created_at, title_generated, profile_name, last_message, internal) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, title, created_at, 0, profile_name, None::<i64>, internal_flag],
         )?;
 
         Ok(id)
@@ -585,13 +587,24 @@ impl SqliteStorage {
         title: &str,
         profile_name: Option<&str>,
     ) -> SqliteResult<Uuid> {
-        let id = Uuid::new_v4();
-        let created_at = Utc::now().timestamp();
-        self.conn.execute(
-            "INSERT INTO conversations (id, title, created_at, title_generated, profile_name, last_message, internal) VALUES (?1, ?2, ?3, 0, ?4, NULL, 1)",
-            params![id.to_string(), title, created_at, profile_name],
+        let id_str = self.insert_conversation_with_profile(title, profile_name, true)?;
+        Uuid::parse_str(&id_str).map_err(|e| {
+            rusqlite::Error::InvalidParameterName(format!("Invalid UUID: {}", e))
+        })
+    }
+
+    /// Set whether a conversation is internal (transient / hidden from default history).
+    pub fn set_conversation_internal(
+        &self,
+        conversation_id: &str,
+        internal: bool,
+    ) -> SqliteResult<bool> {
+        let internal_flag: i32 = if internal { 1 } else { 0 };
+        let changes = self.conn.execute(
+            "UPDATE conversations SET internal = ?1 WHERE id = ?2",
+            params![internal_flag, conversation_id],
         )?;
-        Ok(id)
+        Ok(changes > 0)
     }
 
     pub fn insert_message_with_metadata(
@@ -758,8 +771,13 @@ impl SqliteStorage {
     }
 
     /// Search messages using FTS5
-    pub fn search_history(&self, query: &str, limit: usize) -> SqliteResult<Vec<Snippet>> {
-        let mut stmt = self.conn.prepare(
+    pub fn search_history(
+        &self,
+        query: &str,
+        limit: usize,
+        include_internal: bool,
+    ) -> SqliteResult<Vec<Snippet>> {
+        let sql = if include_internal {
             "SELECT 
                 m.conversation_id,
                 m.content,
@@ -769,8 +787,21 @@ impl SqliteStorage {
              JOIN messages m ON fts.rowid = m.id
              WHERE messages_fts MATCH ?1
              ORDER BY rank
-             LIMIT ?2",
-        )?;
+             LIMIT ?2"
+        } else {
+            "SELECT 
+                m.conversation_id,
+                m.content,
+                m.created_at,
+                rank
+             FROM messages_fts fts
+             JOIN messages m ON fts.rowid = m.id
+             JOIN conversations c ON c.id = m.conversation_id
+             WHERE messages_fts MATCH ?1 AND c.internal = 0
+             ORDER BY rank
+             LIMIT ?2"
+        };
+        let mut stmt = self.conn.prepare(sql)?;
 
         let snippet_iter = stmt.query_map(params![query, limit as i64], |row| {
             Ok(Snippet {
@@ -959,10 +990,15 @@ impl SqliteStorage {
         &self,
         offset: Option<usize>,
         limit: Option<usize>,
+        include_internal: bool,
     ) -> SqliteResult<Vec<Conversation>> {
         // Order by last_message DESC first (most recently updated), then created_at DESC
         // Conversations with NULL last_message (no messages yet) appear at the end
-        let mut query = "SELECT id, title, created_at, title_generated, profile_name, last_message, internal FROM conversations WHERE internal = 0 ORDER BY (last_message IS NULL), last_message DESC, created_at DESC".to_string();
+        let mut query = if include_internal {
+            "SELECT id, title, created_at, title_generated, profile_name, last_message, internal FROM conversations ORDER BY (last_message IS NULL), last_message DESC, created_at DESC".to_string()
+        } else {
+            "SELECT id, title, created_at, title_generated, profile_name, last_message, internal FROM conversations WHERE internal = 0 ORDER BY (last_message IS NULL), last_message DESC, created_at DESC".to_string()
+        };
 
         if let Some(lim) = limit {
             query.push_str(&format!(" LIMIT {}", lim));
@@ -1804,7 +1840,7 @@ mod tests {
         let storage = SqliteStorage::new(&db_path)?;
 
         // Test conversation creation
-        let conv_id = storage.insert_conversation_with_profile("Test Conversation", None)?;
+        let conv_id = storage.insert_conversation_with_profile("Test Conversation", None, false)?;
         assert!(!conv_id.is_empty());
 
         // Test message insertion
@@ -1832,7 +1868,7 @@ mod tests {
         assert_eq!(messages[1].content, "Hi there!");
 
         // Test search
-        let snippets = storage.search_history("Hello", 10)?;
+        let snippets = storage.search_history("Hello", 10, false)?;
         assert_eq!(snippets.len(), 1);
         assert_eq!(snippets[0].content, "Hello, world!");
 
@@ -1851,7 +1887,7 @@ mod tests {
         assert_eq!(conv.title, "Updated Title");
 
         // Test conversation listing
-        let conversations = storage.list_conversations_paginated(None, None)?;
+        let conversations = storage.list_conversations_paginated(None, None, false)?;
         assert_eq!(conversations.len(), 1);
 
         // Test conversation deletion
@@ -1859,7 +1895,7 @@ mod tests {
         assert!(deleted);
 
         // Verify deletion
-        let conversations_after = storage.list_conversations_paginated(None, None)?;
+        let conversations_after = storage.list_conversations_paginated(None, None, false)?;
         assert_eq!(conversations_after.len(), 0);
 
         // Clean up
@@ -1875,7 +1911,7 @@ mod tests {
         let _ = fs::remove_file(&db_path);
 
         let storage = SqliteStorage::new(&db_path)?;
-        let conv_id = storage.insert_conversation_with_profile("Embedding Test", None)?;
+        let conv_id = storage.insert_conversation_with_profile("Embedding Test", None, false)?;
 
         // Test with embedding
         let embedding = vec![0.1, 0.2, 0.3, 0.4];
@@ -1915,6 +1951,59 @@ mod tests {
             .conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
         assert_eq!(mode.to_lowercase(), "wal");
+        let _ = fs::remove_file(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn test_internal_conversation_filtering() -> SqliteResult<()> {
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join("test_internal_conv.db");
+        let _ = fs::remove_file(&db_path);
+
+        let storage = SqliteStorage::new(&db_path)?;
+        let public_id =
+            storage.insert_conversation_with_profile("Public chat", None, false)?;
+        let internal_id =
+            storage.insert_conversation_with_profile("Transient chat", None, true)?;
+
+        storage.insert_message_with_metadata(
+            &public_id,
+            "user",
+            "public hello",
+            None,
+            &MessageMetadata::default(),
+        )?;
+        storage.insert_message_with_metadata(
+            &internal_id,
+            "user",
+            "secret hello",
+            None,
+            &MessageMetadata::default(),
+        )?;
+
+        let default_list = storage.list_conversations_paginated(None, None, false)?;
+        assert_eq!(default_list.len(), 1);
+        assert_eq!(default_list[0].id, public_id);
+
+        let all_list = storage.list_conversations_paginated(None, None, true)?;
+        assert_eq!(all_list.len(), 2);
+
+        let public_search = storage.search_history("hello", 10, false)?;
+        assert_eq!(public_search.len(), 1);
+        assert_eq!(public_search[0].conversation_id, public_id);
+
+        let all_search = storage.search_history("hello", 10, true)?;
+        assert_eq!(all_search.len(), 2);
+
+        assert!(storage.set_conversation_internal(&public_id, true)?);
+        let after_mark = storage.list_conversations_paginated(None, None, false)?;
+        assert!(after_mark.is_empty());
+
+        assert!(storage.set_conversation_internal(&public_id, false)?);
+        let after_unmark = storage.list_conversations_paginated(None, None, false)?;
+        assert_eq!(after_unmark.len(), 1);
+
         let _ = fs::remove_file(&db_path);
         Ok(())
     }

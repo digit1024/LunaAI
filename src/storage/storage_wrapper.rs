@@ -51,10 +51,11 @@ impl Storage {
         &self,
         title: String,
         profile_name: Option<&str>,
+        internal: bool,
     ) -> SqliteResult<Uuid> {
         let id_str = self
             .sqlite
-            .insert_conversation_with_profile(&title, profile_name)?;
+            .insert_conversation_with_profile(&title, profile_name, internal)?;
         Uuid::parse_str(&id_str)
             .map_err(|e| rusqlite::Error::InvalidParameterName(format!("Invalid UUID: {}", e)))
     }
@@ -115,6 +116,7 @@ impl Storage {
                 messages: stored_messages,
                 turns: Vec::new(), // Turns are not yet migrated to SQLite
                 profile_name: db_conv.profile_name.clone(),
+                internal: db_conv.internal,
             };
 
             Ok(Some(conversation))
@@ -128,8 +130,11 @@ impl Storage {
         &self,
         offset: Option<usize>,
         limit: Option<usize>,
+        include_internal: bool,
     ) -> SqliteResult<Vec<FileConversation>> {
-        let db_conversations = self.sqlite.list_conversations_paginated(offset, limit)?;
+        let db_conversations =
+            self.sqlite
+                .list_conversations_paginated(offset, limit, include_internal)?;
         let mut conversations = Vec::new();
 
         for db_conv in db_conversations {
@@ -178,6 +183,7 @@ impl Storage {
                 messages: stored_messages,
                 turns: Vec::new(), // Turns are not yet migrated to SQLite
                 profile_name: db_conv.profile_name.clone(),
+                internal: db_conv.internal,
             };
 
             conversations.push(conversation);
@@ -200,6 +206,12 @@ impl Storage {
     ) -> SqliteResult<bool> {
         let id_str = id.to_string();
         self.sqlite.update_profile(&id_str, profile_name)
+    }
+
+    /// Set whether a conversation is internal (transient).
+    pub fn set_conversation_internal(&self, id: &Uuid, internal: bool) -> SqliteResult<bool> {
+        let id_str = id.to_string();
+        self.sqlite.set_conversation_internal(&id_str, internal)
     }
 
     /// Add a message to a conversation. Returns the new message's ID (as Uuid, same format as in get_conversation).
@@ -332,8 +344,10 @@ impl Storage {
         &self,
         query: &str,
         limit: usize,
+        include_internal: bool,
     ) -> SqliteResult<Vec<super::sqlite_storage_simple::Snippet>> {
-        self.sqlite.search_history(query, limit)
+        self.sqlite
+            .search_history(query, limit, include_internal)
     }
 
     /// Load the most recent `limit` messages from a conversation (oldest-first order).

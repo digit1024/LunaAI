@@ -182,6 +182,10 @@ class AppState extends Equatable {
   final int? editingMemoryId;
   final List<MCPServerInfo> mcpServers;
   final Set<String> expandedMcpServers;
+  /// When true, conversation list/search includes internal (transient) chats.
+  final bool showInternal;
+  /// Next new chat is created as internal/transient.
+  final bool newChatInternal;
 
   const AppState({
     required this.connection,
@@ -208,6 +212,8 @@ class AppState extends Equatable {
     required this.editingMemoryId,
     required this.mcpServers,
     required this.expandedMcpServers,
+    required this.showInternal,
+    required this.newChatInternal,
   });
 
   factory AppState.initial() => const AppState(
@@ -235,6 +241,8 @@ class AppState extends Equatable {
         editingMemoryId: null,
         mcpServers: [],
         expandedMcpServers: {},
+        showInternal: false,
+        newChatInternal: false,
       );
 
   AppState copyWith({
@@ -262,6 +270,8 @@ class AppState extends Equatable {
     Object? editingMemoryId = _infoMessageUnset,
     List<MCPServerInfo>? mcpServers,
     Set<String>? expandedMcpServers,
+    bool? showInternal,
+    bool? newChatInternal,
   }) {
     return AppState(
       connection: connection ?? this.connection,
@@ -292,6 +302,8 @@ class AppState extends Equatable {
           : editingMemoryId as int?,
       mcpServers: mcpServers ?? this.mcpServers,
       expandedMcpServers: expandedMcpServers ?? this.expandedMcpServers,
+      showInternal: showInternal ?? this.showInternal,
+      newChatInternal: newChatInternal ?? this.newChatInternal,
     );
   }
 
@@ -321,5 +333,7 @@ class AppState extends Equatable {
         editingMemoryId,
         mcpServers,
         expandedMcpServers,
+        showInternal,
+        newChatInternal,
       ];
 }

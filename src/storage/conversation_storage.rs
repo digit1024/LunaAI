@@ -39,6 +39,9 @@ pub struct Conversation {
     pub messages: Vec<StoredMessage>,
     pub turns: Vec<Turn>,
     pub profile_name: Option<String>,
+    /// Hidden from default history lists; excluded from deep sleep and title generation.
+    #[serde(default)]
+    pub internal: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

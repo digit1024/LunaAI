@@ -10,6 +10,7 @@ use cosmic::{
 
 use crate::server::dto::SearchResult;
 use crate::ui::app::{LunaThinApp, Message};
+use crate::ui::widgets::page_header;
 
 /// Group search hits by conversation, keeping the best-ranked snippet per conversation.
 fn grouped_search_results(results: &[SearchResult]) -> Vec<SearchResult> {
@@ -47,35 +48,17 @@ pub fn history_page(app: &LunaThinApp) -> Element<'_, Message> {
 
     let mut content = Column::new().spacing(12);
 
-    content = content.push(
-        container(
-            Row::new()
-                .push(
-                    Row::new()
-                        .push(icon::from_name("list-large-symbolic").size(20))
-                        .push(text("Conversation History").size(20))
-                        .spacing(8)
-                        .align_y(cosmic::iced::Alignment::Center),
-                )
-                .push(Space::new().width(Length::Fill))
-                .push(
-                    text(if searching {
-                        format!("{} results", search_results.len())
-                    } else {
-                        format!("{} conversations", app.conversations.len())
-                    })
-                    .size(12)
-                    .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(
-                        0.6, 0.6, 0.6,
-                    ))),
-                )
-                .spacing(12)
-                .align_y(cosmic::iced::Alignment::Center),
-        )
-        .padding(16)
-        .width(Length::Fill)
-        .class(cosmic::style::Container::Card),
-    );
+    let trailing = if searching {
+        format!("{} results", search_results.len())
+    } else {
+        format!("{} conversations", app.conversations.len())
+    };
+
+    content = content.push(page_header::subpage_header(
+        "Conversation History",
+        "list-large-symbolic",
+        Some(trailing),
+    ));
 
     content = content.push(
         container(
@@ -92,6 +75,17 @@ pub fn history_page(app: &LunaThinApp) -> Element<'_, Message> {
         .padding(12)
         .width(Length::Fill)
         .class(cosmic::style::Container::Card),
+    );
+
+    let show_internal_label = if app.show_internal {
+        "Hide transient"
+    } else {
+        "Show transient"
+    };
+    content = content.push(
+        button::text(show_internal_label)
+            .on_press(Message::ToggleShowInternal)
+            .class(widget::button::ButtonClass::Standard),
     );
 
     if searching {
@@ -116,6 +110,7 @@ pub fn history_page(app: &LunaThinApp) -> Element<'_, Message> {
                     title,
                     preview,
                     result.timestamp,
+                    false,
                 ));
             }
             content = content.push(scrollable(list).height(Length::Fill).width(Length::Fill));
@@ -139,6 +134,7 @@ pub fn history_page(app: &LunaThinApp) -> Element<'_, Message> {
                 conv.title.clone(),
                 truncate_text(&preview, 100),
                 conv.updated_at,
+                conv.internal,
             ));
         }
         content = content.push(scrollable(list).height(Length::Fill).width(Length::Fill));
@@ -176,6 +172,7 @@ fn conversation_card<'a>(
     title: String,
     preview: String,
     updated_at: i64,
+    internal: bool,
 ) -> Element<'a, Message> {
     let is_selected = app.current_conversation_id.as_deref() == Some(conv_id.as_str());
     let is_renaming = app
@@ -197,9 +194,18 @@ fn conversation_card<'a>(
     let delete_id = conv_id.clone();
     let rename_id = conv_id.clone();
     let open_id = conv_id.clone();
+    let transient_id = conv_id.clone();
+    let transient_next = !internal;
 
     let title_row = if is_renaming {
         Row::new()
+            .push(
+                button::icon(crate::ui::icons::get_handle("arrow1-left-symbolic", 16))
+                    .on_press(Message::CancelRenameConversation)
+                    .class(widget::button::ButtonClass::Text)
+                    .padding(4),
+            )
+            .push(Space::new().width(8))
             .push(
                 text_input("Title...", rename_draft)
                     .on_input(Message::RenameDraftChanged)
@@ -220,8 +226,17 @@ fn conversation_card<'a>(
             .spacing(8)
             .align_y(cosmic::iced::Alignment::Center)
     } else {
-        Row::new()
-            .push(text(title).size(16))
+        let mut title_row_inner = Row::new().push(text(title).size(16));
+        if internal {
+            title_row_inner = title_row_inner.push(
+                text("transient")
+                    .size(10)
+                    .class(cosmic::style::Text::Color(
+                        cosmic::iced::Color::from_rgb(0.55, 0.55, 0.55),
+                    )),
+            );
+        }
+        title_row_inner
             .push(Space::new().width(Length::Fill))
             .push(
                 text(date_str).size(12).class(cosmic::style::Text::Color(
@@ -250,6 +265,20 @@ fn conversation_card<'a>(
                                     16,
                                 ))
                                 .on_press(Message::BeginRenameConversation(rename_id)),
+                            )
+                            .push(
+                                button::icon(crate::ui::icons::get_handle(
+                                    if internal {
+                                        "view-visible-symbolic"
+                                    } else {
+                                        "eye-not-visible-symbolic"
+                                    },
+                                    16,
+                                ))
+                                .on_press(Message::SetConversationInternal {
+                                    conversation_id: transient_id,
+                                    internal: transient_next,
+                                }),
                             )
                             .push(
                                 button::icon(crate::ui::icons::get_handle(

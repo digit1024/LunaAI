@@ -1,12 +1,13 @@
 //! Memories page - list, search, edit, and delete long-term memories
 
 use cosmic::{
-    iced::Length,
-    widget::{self, button, container, icon, scrollable, text, text_input, Column, Row, Space},
+    iced::{Background, Color, Length},
+    widget::{self, button, container, icon, scrollable, text, text_editor, text_input, Column, Row, Space},
     Element,
 };
 
 use crate::ui::app::{LunaThinApp, Message};
+use crate::ui::widgets::page_header;
 
 fn truncate_text(text: &str, max_chars: usize) -> String {
     if text.chars().count() > max_chars {
@@ -22,31 +23,12 @@ pub fn memories_page(app: &LunaThinApp) -> Element<'_, Message> {
 
     let mut content = Column::new().spacing(12);
 
-    content = content.push(
-        container(
-            Row::new()
-                .push(
-                    Row::new()
-                        .push(icon::from_name("emblem-favorite-symbolic").size(20))
-                        .push(text("Memories").size(20))
-                        .spacing(8)
-                        .align_y(cosmic::iced::Alignment::Center),
-                )
-                .push(Space::new().width(Length::Fill))
-                .push(
-                    text(format!("{} memories", app.memories.len()))
-                        .size(12)
-                        .class(cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(
-                            0.6, 0.6, 0.6,
-                        ))),
-                )
-                .spacing(12)
-                .align_y(cosmic::iced::Alignment::Center),
-        )
-        .padding(16)
-        .width(Length::Fill)
-        .class(cosmic::style::Container::Card),
-    );
+    let memory_count = format!("{} memories", app.memories.len());
+    content = content.push(page_header::subpage_header(
+        "Memories",
+        "emblem-favorite-symbolic",
+        Some(memory_count),
+    ));
 
     content = content.push(
         container(
@@ -215,11 +197,41 @@ fn edit_memory_card<'a>(app: &'a LunaThinApp) -> Element<'a, Message> {
 
     container(
         Column::new()
-            .push(text("Edit memory").size(14))
             .push(
-                text_input("Content...", &draft.content)
-                    .on_input(Message::MemoryDraftContentChanged)
-                    .width(Length::Fill),
+                Row::new()
+                    .push(
+                        button::icon(crate::ui::icons::get_handle("arrow1-left-symbolic", 16))
+                            .on_press(Message::CancelEditMemory)
+                            .class(widget::button::ButtonClass::Text)
+                            .padding(4),
+                    )
+                    .push(Space::new().width(8))
+                    .push(text("Edit memory").size(14))
+                    .align_y(cosmic::iced::Alignment::Center),
+            )
+            .push(
+                container(
+                    text_editor(&draft.content)
+                        .class(cosmic::theme::iced::TextEditor::Custom(Box::new(
+                            |_theme, _status| text_editor::Style {
+                                background: Background::Color(Color::TRANSPARENT),
+                                border: cosmic::iced::Border {
+                                    color: Color::TRANSPARENT,
+                                    width: 0.0,
+                                    radius: 0.0.into(),
+                                },
+                                placeholder: cosmic::theme::active().cosmic().on_bg_color().into(),
+                                value: cosmic::theme::active().cosmic().on_bg_color().into(),
+                                selection: Color::from_rgba(1.0, 1.0, 1.0, 0.3),
+                            },
+                        )))
+                        .on_action(Message::MemoryDraftContentAction)
+                        .height(Length::Fixed(120.0))
+                        .padding(8)
+                        .placeholder("Content..."),
+                )
+                .width(Length::Fill)
+                .class(cosmic::style::Container::Card),
             )
             .push(
                 text_input("Category (optional)", &draft.category)
@@ -241,14 +253,20 @@ fn edit_memory_card<'a>(app: &'a LunaThinApp) -> Element<'a, Message> {
                 Row::new()
                     .push(Space::new().width(Length::Fill))
                     .push(
-                        button::standard("Save")
-                            .on_press(Message::ConfirmEditMemory),
+                        button::icon(crate::ui::icons::get_handle(
+                            "object-select-symbolic",
+                            16,
+                        ))
+                        .on_press(Message::ConfirmEditMemory)
+                        .padding(4),
                     )
                     .push(
-                        button::standard("Cancel")
-                            .on_press(Message::CancelEditMemory),
+                        button::icon(crate::ui::icons::get_handle("process-stop-symbolic", 16))
+                            .on_press(Message::CancelEditMemory)
+                            .padding(4),
                     )
-                    .spacing(8),
+                    .spacing(8)
+                    .align_y(cosmic::iced::Alignment::Center),
             )
             .spacing(8),
     )

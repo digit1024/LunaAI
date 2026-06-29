@@ -48,6 +48,8 @@ pub enum Message {
 
     // Navigation
     NavigateTo(Page),
+    /// Return from a sidebar sub-page (History, Memories, …) to the chat view.
+    BackToChat,
     SelectConversation(String),
     DeleteConversation(String),
     NewConversation,
@@ -59,12 +61,17 @@ pub enum Message {
     ConfirmRenameConversation,
     CancelRenameConversation,
 
+    // Transient (internal) conversations
+    ToggleShowInternal,
+    ToggleNewChatInternal,
+    SetConversationInternal { conversation_id: String, internal: bool },
+
     // Memories
     LoadMemories,
     LoadMoreMemories,
     MemoriesSearchChanged(String),
     BeginEditMemory(i64),
-    MemoryDraftContentChanged(String),
+    MemoryDraftContentAction(text_editor::Action),
     MemoryDraftCategoryChanged(String),
     MemoryDraftImportanceChanged(String),
     ConfirmEditMemory,
@@ -139,6 +146,9 @@ pub enum Message {
     // Markdown image loading
     ImageLoaded { url: String, data: Vec<u8>, is_svg: bool },
     ImageLoadFailed { url: String, error: String },
+    DownloadImage { url: String, title: String },
+    ImageSaved(String),
+    ImageSaveError(String),
 
     /// Incrementally parse markdown for a loaded conversation off the
     /// synchronous load path so long histories don't freeze the UI.
@@ -168,12 +178,23 @@ pub enum Page {
 }
 
 /// Draft state while editing a memory inline on the Memories page.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct MemoryDraft {
     pub id: i64,
-    pub content: String,
+    pub content: text_editor::Content,
     pub category: String,
     pub importance: String,
+}
+
+impl Clone for MemoryDraft {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            content: text_editor::Content::with_text(&self.content.text()),
+            category: self.category.clone(),
+            importance: self.importance.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,11 +258,23 @@ pub enum ImageState {
     /// Download / decode in flight.
     Fetching,
     /// Raster image ready to display (PNG, JPEG, WebP, GIF, …).
-    Raster(cosmic::widget::image::Handle),
+    Raster {
+        handle: cosmic::widget::image::Handle,
+        data: Vec<u8>,
+    },
     /// SVG data ready to display.
     Svg(Vec<u8>),
     /// Download or decode failed.
     Error(String),
+}
+
+impl ImageState {
+    pub(crate) fn download_bytes(&self) -> Option<&[u8]> {
+        match self {
+            ImageState::Raster { data, .. } | ImageState::Svg(data) => Some(data),
+            ImageState::Fetching | ImageState::Error(_) => None,
+        }
+    }
 }
 
 // ============================================================================
@@ -423,6 +456,12 @@ pub struct LunaThinApp {
     pub history_search: String,
     pub history_search_results: Vec<SearchResult>,
     pub renaming_conversation: Option<(String, String)>,
+    /// When true, history list/search includes internal (transient) conversations.
+    pub show_internal: bool,
+    /// Next new chat (first message) is created as internal/transient.
+    pub new_chat_internal: bool,
+    /// Internal flag of the active conversation (from server).
+    pub current_conversation_internal: bool,
 
     // Memories page
     pub memories: Vec<MemoryView>,
@@ -524,6 +563,9 @@ impl LunaThinApp {
             history_search: String::new(),
             history_search_results: Vec::new(),
             renaming_conversation: None,
+            show_internal: false,
+            new_chat_internal: false,
+            current_conversation_internal: false,
             memories: Vec::new(),
             memories_search: String::new(),
             memories_has_more: false,
@@ -624,7 +666,12 @@ impl LunaThinApp {
         }
 
         // Recent conversations (max to match original)
-        for conv in self.conversations.iter().take(MAX_NAV_CONVERSATIONS) {
+        for conv in self
+            .conversations
+            .iter()
+            .filter(|c| self.show_internal || !c.internal)
+            .take(MAX_NAV_CONVERSATIONS)
+        {
             let title = if conv.title.chars().count() > CONVERSATION_TITLE_MAX_LEN {
                 let truncated: String = conv.title
                     .chars()
@@ -725,7 +772,7 @@ impl LunaThinApp {
         let mut tasks: Vec<app::Task<Message>> = Vec::new();
         for url in urls {
             match self.image_cache.get(&url) {
-                Some(ImageState::Raster(_)) | Some(ImageState::Svg(_)) => continue,
+                Some(ImageState::Raster { .. }) | Some(ImageState::Svg(_)) => continue,
                 Some(ImageState::Fetching) => continue,
                 Some(ImageState::Error(_)) | None => {}
             }
@@ -961,6 +1008,7 @@ impl LunaThinApp {
             query: None,
             limit: Some(CONVERSATION_LIST_LIMIT),
             offset: None,
+            include_internal: Some(self.show_internal),
         });
     }
 
@@ -970,6 +1018,7 @@ impl LunaThinApp {
             query: Some(query.to_string()),
             limit: Some(CONVERSATION_LIST_LIMIT),
             offset: None,
+            include_internal: Some(self.show_internal),
         });
     }
 
@@ -1288,6 +1337,7 @@ impl LunaThinApp {
             ServerEvent::ConversationLoaded { conversation } => {
                 tracing::info!("📥 ConversationLoaded: {} ({} messages)", conversation.id, conversation.messages.len());
                 self.current_conversation_id = Some(conversation.id.clone());
+                self.current_conversation_internal = conversation.internal;
                 self.pending_attachment_ids.clear();
                 self.current_profile = conversation.profile_name.unwrap_or_default();
                 self.current_assistant_bubble_id = None;
@@ -1439,6 +1489,26 @@ impl LunaThinApp {
                 }
                 if self.renaming_conversation.as_ref().map(|(id, _)| id) == Some(&conversation_id) {
                     self.renaming_conversation = None;
+                }
+                self.update_nav_model();
+            }
+            ServerEvent::ConversationInternalChanged {
+                conversation_id,
+                internal,
+            } => {
+                if self.current_conversation_id.as_deref() == Some(conversation_id.as_str()) {
+                    self.current_conversation_internal = internal;
+                }
+                if internal && !self.show_internal {
+                    self.conversations.retain(|c| c.id != conversation_id);
+                } else if let Some(conv) = self
+                    .conversations
+                    .iter_mut()
+                    .find(|c| c.id == conversation_id)
+                {
+                    conv.internal = internal;
+                } else if internal && self.show_internal {
+                    self.list_conversations();
                 }
                 self.update_nav_model();
             }
@@ -1807,7 +1877,8 @@ impl Application for LunaThinApp {
                 let state = if is_svg {
                     ImageState::Svg(data)
                 } else {
-                    ImageState::Raster(cosmic::widget::image::Handle::from_bytes(data))
+                    let handle = cosmic::widget::image::Handle::from_bytes(data.clone());
+                    ImageState::Raster { handle, data }
                 };
                 self.image_cache.insert(url, state);
             }

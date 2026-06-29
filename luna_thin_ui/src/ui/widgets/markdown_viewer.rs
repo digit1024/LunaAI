@@ -8,11 +8,11 @@ use std::collections::HashMap;
 use cosmic::{
     iced::{
         alignment,
-        widget::{column, row, rule, scrollable, text},
+        widget::{column, row, rule, scrollable, text, Space},
         Border, ContentFit, Length,
     },
     theme,
-    widget::{self, container, markdown},
+    widget::{self, button, container, markdown},
     Element, Renderer, Theme,
 };
 use iced_selection::markdown::{
@@ -20,6 +20,7 @@ use iced_selection::markdown::{
 };
 
 use crate::ui::app::{ImageState, Message};
+use crate::ui::icons;
 use crate::ui::widgets::selectable_text;
 
 const TABLE_CELL_PADDING: f32 = 8.0;
@@ -256,8 +257,8 @@ fn render_image<'a>(
     url: &'a str,
     title: &'a str,
 ) -> Element<'a, Message> {
-    match image_cache.get(url) {
-        Some(ImageState::Raster(handle)) => container(
+    let image_element = match image_cache.get(url) {
+        Some(ImageState::Raster { handle, .. }) => container(
             widget::image::Image::new(handle.clone())
                 .width(Length::Fill)
                 .height(Length::Shrink)
@@ -312,6 +313,33 @@ fn render_image<'a>(
             .width(Length::Fill)
             .into()
         }
+    };
+
+    if image_cache
+        .get(url)
+        .and_then(ImageState::download_bytes)
+        .is_some()
+    {
+        let download = button::icon(icons::get_handle("document-save-symbolic", 16))
+            .on_press(Message::DownloadImage {
+                url: url.to_string(),
+                title: title.to_string(),
+            })
+            .class(cosmic::style::Button::Text)
+            .padding(4);
+
+        column![
+            image_element,
+            row![Space::new().width(Length::Fill), download]
+                .spacing(4)
+                .align_y(alignment::Vertical::Center)
+                .width(Length::Fill),
+        ]
+        .spacing(4)
+        .width(Length::Fill)
+        .into()
+    } else {
+        image_element
     }
 }
 

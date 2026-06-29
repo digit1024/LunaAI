@@ -9,12 +9,17 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 impl ServerHandler {
-    pub(super) async fn handle_start_conversation(&mut self, title: Option<String>) -> Result<()> {
+    pub(super) async fn handle_start_conversation(
+        &mut self,
+        title: Option<String>,
+        internal: Option<bool>,
+    ) -> Result<()> {
         let title_text = title.unwrap_or_else(|| "Generating title...".to_string());
         let profile_name = Some(self.session.profile_name.clone());
+        let internal = internal.unwrap_or(false);
         let storage = self.ctx.storage.lock().await;
         let conversation_id = storage
-            .create_conversation_with_profile(title_text, profile_name.as_deref())
+            .create_conversation_with_profile(title_text, profile_name.as_deref(), internal)
             .context("failed to create conversation")?;
         // Clear active conversation - new conversation will be set when loaded
         self.session.active_conversation_id = None;
@@ -72,11 +77,17 @@ impl ServerHandler {
         query: Option<String>,
         limit: Option<u32>,
         offset: Option<u32>,
+        include_internal: Option<bool>,
     ) -> Result<()> {
+        let include_internal = include_internal.unwrap_or(false);
         let storage = self.ctx.storage.lock().await;
         if let Some(q) = query.filter(|s| !s.trim().is_empty()) {
             let results = storage
-                .search_history(&q, limit.unwrap_or(240) as usize)
+                .search_history(
+                    &q,
+                    limit.unwrap_or(240) as usize,
+                    include_internal,
+                )
                 .context("history search failed")?;
             let conv_ids: Vec<String> = results
                 .iter()
@@ -110,6 +121,7 @@ impl ServerHandler {
                 .list_conversations_paginated(
                     offset.map(|o| o as usize),
                     limit.map(|l| l as usize),
+                    include_internal,
                 )
                 .context("failed to list conversations")?;
             let summaries: Vec<ConversationSummary> = conversations
@@ -122,6 +134,7 @@ impl ServerHandler {
                         .last()
                         .map(|msg| truncate_preview(&msg.content)),
                     updated_at: conv.updated_at.timestamp(),
+                    internal: conv.internal,
                 })
                 .collect();
             self.send_event(ServerEvent::ConversationsList {
@@ -155,6 +168,26 @@ impl ServerHandler {
             self.send_event(ServerEvent::ConversationRenamed {
                 conversation_id,
                 title,
+            })?;
+        } else {
+            return Err(anyhow!("Conversation not found"));
+        }
+        Ok(())
+    }
+    pub(super) async fn handle_set_conversation_internal(
+        &self,
+        conversation_id: String,
+        internal: bool,
+    ) -> Result<()> {
+        let uuid = Uuid::parse_str(&conversation_id).context("invalid conversation id format")?;
+        let storage = self.ctx.storage.lock().await;
+        let updated = storage
+            .set_conversation_internal(&uuid, internal)
+            .context("failed to update conversation internal flag")?;
+        if updated {
+            self.send_event(ServerEvent::ConversationInternalChanged {
+                conversation_id,
+                internal,
             })?;
         } else {
             return Err(anyhow!("Conversation not found"));

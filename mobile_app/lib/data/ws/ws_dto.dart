@@ -101,6 +101,11 @@ sealed class ServerEvent {
           conversationId: json['conversation_id'] as String,
           title: json['title'] as String? ?? '',
         );
+      case 'conversation_internal_changed':
+        return ConversationInternalChangedEvent(
+          conversationId: json['conversation_id'] as String,
+          internal: json['internal'] as bool? ?? false,
+        );
       case 'memories_list':
         return MemoriesListEvent(
           (json['memories'] as List<dynamic>? ?? [])
@@ -287,6 +292,16 @@ class ConversationRenamedEvent extends ServerEvent {
   });
 }
 
+class ConversationInternalChangedEvent extends ServerEvent {
+  final String conversationId;
+  final bool internal;
+
+  const ConversationInternalChangedEvent({
+    required this.conversationId,
+    required this.internal,
+  });
+}
+
 class MemoriesListEvent extends ServerEvent {
   final List<MemoryView> memories;
 
@@ -316,12 +331,14 @@ class ConversationSummary {
   final String title;
   final String? lastMessagePreview;
   final int updatedAt;
+  final bool internal;
 
   ConversationSummary({
     required this.id,
     required this.title,
     required this.lastMessagePreview,
     required this.updatedAt,
+    this.internal = false,
   });
 
   factory ConversationSummary.fromJson(Map<String, dynamic> json) {
@@ -330,6 +347,7 @@ class ConversationSummary {
       title: json['title'] as String? ?? 'Conversation',
       lastMessagePreview: json['last_message_preview'] as String?,
       updatedAt: json['updated_at'] as int? ?? 0,
+      internal: json['internal'] as bool? ?? false,
     );
   }
 }
@@ -396,6 +414,7 @@ class ConversationView {
   final int updatedAt;
   final List<MessageView> messages;
   final String? profileName;
+  final bool internal;
 
   ConversationView({
     required this.id,
@@ -404,6 +423,7 @@ class ConversationView {
     required this.updatedAt,
     required this.messages,
     this.profileName,
+    this.internal = false,
   });
 
   factory ConversationView.fromJson(Map<String, dynamic> json) {
@@ -416,6 +436,7 @@ class ConversationView {
           .map((entry) => MessageView.fromJson(entry))
           .toList(),
       profileName: json['profile_name'] as String?,
+      internal: json['internal'] as bool? ?? false,
     );
   }
 }
@@ -497,27 +518,40 @@ class ClientCommand {
   Map<String, dynamic> toJson() => {'type': type, ...payload};
 
   static ClientCommand healthCheck() => ClientCommand('health_check');
-  static ClientCommand listConversations({int? offset, int? limit}) =>
+  static ClientCommand listConversations({
+    int? offset,
+    int? limit,
+    bool? includeInternal,
+  }) =>
       ClientCommand('list_conversations', {
         if (offset != null) 'offset': offset,
         if (limit != null) 'limit': limit,
+        if (includeInternal != null) 'include_internal': includeInternal,
       });
-  static ClientCommand search(String query) =>
-      ClientCommand('list_conversations', {'query': query});
+  static ClientCommand search(String query, {bool? includeInternal}) =>
+      ClientCommand('list_conversations', {
+        'query': query,
+        if (includeInternal != null) 'include_internal': includeInternal,
+      });
   static ClientCommand loadConversation(String id) =>
       ClientCommand('load_conversation', {'conversation_id': id});
-  static ClientCommand startConversation(String title) =>
-      ClientCommand('start_conversation', {'title': title});
+  static ClientCommand startConversation(String title, {bool? internal}) =>
+      ClientCommand('start_conversation', {
+        'title': title,
+        if (internal != null) 'internal': internal,
+      });
   static ClientCommand sendMessage({
     String? conversationId,
     required String content,
     List<String>? attachmentIds,
+    bool? internal,
   }) =>
       ClientCommand('send_message', {
         if (conversationId != null) 'conversation_id': conversationId,
         'content': content,
         if (attachmentIds != null && attachmentIds.isNotEmpty)
           'attachment_ids': attachmentIds,
+        if (internal != null) 'internal': internal,
       });
   static ClientCommand changeProfile(String profile) =>
       ClientCommand('change_profile', {'profile': profile});
@@ -556,6 +590,15 @@ class ClientCommand {
       ClientCommand('rename_conversation', {
         'conversation_id': conversationId,
         'title': title,
+      });
+
+  static ClientCommand setConversationInternal(
+    String conversationId,
+    bool internal,
+  ) =>
+      ClientCommand('set_conversation_internal', {
+        'conversation_id': conversationId,
+        'internal': internal,
       });
 
   static ClientCommand listMemories({String? query, int? limit, int? offset}) =>

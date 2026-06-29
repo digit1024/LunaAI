@@ -31,11 +31,14 @@ Luna AI is your intelligent companion that combines the power of modern AI with 
 - **Thin desktop client** (`luna-thin`): COSMIC UI with selectable/copyable chat text — see [luna_thin_ui/README.md](luna_thin_ui/README.md)
 
 ### 🔧 MCP Magic
-Luna's MCP integration opens up a world of possibilities:
-- **File Operations**: Read, write, and manage files directly from conversations
-- **Web Search**: Fetch real-time information from the internet
-- **Email Management**: Send, receive, and organize emails
-- **Task Management**: Integrate with your todo lists and productivity tools
+Luna ships a curated set of no-setup MCP servers out of the box:
+- **Shell** – Run whitelisted shell commands (`ls`, `git`, `cargo`, …)
+- **Filesystem** – Read and write files in your home directory
+- **Fetch** – Retrieve any URL and get clean markdown output
+- **Search** – Search the web with no API key required
+- **Skills** – Agent skill system: give Luna reusable tools / playbooks
+- **MarkItDown** – Convert PDFs, Word docs, and URLs to markdown
+- **Luna Memory** – Persistent conversation history + semantic recall
 - **Custom Tools**: Extend Luna's capabilities with your own MCP servers
 
 ### 💡 Examples of What You Can Do
@@ -65,17 +68,22 @@ Luna's MCP integration opens up a world of possibilities:
 Luna AI supports multiple AI providers, giving you flexibility and choice:
 
 ### 🌐 Cloud Providers
-- **OpenAI** - GPT-4, GPT-3.5, and other OpenAI models
-- **Anthropic** - Claude models with advanced reasoning
-- **Google** - Gemini models and Google AI services
-- **Azure OpenAI** - Enterprise-grade OpenAI deployments
+- **OpenAI** – GPT-5, GPT-4.1, and other OpenAI models
+- **Anthropic** – Claude Sonnet / Opus 4.x
+- **Google** – Gemini 2.5 Flash / Pro
+- **DeepSeek** – DeepSeek Chat V3.2 / Reasoner
+- **OpenRouter** – 100+ models through a single API key
 
 ### 💻 Local Models
-- **Ollama** - Run local models like Llama, Mistral, and more
-- **Custom endpoints** - Connect to any OpenAI-compatible API
+- **Ollama** – Run local models like Llama, Mistral, Phi, and more
+- **Any OpenAI-compatible endpoint** – point Luna at any local or self-hosted API
 
 ### 🔧 Configuration
-Easily switch between backends in the settings or configure multiple providers for different use cases. See the [Configuration Guide](docs/configuration.md) for detailed setup instructions.
+Run the interactive setup wizard to configure everything in one go:
+```bash
+cd quick_setup && pip install -e . && luna-quick-setup
+```
+Full config reference: [quick_setup/docs/QUICK_SETUP.md](quick_setup/docs/QUICK_SETUP.md)
 
 ## 🛠️ Installation
 
@@ -85,18 +93,31 @@ Easily switch between backends in the settings or configure multiple providers f
 ```bash
 git clone https://github.com/digit1024/LunaAI.git
 cd LunaAI
-cargo build
+./install-deps.sh          # install build dependencies (Pop OS / Ubuntu)
+unset ARGV0 && cargo build --release
+```
+
+#### Quick Setup (recommended first step)
+```bash
+cd quick_setup
+pip install -e .
+luna-quick-setup           # interactive one-shot configuration
 ```
 
 #### Running
 ```bash
-cargo run
+unset ARGV0 && cargo run --release
 ```
 
 #### Running as Server
 Run Luna in server mode to access it from mobile devices and other clients:
 ```bash
-cargo run -- --server
+unset ARGV0 && cargo run --release -- --server
+```
+
+#### Thin desktop client (COSMIC)
+```bash
+unset ARGV0 && cargo run -p luna_thin_ui
 ```
 
 ### Mobile App

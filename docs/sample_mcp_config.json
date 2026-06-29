@@ -1,36 +1,45 @@
 {
   "mcpServers": {
+    "shell": {
+      "command": "uvx",
+      "args": ["mcp-shell-server"],
+      "env": {
+        "ALLOW_COMMANDS": "ls,cat,pwd,grep,wc,touch,find,echo,mkdir,rmdir,cp,mv,rm,chmod,chown,git,ps,df,du,whoami,head,tail,sort,uniq,curl,wget,sqlite3,flatpak,python3,systemctl,cargo"
+      }
+    },
     "filesystem": {
       "command": "npx",
-      "args": ["@modelcontextprotocol/server-filesystem", "/home/user/documents"],
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/youruser"],
       "env": {}
     },
-    "weather": {
-      "command": "npx",
-      "args": ["@modelcontextprotocol/server-weather"],
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
+      "env": { "PYTHONIOENCODING": "utf-8" }
+    },
+    "skills": {
+      "command": "uvx",
+      "args": ["agent-skills-mcp"],
       "env": {
-        "OPENWEATHER_API_KEY": "your-api-key-here"
+        "SKILL_FOLDER": "/home/youruser/.local/share/cosmic_llm/skills",
+        "MODE": "tool"
       }
     },
-    "github": {
+    "markitdown": {
       "command": "npx",
-      "args": ["@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-      }
+      "args": ["-y", "markitdown-mcp-npx"],
+      "env": {}
     },
-    "postgres": {
-      "command": "npx",
-      "args": ["@modelcontextprotocol/server-postgres"],
-      "env": {
-        "POSTGRES_CONNECTION_STRING": "postgresql://username:password@localhost:5432/database"
-      }
+    "search": {
+      "command": "uvx",
+      "args": ["free-search-mcp"],
+      "env": {}
     },
-    "brave-search": {
-      "command": "npx",
-      "args": ["@modelcontextprotocol/server-brave-search"],
+    "cosmic-llm-memory": {
+      "command": "/home/youruser/.local/share/cosmic_llm/bin/mcp_luna_history",
+      "args": [],
       "env": {
-        "BRAVE_API_KEY": "BSAxXxxxxxxxxxxxxxxxxxxxxxxxxx"
+        "COSMIC_LLM_DB_PATH": "/home/youruser/.local/share/cosmic_llm/conversations.db"
       }
     }
   }

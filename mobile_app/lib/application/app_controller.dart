@@ -147,7 +147,9 @@ class AppController extends Notifier<AppState> {
 
         // Send initial handshake commands
         wsClient.send(ClientCommand.healthCheck());
-        wsClient.send(ClientCommand.listConversations());
+        wsClient.send(ClientCommand.listConversations(
+          includeInternal: state.showInternal,
+        ));
         wsClient.send(ClientCommand.listProfiles());
 
         _connecting = false;
@@ -186,11 +188,38 @@ class AppController extends Notifier<AppState> {
 
 
   void refreshConversations() {
-    wsClient.send(ClientCommand.listConversations(limit: 10));
+    wsClient.send(ClientCommand.listConversations(
+      limit: 10,
+      includeInternal: state.showInternal,
+    ));
   }
 
   void loadMoreConversations(int offset) {
-    wsClient.send(ClientCommand.listConversations(offset: offset, limit: 10));
+    wsClient.send(ClientCommand.listConversations(
+      offset: offset,
+      limit: 10,
+      includeInternal: state.showInternal,
+    ));
+  }
+
+  void toggleShowInternal() {
+    state = state.copyWith(showInternal: !state.showInternal);
+    if (state.searchQuery.trim().isEmpty) {
+      refreshConversations();
+    } else {
+      wsClient.send(ClientCommand.search(
+        state.searchQuery,
+        includeInternal: state.showInternal,
+      ));
+    }
+  }
+
+  void toggleNewChatInternal() {
+    state = state.copyWith(newChatInternal: !state.newChatInternal);
+  }
+
+  void setConversationInternal(String conversationId, bool internal) {
+    wsClient.send(ClientCommand.setConversationInternal(conversationId, internal));
   }
 
   void deleteConversation(String conversationId) {
@@ -234,7 +263,10 @@ class AppController extends Notifier<AppState> {
       refreshConversations();
     } else {
       state = state.copyWith(searchQuery: trimmed);
-      wsClient.send(ClientCommand.search(trimmed));
+      wsClient.send(ClientCommand.search(
+        trimmed,
+        includeInternal: state.showInternal,
+      ));
     }
   }
 
@@ -373,7 +405,10 @@ class AppController extends Notifier<AppState> {
   Future<void> startNewConversation() async {
     // Ensure profile is set before starting a new conversation
     _ensureProfileIsSet(null);
-    wsClient.send(ClientCommand.startConversation('Generating title...'));
+    wsClient.send(ClientCommand.startConversation(
+      'Generating title...',
+      internal: state.newChatInternal ? true : null,
+    ));
   }
 
   Future<void> changeProfile(String profile) async {
@@ -411,6 +446,7 @@ class AppController extends Notifier<AppState> {
       conversationId: conversationId,
       content: hasText ? trimmed : stagedFiles.map((f) => f.fileName).join(', '),
       attachmentIds: hasFiles ? stagedFiles.map((f) => f.fileId).toList() : null,
+      internal: conversationId == null && state.newChatInternal ? true : null,
     ));
   }
 
@@ -610,7 +646,10 @@ class AppController extends Notifier<AppState> {
       // Only send listConversations if we're changing to conversations pane
       // Don't auto-load conversation if user is already in a chat
       if (shouldChangePane) {
-        wsClient.send(ClientCommand.listConversations(limit: 10));
+        wsClient.send(ClientCommand.listConversations(
+          limit: 10,
+          includeInternal: state.showInternal,
+        ));
       }
     } else if (event is ErrorEvent) {
       if (state.streaming) {
@@ -734,7 +773,9 @@ class AppController extends Notifier<AppState> {
         );
       }
       state = state.copyWith(streaming: false);
-      wsClient.send(ClientCommand.listConversations());
+      wsClient.send(ClientCommand.listConversations(
+        includeInternal: state.showInternal,
+      ));
     } else if (event is ProfileChangedEvent) {
       ref.read(serverConfigProvider.notifier).updateProfile(event.profile);
       // Ensure the new profile is in the available profiles list
@@ -780,6 +821,7 @@ class AppController extends Notifier<AppState> {
             title: event.title,
             lastMessagePreview: c.lastMessagePreview,
             updatedAt: c.updatedAt,
+            internal: c.internal,
           );
         }
         return c;
@@ -793,10 +835,45 @@ class AppController extends Notifier<AppState> {
           updatedAt: activeConv.updatedAt,
           messages: activeConv.messages,
           profileName: activeConv.profileName,
+          internal: activeConv.internal,
         );
       }
       state = state.copyWith(
         conversations: updated,
+        activeConversation: activeConv,
+      );
+    } else if (event is ConversationInternalChangedEvent) {
+      final updated = state.conversations.map((c) {
+        if (c.id == event.conversationId) {
+          return ConversationSummary(
+            id: c.id,
+            title: c.title,
+            lastMessagePreview: c.lastMessagePreview,
+            updatedAt: c.updatedAt,
+            internal: event.internal,
+          );
+        }
+        return c;
+      }).toList();
+      var conversations = updated;
+      if (event.internal && !state.showInternal) {
+        conversations =
+            updated.where((c) => c.id != event.conversationId).toList();
+      }
+      ConversationView? activeConv = state.activeConversation;
+      if (activeConv != null && activeConv.id == event.conversationId) {
+        activeConv = ConversationView(
+          id: activeConv.id,
+          title: activeConv.title,
+          createdAt: activeConv.createdAt,
+          updatedAt: activeConv.updatedAt,
+          messages: activeConv.messages,
+          profileName: activeConv.profileName,
+          internal: event.internal,
+        );
+      }
+      state = state.copyWith(
+        conversations: conversations,
         activeConversation: activeConv,
       );
     } else if (event is MemoriesListEvent) {

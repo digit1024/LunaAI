@@ -151,12 +151,30 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: TextField(
-              decoration: const InputDecoration(
-                prefixIcon: Icon(Icons.search),
-                hintText: 'Search history…',
-              ),
-              onChanged: controller.search,
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.search),
+                      hintText: 'Search history…',
+                    ),
+                    onChanged: controller.search,
+                  ),
+                ),
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      _currentOffset = 0;
+                      _hasMore = true;
+                      _isLoadingMore = false;
+                      _previousConversationCount = 0;
+                    });
+                    controller.toggleShowInternal();
+                  },
+                  child: Text(state.showInternal ? 'Hide transient' : 'Show transient'),
+                ),
+              ],
             ),
           ),
           Expanded(
@@ -193,6 +211,10 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                               currentTitle: summary.title,
                             ),
                             onDelete: () => controller.deleteConversation(summary.id),
+                            onToggleTransient: () => controller.setConversationInternal(
+                              summary.id,
+                              !summary.internal,
+                            ),
                           );
                         },
                         searchResult: (result) {

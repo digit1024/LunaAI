@@ -60,6 +60,34 @@ pub fn top_panel(app: &LunaThinApp) -> Element<'static, Message> {
             .into()
     };
 
+    let transient_label = if app.current_conversation_internal {
+        "Remove transient"
+    } else {
+        "Mark transient"
+    };
+    let transient_button: Element<Message> = if chat_actions_enabled {
+        button::text(transient_label)
+            .on_press(Message::SetConversationInternal {
+                conversation_id: app.current_conversation_id.clone().unwrap_or_default(),
+                internal: !app.current_conversation_internal,
+            })
+            .class(widget::button::ButtonClass::Standard)
+            .into()
+    } else {
+        button::text(transient_label)
+            .class(widget::button::ButtonClass::Standard)
+            .into()
+    };
+
+    let new_chat_transient_label = if app.new_chat_internal {
+        "New chat: transient"
+    } else {
+        "New chat: normal"
+    };
+    let new_chat_transient_button = button::text(new_chat_transient_label)
+        .on_press(Message::ToggleNewChatInternal)
+        .class(widget::button::ButtonClass::Standard);
+
     container(
         Column::new()
             .push(
@@ -108,6 +136,10 @@ pub fn top_panel(app: &LunaThinApp) -> Element<'static, Message> {
                     .push(compact_button)
                     .push(Space::new().width(8))
                     .push(resume_button)
+                    .push(Space::new().width(8))
+                    .push(transient_button)
+                    .push(Space::new().width(8))
+                    .push(new_chat_transient_button)
                     .push(Space::new().width(Length::Fill))
                     .spacing(8)
                     .align_y(cosmic::iced::Alignment::Center),

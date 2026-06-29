@@ -763,6 +763,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               onSettings: controller.openSetup,
               onRequestCompact: controller.requestCompactConversation,
               onRequestResumeAgent: controller.requestResumeAgent,
+              isConversationInternal: state.activeConversation?.internal ?? false,
+              hasActiveConversation: state.activeConversation != null,
+              onToggleConversationTransient: () {
+                final id = state.activeConversation?.id;
+                if (id == null) return;
+                controller.setConversationInternal(
+                  id,
+                  !(state.activeConversation?.internal ?? false),
+                );
+              },
+              newChatInternal: state.newChatInternal,
+              onToggleNewChatInternal: controller.toggleNewChatInternal,
             ),
             Expanded(
           child: Stack(
@@ -855,6 +867,11 @@ class _TopBar extends ConsumerWidget {
     required this.onSettings,
     this.onRequestCompact,
     this.onRequestResumeAgent,
+    this.isConversationInternal = false,
+    this.hasActiveConversation = false,
+    this.onToggleConversationTransient,
+    this.newChatInternal = false,
+    this.onToggleNewChatInternal,
   });
 
   final String title;
@@ -863,6 +880,11 @@ class _TopBar extends ConsumerWidget {
   final VoidCallback onSettings;
   final VoidCallback? onRequestCompact;
   final VoidCallback? onRequestResumeAgent;
+  final bool isConversationInternal;
+  final bool hasActiveConversation;
+  final VoidCallback? onToggleConversationTransient;
+  final bool newChatInternal;
+  final VoidCallback? onToggleNewChatInternal;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -908,6 +930,11 @@ class _TopBar extends ConsumerWidget {
             streaming: streaming,
             onRequestCompact: onRequestCompact,
             onRequestResumeAgent: onRequestResumeAgent,
+            isConversationInternal: isConversationInternal,
+            hasActiveConversation: hasActiveConversation,
+            onToggleConversationTransient: onToggleConversationTransient,
+            newChatInternal: newChatInternal,
+            onToggleNewChatInternal: onToggleNewChatInternal,
           ),
         ],
       ),
@@ -923,6 +950,11 @@ class _StatusMenuAnchor extends StatelessWidget {
     required this.streaming,
     this.onRequestCompact,
     this.onRequestResumeAgent,
+    this.isConversationInternal = false,
+    this.hasActiveConversation = false,
+    this.onToggleConversationTransient,
+    this.newChatInternal = false,
+    this.onToggleNewChatInternal,
   });
 
   final IconData connectionIcon;
@@ -930,6 +962,11 @@ class _StatusMenuAnchor extends StatelessWidget {
   final bool streaming;
   final VoidCallback? onRequestCompact;
   final VoidCallback? onRequestResumeAgent;
+  final bool isConversationInternal;
+  final bool hasActiveConversation;
+  final VoidCallback? onToggleConversationTransient;
+  final bool newChatInternal;
+  final VoidCallback? onToggleNewChatInternal;
 
   @override
   Widget build(BuildContext context) {
@@ -1002,6 +1039,33 @@ class _StatusMenuAnchor extends StatelessWidget {
             title: const Text('Resume agent'),
           ),
         ),
+        if (hasActiveConversation)
+          PopupMenuItem<String>(
+            value: 'transient',
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                isConversationInternal
+                    ? Icons.visibility_outlined
+                    : Icons.visibility_off_outlined,
+              ),
+              title: Text(
+                isConversationInternal ? 'Remove transient' : 'Mark transient',
+              ),
+            ),
+          ),
+        PopupMenuItem<String>(
+          value: 'new_chat_transient',
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(
+              newChatInternal ? Icons.check_box : Icons.check_box_outline_blank,
+            ),
+            title: Text(
+              newChatInternal ? 'New chats: transient' : 'New chats: normal',
+            ),
+          ),
+        ),
       ],
     ).then((value) {
       if (!context.mounted) return;
@@ -1009,6 +1073,10 @@ class _StatusMenuAnchor extends StatelessWidget {
         onRequestCompact?.call();
       } else if (value == 'resume') {
         onRequestResumeAgent?.call();
+      } else if (value == 'transient') {
+        onToggleConversationTransient?.call();
+      } else if (value == 'new_chat_transient') {
+        onToggleNewChatInternal?.call();
       }
     });
   }

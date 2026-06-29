@@ -7,12 +7,16 @@ use cosmic::{
 };
 
 use crate::ui::app::{LunaThinApp, Message, ConnectionStatus};
+use crate::ui::widgets::page_header;
 
 pub fn settings_page(app: &LunaThinApp) -> Element<'_, Message> {
     let mut content = Column::new().spacing(16).padding(16);
 
-    // Header
-    content = content.push(text("⚙️ Server Connection").size(24));
+    content = content.push(page_header::subpage_header(
+        "Server Connection",
+        "settings-symbolic",
+        None,
+    ));
 
     // Connection status card
     let (status_icon, status_text, status_desc) = match app.connection_status {

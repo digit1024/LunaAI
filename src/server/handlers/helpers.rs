@@ -80,6 +80,7 @@ pub(super) fn to_conversation_view(conv: &StoredConversation) -> ConversationVie
             .map(MessageView::from)
             .collect(),
         profile_name: conv.profile_name.clone(),
+        internal: conv.internal,
     }
 }
 

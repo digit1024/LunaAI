@@ -4,7 +4,7 @@
 
 use cosmic::app;
 use cosmic::widget::text_editor;
-use crate::ui::app::{LunaThinApp, Message, ConnectionStatus, ChatMessage};
+use crate::ui::app::{LunaThinApp, Message, ConnectionStatus, ChatMessage, ImageState};
 
 /// Handle chat-related messages
 pub fn handle_chat_messages(
@@ -147,6 +147,17 @@ pub fn handle_chat_messages(
             app.inline_info = None;
             None
         }
+        Message::DownloadImage { url, title } => handle_download_image(app, url, title),
+        Message::ImageSaved(path) => {
+            app.inline_info = Some(format!("Image saved to {path}"));
+            None
+        }
+        Message::ImageSaveError(error) => {
+            if error != "Save cancelled" {
+                app.inline_error = Some(error);
+            }
+            None
+        }
         _ => None, // Not a chat message
     }
 }
@@ -189,6 +200,11 @@ fn handle_send_message(app: &mut LunaThinApp) -> Option<app::Task<Message>> {
         conversation_id: app.current_conversation_id.clone(),
         content: message_content,
         attachment_ids,
+        internal: if app.current_conversation_id.is_none() && app.new_chat_internal {
+            Some(true)
+        } else {
+            None
+        },
     });
 
     None
@@ -258,5 +274,122 @@ fn handle_attach_file(_app: &mut LunaThinApp) -> Option<app::Task<Message>> {
         },
         cosmic::Action::App,
     ))
+}
+
+fn handle_download_image(
+    app: &mut LunaThinApp,
+    url: String,
+    title: String,
+) -> Option<app::Task<Message>> {
+    let Some(state) = app.image_cache.get(&url) else {
+        app.inline_error = Some("Image is not ready to download yet".to_string());
+        return None;
+    };
+    let Some(bytes) = state.download_bytes() else {
+        app.inline_error = Some("Image is not ready to download yet".to_string());
+        return None;
+    };
+
+    let is_svg = matches!(state, ImageState::Svg(_));
+    let default_name = suggest_image_save_name(&url, &title, bytes, is_svg);
+    let bytes = bytes.to_vec();
+
+    Some(app::Task::perform(
+        async move {
+            use cosmic::dialog::file_chooser::{self, FileFilter};
+
+            let mut filter = FileFilter::new("Image files");
+            for ext in ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"] {
+                filter = filter.extension(ext);
+            }
+
+            let dialog = file_chooser::save::Dialog::new()
+                .title("Save Image".to_string())
+                .file_name(default_name)
+                .filter(filter);
+
+            match dialog.save_file().await {
+                Ok(response) => match response.url() {
+                    Some(file_url) => match file_url.to_file_path() {
+                        Ok(path) => match std::fs::write(&path, &bytes) {
+                            Ok(()) => Message::ImageSaved(path.to_string_lossy().to_string()),
+                            Err(e) => Message::ImageSaveError(format!("Failed to write file: {e}")),
+                        },
+                        Err(_) => Message::ImageSaveError("Invalid save path".to_string()),
+                    },
+                    None => Message::ImageSaveError("Save cancelled".to_string()),
+                },
+                Err(file_chooser::Error::Cancelled) => {
+                    Message::ImageSaveError("Save cancelled".to_string())
+                }
+                Err(why) => Message::ImageSaveError(format!("Save dialog error: {why}")),
+            }
+        },
+        cosmic::Action::App,
+    ))
+}
+
+fn suggest_image_save_name(url: &str, title: &str, bytes: &[u8], is_svg: bool) -> String {
+    if let Some(name) = title
+        .trim()
+        .split(['/', '\\'])
+        .next_back()
+        .filter(|name| !name.is_empty() && name.contains('.'))
+    {
+        return sanitize_filename(name);
+    }
+
+    if let Some(name) = url
+        .strip_prefix("luna-static:")
+        .or_else(|| url.strip_prefix("file://"))
+        .and_then(|rest| rest.split(['/', '\\']).next_back())
+        .filter(|name| !name.is_empty())
+    {
+        return sanitize_filename(name);
+    }
+
+    if let Ok(parsed) = url::Url::parse(url) {
+        if let Some(segments) = parsed.path_segments() {
+            if let Some(name) = segments.filter(|s| !s.is_empty()).next_back() {
+                if name.contains('.') {
+                    return sanitize_filename(name);
+                }
+            }
+        }
+    }
+
+    let ext = guess_image_extension(bytes, is_svg);
+    format!("image.{ext}")
+}
+
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn guess_image_extension(bytes: &[u8], is_svg: bool) -> &'static str {
+    if is_svg {
+        return "svg";
+    }
+    if bytes.starts_with(b"\x89PNG") {
+        "png"
+    } else if bytes.len() >= 3 && bytes[0..3] == [0xFF, 0xD8, 0xFF] {
+        "jpg"
+    } else if bytes.starts_with(b"GIF8") {
+        "gif"
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "webp"
+    } else if bytes.starts_with(b"BM") {
+        "bmp"
+    } else {
+        "png"
+    }
 }
 

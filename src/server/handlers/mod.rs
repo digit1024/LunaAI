@@ -139,14 +139,20 @@ impl ServerHandler {
         tracing::debug!("Received command: {:?}", command);
         let result = match command {
             ClientCommand::HealthCheck => self.handle_health().await,
-            ClientCommand::StartConversation { title } => {
-                self.handle_start_conversation(title).await
+            ClientCommand::StartConversation { title, internal } => {
+                self.handle_start_conversation(title, internal).await
             }
             ClientCommand::LoadConversation { conversation_id } => {
                 self.handle_load_conversation(conversation_id).await
             }
-            ClientCommand::ListConversations { query, limit, offset } => {
-                self.handle_list_conversations(query, limit, offset).await
+            ClientCommand::ListConversations {
+                query,
+                limit,
+                offset,
+                include_internal,
+            } => {
+                self.handle_list_conversations(query, limit, offset, include_internal)
+                    .await
             }
             ClientCommand::ChangeProfile { profile } => self.handle_change_profile(profile).await,
             ClientCommand::ListProfiles => self.handle_list_profiles().await,
@@ -154,7 +160,11 @@ impl ServerHandler {
                 conversation_id,
                 content,
                 attachment_ids,
-            } => self.handle_send_message(conversation_id, content, attachment_ids).await,
+                internal,
+            } => {
+                self.handle_send_message(conversation_id, content, attachment_ids, internal)
+                    .await
+            }
             ClientCommand::DeleteConversation { conversation_id } => {
                 self.handle_delete_conversation(conversation_id).await
             }
@@ -174,6 +184,10 @@ impl ServerHandler {
                 conversation_id,
                 title,
             } => self.handle_rename_conversation(conversation_id, title).await,
+            ClientCommand::SetConversationInternal {
+                conversation_id,
+                internal,
+            } => self.handle_set_conversation_internal(conversation_id, internal).await,
             ClientCommand::ListMemories {
                 query,
                 limit,

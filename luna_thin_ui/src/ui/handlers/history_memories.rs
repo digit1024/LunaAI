@@ -1,6 +1,7 @@
 //! History search/rename and memories page message handlers
 
 use cosmic::app;
+use cosmic::widget::text_editor;
 use crate::server::dto::ClientCommand;
 use crate::ui::app::{LunaThinApp, MemoryDraft, Message};
 
@@ -51,6 +52,29 @@ pub fn handle_history_memories_messages(
             app.renaming_conversation = None;
             None
         }
+        Message::ToggleShowInternal => {
+            app.show_internal = !app.show_internal;
+            if app.history_search.trim().is_empty() {
+                app.list_conversations();
+            } else if app.connection_status == crate::ui::app::ConnectionStatus::Connected {
+                app.search_conversations(app.history_search.trim());
+            }
+            None
+        }
+        Message::ToggleNewChatInternal => {
+            app.new_chat_internal = !app.new_chat_internal;
+            None
+        }
+        Message::SetConversationInternal {
+            conversation_id,
+            internal,
+        } => {
+            app.send_command(ClientCommand::SetConversationInternal {
+                conversation_id,
+                internal,
+            });
+            None
+        }
         Message::LoadMemories => {
             if app.connection_status == crate::ui::app::ConnectionStatus::Connected {
                 let query = if app.memories_search.trim().is_empty() {
@@ -94,16 +118,16 @@ pub fn handle_history_memories_messages(
             if let Some(memory) = app.memories.iter().find(|m| m.id == id) {
                 app.editing_memory = Some(MemoryDraft {
                     id: memory.id,
-                    content: memory.content.clone(),
+                    content: text_editor::Content::with_text(&memory.content),
                     category: memory.category.clone().unwrap_or_default(),
                     importance: memory.importance.to_string(),
                 });
             }
             None
         }
-        Message::MemoryDraftContentChanged(content) => {
+        Message::MemoryDraftContentAction(action) => {
             if let Some(draft) = app.editing_memory.as_mut() {
-                draft.content = content;
+                draft.content.perform(action);
             }
             None
         }
@@ -121,7 +145,7 @@ pub fn handle_history_memories_messages(
         }
         Message::ConfirmEditMemory => {
             if let Some(draft) = app.editing_memory.clone() {
-                let content = draft.content.trim().to_string();
+                let content = draft.content.text().trim().to_string();
                 if content.is_empty() {
                     app.inline_error = Some("Memory content cannot be empty".to_string());
                     return None;

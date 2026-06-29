@@ -9,6 +9,8 @@ pub enum ClientCommand {
     HealthCheck,
     StartConversation {
         title: Option<String>,
+        #[serde(default)]
+        internal: Option<bool>,
     },
     LoadConversation {
         conversation_id: String,
@@ -17,6 +19,8 @@ pub enum ClientCommand {
         query: Option<String>,
         limit: Option<u32>,
         offset: Option<u32>,
+        #[serde(default)]
+        include_internal: Option<bool>,
     },
     DeleteConversation {
         conversation_id: String,
@@ -45,10 +49,16 @@ pub enum ClientCommand {
         content: String,
         #[serde(default)]
         attachment_ids: Option<Vec<String>>,
+        #[serde(default)]
+        internal: Option<bool>,
     },
     RenameConversation {
         conversation_id: String,
         title: String,
+    },
+    SetConversationInternal {
+        conversation_id: String,
+        internal: bool,
     },
     ListMemories {
         query: Option<String>,
@@ -153,6 +163,10 @@ pub enum ServerEvent {
         conversation_id: String,
         title: String,
     },
+    ConversationInternalChanged {
+        conversation_id: String,
+        internal: bool,
+    },
     MemoriesList {
         memories: Vec<MemoryView>,
     },
@@ -179,6 +193,8 @@ pub struct ConversationSummary {
     pub title: String,
     pub last_message_preview: Option<String>,
     pub updated_at: i64,
+    #[serde(default)]
+    pub internal: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -209,6 +225,8 @@ pub struct ConversationView {
     pub updated_at: i64,
     pub messages: Vec<MessageView>,
     pub profile_name: Option<String>,
+    #[serde(default)]
+    pub internal: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]

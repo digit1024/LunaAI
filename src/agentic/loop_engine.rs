@@ -1104,7 +1104,7 @@ impl AgenticLoop {
             .unwrap_or(20);
 
         let guard = storage.lock().await;
-        match guard.search_history(&query, limit) {
+        match guard.search_history(&query, limit, false) {
             Ok(snippets) if snippets.is_empty() => ToolResult {
                 content: "No conversations found matching your search.".to_string(),
                 is_error: false,

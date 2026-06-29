@@ -199,6 +199,7 @@ impl ServerHandler {
         conversation_id: Option<String>,
         content: String,
         attachment_ids: Option<Vec<String>>,
+        internal: Option<bool>,
     ) -> Result<()> {
         let has_attachments = attachment_ids
             .as_ref()
@@ -229,8 +230,13 @@ impl ServerHandler {
         } else {
             // Store current profile when creating new conversation
             let profile_name = Some(self.session.profile_name.clone());
+            let create_internal = internal.unwrap_or(false);
             let conv_id = storage
-                .create_conversation_with_profile("Generating title...".to_string(), profile_name.as_deref())
+                .create_conversation_with_profile(
+                    "Generating title...".to_string(),
+                    profile_name.as_deref(),
+                    create_internal,
+                )
                 .context("failed to create conversation")?;
             let preview = truncate_preview(&content);
             let _ = storage.update_conversation_title(&conv_id, preview);

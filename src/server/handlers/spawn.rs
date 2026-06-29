@@ -174,7 +174,7 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
         let conv_id = {
             let storage = ctx.storage.lock().await;
             storage
-                .create_conversation_with_profile(title.clone(), Some(profile_name))
+                .create_conversation_with_profile(title.clone(), Some(profile_name), false)
                 .context("failed to create conversation")?
         };
         {
