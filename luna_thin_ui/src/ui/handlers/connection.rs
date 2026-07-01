@@ -38,7 +38,8 @@ pub fn handle_connection_messages(
             app.server_config.api_key = app.settings_api_key.clone();
             let _ = app.server_config.save();
 
-            app.file_client = Some(FileClient::new(app.server_config.clone()));
+            app.file_client = None;
+            app.rest_base = None;
             app.connection_status = ConnectionStatus::Connecting;
             app.inline_error = None;
 
@@ -47,10 +48,15 @@ pub fn handle_connection_messages(
             Some(app::Task::perform(
                 async move {
                     let mut client = ws_client.write().await;
-                    match client.connect(config).await {
-                        Ok(result) => Message::ServerConnected {
-                            insecure_warning: result.insecure_warning,
-                        },
+                    match client.connect(config.clone()).await {
+                        Ok(result) => {
+                            let rest_base =
+                                config.rest_base_for_ws_secure(result.ws_secure);
+                            Message::ServerConnected {
+                                insecure_warning: result.insecure_warning,
+                                rest_base,
+                            }
+                        }
                         Err(e) => Message::ServerError(e.to_string()),
                     }
                 },
@@ -62,6 +68,8 @@ pub fn handle_connection_messages(
             app.reconnect_in_progress = false;
             app.inline_info = None;
             app.connection_warning = None;
+            app.rest_base = None;
+            app.file_client = None;
 
             let ws_client = app.ws_client.clone();
             tokio::spawn(async move {
@@ -71,13 +79,21 @@ pub fn handle_connection_messages(
             app.connection_status = ConnectionStatus::Disconnected;
             None
         }
-        Message::ServerConnected { insecure_warning } => {
+        Message::ServerConnected {
+            insecure_warning,
+            rest_base,
+        } => {
             app.user_disconnect_flag.store(false, Ordering::Relaxed);
             app.reconnect_in_progress = false;
             app.connection_status = ConnectionStatus::Connected;
             app.inline_error = None;
             app.inline_info = None;
             app.connection_warning = insecure_warning;
+            app.rest_base = Some(rest_base.clone());
+            app.file_client = Some(FileClient::with_rest_base(
+                app.server_config.clone(),
+                rest_base,
+            ));
 
             if app.current_page == Page::Settings {
                 app.current_page = Page::Chat;
@@ -152,8 +168,11 @@ pub fn handle_connection_messages(
 
                         match result {
                             Ok(connect_result) => {
+                                let rest_base = config
+                                    .rest_base_for_ws_secure(connect_result.ws_secure);
                                 return Message::ServerConnected {
                                     insecure_warning: connect_result.insecure_warning,
+                                    rest_base,
                                 };
                             }
                             Err(e) => {

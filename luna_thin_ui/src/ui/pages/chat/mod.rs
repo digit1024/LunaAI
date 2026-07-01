@@ -64,7 +64,7 @@ pub fn chat_page<'a>(app: &'a LunaThinApp) -> Element<'a, Message> {
             .push(crate::ui::widgets::info_banner(info, Message::DismissInfo));
     }
 
-    // Security warning when connected over unencrypted ws://
+    // Security warning when connected over unencrypted ws:// and/or http://
     if let Some(ref warning) = app.connection_warning {
         layout = layout
             .push(widget::Space::new().height(Length::Fixed(8.0)))

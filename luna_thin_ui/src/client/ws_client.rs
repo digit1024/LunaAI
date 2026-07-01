@@ -35,12 +35,15 @@ type HandleSlot = Arc<Mutex<Option<Arc<ConnectionHandle>>>>;
 pub struct WsConnectResult {
     /// Set when the client fell back to unencrypted `ws://`.
     pub insecure_warning: Option<String>,
+    /// `true` when connected via `wss://` (use HTTPS for REST as well).
+    pub ws_secure: bool,
 }
 
 impl WsConnectResult {
     fn secure() -> Self {
         Self {
             insecure_warning: None,
+            ws_secure: true,
         }
     }
 
@@ -51,6 +54,7 @@ impl WsConnectResult {
                  Your API key and chat traffic are not protected on the network. \
                  Secure connection (wss://) failed: {secure_failure}"
             )),
+            ws_secure: false,
         }
     }
 }

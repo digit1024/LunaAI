@@ -33,9 +33,18 @@ impl ServerConfig {
         self.websocket_uri_secure()
     }
 
-    /// HTTP API (attach-file, static files) – plain HTTP for local dev.
+    /// Plain HTTP API base (insecure fallback for local dev or when HTTPS fails).
     pub fn http_uri(&self) -> String {
-        format!("http://{}:{}", self.host, self.port)
+        if self.port == 80 {
+            format!("http://{}", self.host)
+        } else {
+            format!("http://{}:{}", self.host, self.port)
+        }
+    }
+
+    /// Insecure HTTP API base – alias for [Self::http_uri].
+    pub fn http_uri_insecure(&self) -> String {
+        self.http_uri()
     }
 
     /// HTTPS API base – same host/port semantics as [Self::websocket_uri_secure].
@@ -44,6 +53,15 @@ impl ServerConfig {
             format!("https://{}", self.host)
         } else {
             format!("https://{}:{}", self.host, self.port)
+        }
+    }
+
+    /// REST base aligned with how the WebSocket connection was established.
+    pub fn rest_base_for_ws_secure(&self, ws_secure: bool) -> String {
+        if ws_secure {
+            self.http_uri_secure()
+        } else {
+            self.http_uri_insecure()
         }
     }
 
@@ -57,8 +75,13 @@ impl ServerConfig {
     pub fn http_rest_base_uris(&self) -> Vec<String> {
         if self.is_local_rest_host() {
             vec![self.http_uri(), self.http_uri_secure()]
+        } else if self.port == 443 {
+            // Standard HTTPS port — plain HTTP on :443 will not work behind reverse proxies.
+            vec![self.http_uri_secure()]
+        } else if self.port == 80 {
+            vec![self.http_uri_insecure()]
         } else {
-            vec![self.http_uri_secure(), self.http_uri()]
+            vec![self.http_uri_secure(), self.http_uri_insecure()]
         }
     }
 

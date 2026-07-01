@@ -82,6 +82,7 @@ pub enum Message {
     ServerEvent(ServerEvent),
     ServerConnected {
         insecure_warning: Option<String>,
+        rest_base: String,
     },
     ServerDisconnected,
     ServerError(String),
@@ -450,6 +451,8 @@ pub struct LunaThinApp {
     pub server_config: ServerConfig,
     pub ws_client: Arc<RwLock<LunaWsClient>>,
     pub file_client: Option<FileClient>,
+    /// Resolved REST API base (https:// or http://) after connect.
+    pub rest_base: Option<String>,
     pub connection_status: ConnectionStatus,
     
     // WebSocket event sender (stored for subscribing to broadcast channel)
@@ -569,6 +572,7 @@ impl LunaThinApp {
             server_config,
             ws_client: Arc::new(RwLock::new(LunaWsClient::new())),
             file_client: None,
+            rest_base: None,
             connection_status: ConnectionStatus::Disconnected,
             current_conversation_id: None,
             conversations: Vec::new(),
@@ -887,18 +891,21 @@ impl LunaThinApp {
     fn resolve_luna_static_fetch_urls(&self, marker: &str) -> Option<Vec<String>> {
         let rest = marker.strip_prefix("luna-static:")?;
         let token = self.static_token.as_ref()?;
+        let static_path = format!("/api/static/{}/{}", token, rest);
+
+        if let Some(base) = &self.rest_base {
+            return Some(vec![format!(
+                "{}{}",
+                base.trim_end_matches('/'),
+                static_path
+            )]);
+        }
+
         Some(
             self.server_config
                 .http_rest_base_uris()
                 .into_iter()
-                .map(|base| {
-                    format!(
-                        "{}/api/static/{}/{}",
-                        base.trim_end_matches('/'),
-                        token,
-                        rest
-                    )
-                })
+                .map(|base| format!("{}{}", base.trim_end_matches('/'), static_path))
                 .collect(),
         )
     }
@@ -1862,9 +1869,22 @@ impl Application for LunaThinApp {
         // Handle MCP Servers messages
         match message.clone() {
             Message::LoadMCPServers => {
-                // Ensure file_client exists if we're connected
-                if self.file_client.is_none() && self.connection_status == ConnectionStatus::Connected {
-                    self.file_client = Some(FileClient::new(self.server_config.clone()));
+                if self.file_client.is_none() && self.connection_status == ConnectionStatus::Connected
+                {
+                    let rest_base = self
+                        .rest_base
+                        .clone()
+                        .unwrap_or_else(|| {
+                            self.server_config
+                                .http_rest_base_uris()
+                                .into_iter()
+                                .next()
+                                .unwrap_or_else(|| self.server_config.http_uri())
+                        });
+                    self.file_client = Some(FileClient::with_rest_base(
+                        self.server_config.clone(),
+                        rest_base,
+                    ));
                 }
                 
                 if let Some(ref file_client) = self.file_client {
