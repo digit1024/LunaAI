@@ -14,6 +14,10 @@ use tokio_tungstenite::tungstenite::{
 
 pub type EventReceiver = broadcast::Receiver<ServerEvent>;
 
+/// Shared slot so the background socket task can drop the sender when the loop ends,
+/// which closes the broadcast channel and lets UI subscribers detect disconnect.
+type EventTxSlot = Arc<Mutex<Option<broadcast::Sender<ServerEvent>>>>;
+
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const STREAMING_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
@@ -28,7 +32,7 @@ type HandleSlot = Arc<Mutex<Option<Arc<ConnectionHandle>>>>;
 
 pub struct LunaWsClient {
     handle_slot: HandleSlot,
-    event_tx: Option<broadcast::Sender<ServerEvent>>,
+    event_tx: EventTxSlot,
     connection_task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -36,7 +40,7 @@ impl LunaWsClient {
     pub fn new() -> Self {
         Self {
             handle_slot: Arc::new(Mutex::new(None)),
-            event_tx: None,
+            event_tx: Arc::new(Mutex::new(None)),
             connection_task: None,
         }
     }
@@ -44,7 +48,11 @@ impl LunaWsClient {
     /// Get a new event receiver by subscribing to the broadcast channel
     /// Returns None if not connected
     pub fn subscribe(&self) -> Option<EventReceiver> {
-        self.event_tx.as_ref().map(|tx| tx.subscribe())
+        self.event_tx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|tx| tx.subscribe())
     }
 
     pub async fn connect(
@@ -157,7 +165,8 @@ impl LunaWsClient {
         *self.handle_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle.clone());
         let handle_slot = self.handle_slot.clone();
         let event_tx_clone = event_tx.clone();
-        self.event_tx = Some(event_tx);
+        let event_tx_slot = self.event_tx.clone();
+        *event_tx_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(event_tx);
 
         let connection_task = tokio::spawn(async move {
             let mut health_interval = tokio::time::interval(HEALTH_CHECK_INTERVAL);
@@ -217,9 +226,6 @@ impl LunaWsClient {
                             }
                             Ok(WsMessage::Close(_)) => {
                                 tracing::info!("WebSocket closed by server");
-                                let _ = event_tx_clone.send(ServerEvent::Error {
-                                    message: "Connection closed by server".to_string(),
-                                });
                                 break;
                             }
                             Ok(WsMessage::Ping(data)) => {
@@ -234,9 +240,6 @@ impl LunaWsClient {
                             }
                             Err(e) => {
                                 tracing::error!("WebSocket error: {}", e);
-                                let _ = event_tx_clone.send(ServerEvent::Error {
-                                    message: format!("WebSocket error: {}", e),
-                                });
                                 break;
                             }
                             _ => {}
@@ -254,9 +257,6 @@ impl LunaWsClient {
                                 "Connection timed out (no inbound traffic for {}s)",
                                 secs
                             );
-                            let _ = event_tx_clone.send(ServerEvent::Error {
-                                message: format!("Connection timed out after {}s", secs),
-                            });
                             break;
                         }
                         if !streaming {
@@ -274,6 +274,7 @@ impl LunaWsClient {
             }
 
             *handle_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            *event_tx_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
             tracing::info!("WebSocket connection loop ended");
         });
 
@@ -286,7 +287,7 @@ impl LunaWsClient {
             let _ = task.await;
         }
         *self.handle_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        self.event_tx = None;
+        *self.event_tx.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     pub fn set_streaming(&self, streaming: bool) {

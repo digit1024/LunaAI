@@ -1317,6 +1317,10 @@ impl LunaThinApp {
                 }
             }
             ServerEvent::Error { message } => {
+                if is_transport_error(&message) {
+                    self.inline_error = None;
+                    return app::Task::done(cosmic::Action::App(Message::ServerDisconnected));
+                }
                 if let Some(id) = self.current_conversation_id.clone() {
                     if self.streaming_conversations.contains(&id) {
                         self.unmark_conversation_streaming(&id);
@@ -1567,6 +1571,12 @@ impl LunaThinApp {
         }
         app::Task::none()
     }
+}
+
+fn is_transport_error(message: &str) -> bool {
+    message.starts_with("WebSocket error:")
+        || message.starts_with("Connection timed out")
+        || message == "Connection closed by server"
 }
 
 /// Identity for `Subscription::run_with` (iced 0.14; replaces removed `run_with_id`).

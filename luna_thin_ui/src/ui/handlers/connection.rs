@@ -9,8 +9,8 @@ use std::time::Duration;
 use crate::client::FileClient;
 use crate::ui::app::{ConnectionStatus, LunaThinApp, Message, Page};
 
-const MAX_RECONNECT_ATTEMPTS: u32 = 3;
-const RECONNECT_RETRY_DELAY: Duration = Duration::from_secs(2);
+const RECONNECT_INITIAL_DELAY: Duration = Duration::from_secs(2);
+const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 
 /// Handle connection-related messages
 pub fn handle_connection_messages(
@@ -83,10 +83,10 @@ pub fn handle_connection_messages(
             None
         }
         Message::ServerDisconnected => {
-            app.reconnect_in_progress = false;
-
             if app.user_disconnect_flag.load(Ordering::Relaxed) {
+                app.reconnect_in_progress = false;
                 app.connection_status = ConnectionStatus::Disconnected;
+                app.inline_info = None;
                 return None;
             }
 
@@ -114,17 +114,17 @@ pub fn handle_connection_messages(
 
             Some(app::Task::perform(
                 async move {
-                    for attempt in 1..=MAX_RECONNECT_ATTEMPTS {
+                    let mut delay = RECONNECT_INITIAL_DELAY;
+                    let mut attempt = 0u32;
+
+                    loop {
                         if user_disconnect_flag.load(Ordering::Relaxed) {
                             tracing::info!("Reconnect cancelled (user disconnect)");
                             return Message::ServerDisconnected;
                         }
 
-                        tracing::info!(
-                            "Silent reconnect attempt {}/{}",
-                            attempt,
-                            MAX_RECONNECT_ATTEMPTS
-                        );
+                        attempt += 1;
+                        tracing::info!("Reconnect attempt {}", attempt);
 
                         let result = {
                             let mut client = ws_client.write().await;
@@ -135,16 +135,11 @@ pub fn handle_connection_messages(
                             Ok(_) => return Message::ServerConnected,
                             Err(e) => {
                                 tracing::warn!("Reconnect attempt {} failed: {}", attempt, e);
-                                if attempt < MAX_RECONNECT_ATTEMPTS {
-                                    tokio::time::sleep(RECONNECT_RETRY_DELAY).await;
-                                }
+                                tokio::time::sleep(delay).await;
+                                delay = delay.saturating_mul(2).min(RECONNECT_MAX_DELAY);
                             }
                         }
                     }
-
-                    Message::ConnectionFailed(
-                        "Could not reconnect to server after 3 attempts.".to_string(),
-                    )
                 },
                 cosmic::Action::App,
             ))
