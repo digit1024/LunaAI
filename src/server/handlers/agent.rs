@@ -1,5 +1,8 @@
 use super::{
-    helpers::{resolve_attachment_upload_path, to_conversation_view, truncate_preview},
+    helpers::{
+        message_uuid_to_rowid, recalls_map_for_conversation, resolve_attachment_upload_path,
+        to_conversation_view, truncate_preview,
+    },
     spawn::spawn_agent_task,
     RunAgentOptions, ServerHandler,
 };
@@ -94,7 +97,13 @@ impl ServerHandler {
             }
         }
 
-        self.run_agent_for_conversation(uuid, RunAgentOptions { auto_summarize: true })
+        self.run_agent_for_conversation(
+            uuid,
+            RunAgentOptions {
+                auto_summarize: true,
+                triggering_message_rowid: None,
+            },
+        )
             .await
     }
     pub(super) async fn repair_incomplete_tool_tail(&self, conv_uuid: Uuid) -> Result<bool> {
@@ -125,7 +134,8 @@ impl ServerHandler {
             .get_conversation(&uuid)
             .context("failed to load conversation")?
             .ok_or_else(|| anyhow!("Conversation not found"))?;
-        let view = to_conversation_view(&conv);
+        let recalls = recalls_map_for_conversation(&storage, &conv)?;
+        let view = to_conversation_view(&conv, &recalls);
         drop(storage);
         self.ctx
             .subscriptions
@@ -179,6 +189,7 @@ impl ServerHandler {
             &self.session,
             &self.outbound,
             conversation_uuid,
+            options.triggering_message_rowid,
         );
         let agent_messages = pipeline
             .prepare_for_agent(
@@ -341,6 +352,7 @@ impl ServerHandler {
             conversation_uuid,
             RunAgentOptions {
                 auto_summarize: true,
+                triggering_message_rowid: message_uuid_to_rowid(&message_id),
             },
         )
         .await

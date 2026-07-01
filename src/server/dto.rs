@@ -180,9 +180,11 @@ pub enum ServerEvent {
         conversation_id: String,
     },
     /// Sent when the memory RAG system injected a fresh memory block for this turn.
-    /// Lets the UI surface "recalled X memories" without scraping the prompt.
     MemoriesRecalled {
         conversation_id: String,
+        message_id: String,
+        memories: Vec<MemoryView>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         memory_ids: Vec<i64>,
     },
 }
@@ -249,6 +251,8 @@ pub struct MessageView {
     pub is_summary: bool, // True if this message is a summary of previous messages
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summarized_count: Option<usize>, // Count of messages summarized
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recalled_memories: Vec<MemoryView>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -264,6 +268,12 @@ pub struct PlannedToolView {
 
 impl From<&StoredMessage> for MessageView {
     fn from(msg: &StoredMessage) -> Self {
+        Self::from_stored(msg, Vec::new())
+    }
+}
+
+impl MessageView {
+    pub fn from_stored(msg: &StoredMessage, recalled_memories: Vec<MemoryView>) -> Self {
         Self {
             id: msg.id.to_string(),
             role: msg.role.clone(),
@@ -279,6 +289,7 @@ impl From<&StoredMessage> for MessageView {
             reasoning_content: msg.reasoning_content.clone(),
             is_summary: msg.is_summary,
             summarized_count: msg.summarized_count,
+            recalled_memories,
         }
     }
 }

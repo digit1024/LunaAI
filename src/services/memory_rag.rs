@@ -34,6 +34,8 @@ const MEMORY_BLOCK_FOOTER: &str =
 pub struct InjectionOutcome {
     /// Memory IDs included in the injected block (in retrieval order).
     pub ids: Vec<i64>,
+    /// Full memory rows included in the injected block.
+    pub entries: Vec<crate::storage::sqlite_storage_simple::MemoryEntry>,
 }
 
 /// Strip any previously injected memory block from `messages`.
@@ -245,7 +247,10 @@ pub async fn inject_memory_block(
         "Memory RAG: injected memory block"
     );
 
-    Some(InjectionOutcome { ids })
+    Some(InjectionOutcome {
+        ids,
+        entries: kept,
+    })
 }
 
 /// Truncate content to `max_chars`, appending "..." if truncated.

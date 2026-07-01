@@ -188,6 +188,9 @@ pub enum ServerEvent {
     /// Memory RAG injected a fresh memory block for this turn.
     MemoriesRecalled {
         conversation_id: String,
+        message_id: String,
+        memories: Vec<MemoryView>,
+        #[serde(default)]
         memory_ids: Vec<i64>,
     },
 }
@@ -265,6 +268,8 @@ pub struct MessageView {
     pub is_summary: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summarized_count: Option<usize>,
+    #[serde(default)]
+    pub recalled_memories: Vec<MemoryView>,
 }
 
 /// Tool call information

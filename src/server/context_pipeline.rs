@@ -21,6 +21,7 @@ pub struct ContextPipeline<'a> {
     session: &'a SessionState,
     outbound: &'a UnboundedSender<ServerEvent>,
     conversation_id: Uuid,
+    triggering_message_rowid: Option<i64>,
 }
 
 fn count_tokens(msgs: &[LlmMessage], counter: &TokenCounter) -> usize {
@@ -35,12 +36,14 @@ impl<'a> ContextPipeline<'a> {
         session: &'a SessionState,
         outbound: &'a UnboundedSender<ServerEvent>,
         conversation_id: Uuid,
+        triggering_message_rowid: Option<i64>,
     ) -> Self {
         Self {
             ctx,
             session,
             outbound,
             conversation_id,
+            triggering_message_rowid,
         }
     }
 
@@ -150,16 +153,34 @@ impl<'a> ContextPipeline<'a> {
         .await;
         if let Some(outcome) = outcome {
             let storage_guard = self.ctx.storage.lock().await;
-            if let Err(e) = storage_guard
-                .record_memory_recalls(&self.conversation_id.to_string(), &outcome.ids)
-            {
-                tracing::warn!(error = %e, "Failed to record memory recalls (analytics)");
+            let message_rowid = if let Some(rowid) = self.triggering_message_rowid {
+                rowid
+            } else {
+                match storage_guard.get_latest_user_message_id(&self.conversation_id.to_string()) {
+                    Ok(Some(id)) => id,
+                    Ok(None) => {
+                        tracing::warn!("Memory RAG: no user message to attribute recalls to");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to resolve user message for memory recalls");
+                        return Ok(());
+                    }
+                }
+            };
+            match crate::server::handlers::record_and_build_memories_recalled_event(
+                &storage_guard,
+                &self.conversation_id.to_string(),
+                message_rowid,
+                &outcome,
+            ) {
+                Ok(event) => {
+                    let _ = self.outbound.send(event);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to record memory recalls");
+                }
             }
-            drop(storage_guard);
-            let _ = self.outbound.send(ServerEvent::MemoriesRecalled {
-                conversation_id: self.conversation_id.to_string(),
-                memory_ids: outcome.ids,
-            });
         }
         Ok(())
     }

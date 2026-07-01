@@ -11,6 +11,7 @@ pub mod menu_bar;
 pub mod page_header;
 pub mod tool_call;
 pub mod typing_indicator;
+pub mod recalled_memories_popup;
 pub mod warning_banner;
 
 pub use error_banner::error_banner;

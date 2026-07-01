@@ -1,4 +1,4 @@
-use super::{helpers::truncate_preview, ServerContext};
+use super::{helpers::{record_and_build_memories_recalled_event, truncate_preview}, ServerContext};
 use crate::{
     agentic::{
         loop_engine::AgenticLoop,
@@ -212,21 +212,27 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
         .await;
         if let Some(outcome) = outcome {
             let storage_guard = ctx.storage.lock().await;
-            if let Err(e) =
-                storage_guard.record_memory_recalls(&conversation_id.to_string(), &outcome.ids)
+            if let Ok(Some(message_rowid)) = storage_guard
+                .get_latest_user_message_id(&conversation_id.to_string())
             {
-                tracing::warn!(error = %e, "Failed to record memory recalls (analytics)");
+                match record_and_build_memories_recalled_event(
+                    &storage_guard,
+                    &conversation_id.to_string(),
+                    message_rowid,
+                    &outcome,
+                ) {
+                    Ok(event) => {
+                        ctx.subscriptions
+                            .broadcast(conversation_id, event)
+                            .await;
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to record memory recalls for scheduled task");
+                    }
+                }
+            } else {
+                tracing::warn!("Scheduled task: no user message to attribute memory recalls");
             }
-            drop(storage_guard);
-            ctx.subscriptions
-                .broadcast(
-                    conversation_id,
-                    ServerEvent::MemoriesRecalled {
-                        conversation_id: conversation_id.to_string(),
-                        memory_ids: outcome.ids,
-                    },
-                )
-                .await;
         }
     }
 

@@ -106,6 +106,8 @@ pub enum Message {
     DismissConnectionWarning,
     ToggleChatMenu,
     CloseChatMenu,
+    ShowRecalledMemories(String),
+    CloseRecalledMemories,
 
     // Menu
     ShowAbout,
@@ -317,6 +319,8 @@ pub struct ChatMessage {
     pub tool_status: Option<String>, // planned, running, done, error
     /// Whether this message is still streaming
     pub is_streaming: bool,
+    /// Long-term memories injected for this user turn (memory RAG).
+    pub recalled_memories: Vec<MemoryView>,
 }
 
 impl ChatMessage {
@@ -340,6 +344,7 @@ impl ChatMessage {
             tool_result: None,
             tool_status: None,
             is_streaming: false,
+            recalled_memories: Vec::new(),
         }
     }
     
@@ -360,6 +365,7 @@ impl ChatMessage {
             tool_result: None,
             tool_status: None,
             is_streaming: false,
+            recalled_memories: Vec::new(),
         }
     }
     
@@ -379,6 +385,7 @@ impl ChatMessage {
             tool_result: None,
             tool_status: Some(status.to_string()),
             is_streaming: false,
+            recalled_memories: Vec::new(),
         }
     }
     
@@ -398,6 +405,7 @@ impl ChatMessage {
             tool_result: Some(result),
             tool_status: Some(if is_error { "error".to_string() } else { "done".to_string() }),
             is_streaming: false,
+            recalled_memories: Vec::new(),
         }
     }
     
@@ -418,6 +426,7 @@ impl ChatMessage {
             tool_result: None,
             tool_status: None,
             is_streaming: false,
+            recalled_memories: Vec::new(),
         }
     }
     
@@ -517,6 +526,8 @@ pub struct LunaThinApp {
     pub inline_info: Option<String>,
     pub connection_warning: Option<String>,
     pub chat_menu_open: bool,
+    pub recalled_memories_popup: Option<String>,
+    pub pending_recalled_memories: std::collections::HashMap<String, Vec<MemoryView>>,
 
     /// Upload UUIDs waiting to be sent with the next message (`SendMessage.attachment_ids`).
     pub pending_attachment_ids: Vec<String>,
@@ -603,6 +614,8 @@ impl LunaThinApp {
             inline_info: None,
             connection_warning: None,
             chat_menu_open: false,
+            recalled_memories_popup: None,
+            pending_recalled_memories: std::collections::HashMap::new(),
             pending_attachment_ids: Vec::new(),
             image_cache: std::collections::HashMap::new(),
         }
@@ -1045,6 +1058,35 @@ impl LunaThinApp {
         memories.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(b.id.cmp(&a.id)));
     }
 
+    fn sync_last_user_message_id(&mut self, message_id: String) {
+        if let Some(msg) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| m.bubble_type == BubbleType::User)
+        {
+            let old_id = msg.id.clone();
+            msg.id = message_id.clone();
+            if let Some(memories) = self.pending_recalled_memories.remove(&message_id) {
+                msg.recalled_memories = memories;
+            } else if let Some(memories) = self.pending_recalled_memories.remove(&old_id) {
+                msg.recalled_memories = memories;
+            }
+        }
+    }
+
+    fn apply_recalled_memories(&mut self, message_id: &str, memories: Vec<MemoryView>) {
+        if memories.is_empty() {
+            return;
+        }
+        if let Some(msg) = self.messages.iter_mut().find(|m| m.id == message_id) {
+            msg.recalled_memories = memories;
+        } else {
+            self.pending_recalled_memories
+                .insert(message_id.to_string(), memories);
+        }
+    }
+
     /// Helper: On connection established - send initial commands.
     /// If we have a current conversation, re-subscribe so we receive any in-flight stream (broadcast).
     pub(crate) fn on_connect(&mut self) {
@@ -1107,6 +1149,7 @@ impl LunaThinApp {
                     tool_result: None,
                     tool_status: None,
                     is_streaming: false,
+                    recalled_memories: Vec::new(),
                 });
             } else {
                 // Regular user/assistant message. Markdown parsing is deferred to
@@ -1133,6 +1176,11 @@ impl LunaThinApp {
                     tool_result: None,
                     tool_status: None,
                     is_streaming: false,
+                    recalled_memories: if m.role == "user" {
+                        m.recalled_memories.clone()
+                    } else {
+                        Vec::new()
+                    },
                 });
             }
         }
@@ -1176,6 +1224,7 @@ impl LunaThinApp {
             tool_result: None,
             tool_status: None,
             is_streaming: true,
+            recalled_memories: Vec::new(),
         });
     }
     
@@ -1209,6 +1258,7 @@ impl LunaThinApp {
             tool_result: None,
             tool_status: None,
             is_streaming: true,
+            recalled_memories: Vec::new(),
         });
     }
     
@@ -1393,8 +1443,8 @@ impl LunaThinApp {
                     self.current_profile = default_profile;
                 }
             }
-            ServerEvent::MessageAccepted { .. } => {
-                // Input already cleared when SendMessage was triggered
+            ServerEvent::MessageAccepted { message_id, .. } => {
+                self.sync_last_user_message_id(message_id);
             }
             ServerEvent::StreamingStarted { conversation_id } => {
                 self.mark_conversation_streaming(conversation_id.clone());
@@ -1569,12 +1619,12 @@ impl LunaThinApp {
             }
             ServerEvent::MemoriesRecalled {
                 conversation_id,
-                memory_ids,
+                message_id,
+                memories,
+                ..
             } => {
-                if self.is_viewing_conversation(&conversation_id) && !memory_ids.is_empty() {
-                    let n = memory_ids.len();
-                    let label = if n == 1 { "memory" } else { "memories" };
-                    self.inline_info = Some(format!("Recalled {n} {label} into context."));
+                if self.is_viewing_conversation(&conversation_id) {
+                    self.apply_recalled_memories(&message_id, memories);
                 }
             }
         }

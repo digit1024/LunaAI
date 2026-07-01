@@ -51,6 +51,8 @@ pub fn user_bubble<'a>(
     content: &str,
     on_copy: Message,
     on_retry: Option<Message>,
+    recalled_count: usize,
+    on_show_recalled: Option<Message>,
 ) -> Element<'a, Message> {
     let content_owned = content.to_string();
 
@@ -66,6 +68,27 @@ pub fn user_bubble<'a>(
                 .class(cosmic::style::Button::Text)
                 .padding(4),
         );
+    }
+
+    if recalled_count > 0 {
+        if let Some(on_show_recalled) = on_show_recalled {
+            let count_label = recalled_count.to_string();
+            buttons = buttons.push(
+                button::custom(
+                    Row::new()
+                        .push(
+                            widget::icon::icon(icons::get_handle("emblem-favorite-symbolic", 14))
+                                .size(14),
+                        )
+                        .push(text(count_label).size(12))
+                        .spacing(4)
+                        .align_y(cosmic::iced::Alignment::Center),
+                )
+                .on_press(on_show_recalled)
+                .class(cosmic::style::Button::Text)
+                .padding(4),
+            );
+        }
     }
 
     buttons = buttons
@@ -340,6 +363,8 @@ pub fn message_bubble<'a>(
     on_start_tts: Option<Message>,
     on_stop_tts: Option<Message>,
     on_retry: Option<Message>,
+    recalled_count: usize,
+    on_show_recalled: Option<Message>,
 ) -> Element<'a, Message> {
     if is_summary {
         summary_bubble(
@@ -350,7 +375,13 @@ pub fn message_bubble<'a>(
             on_toggle_summary.unwrap_or_else(|| on_copy.clone()),
         )
     } else if is_user {
-        user_bubble(content, on_copy, on_retry)
+        user_bubble(
+            content,
+            on_copy,
+            on_retry,
+            recalled_count,
+            on_show_recalled,
+        )
     } else {
         assistant_bubble(
             markdown_items,

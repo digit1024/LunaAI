@@ -398,6 +398,22 @@ impl SqliteStorage {
             [],
         );
 
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS message_memory_recalls (
+                message_id INTEGER NOT NULL,
+                memory_id INTEGER NOT NULL,
+                recalled_at INTEGER NOT NULL,
+                PRIMARY KEY (message_id, memory_id),
+                FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                FOREIGN KEY (memory_id) REFERENCES memory(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        let _ = self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_message_recalls_message_id ON message_memory_recalls(message_id)",
+            [],
+        );
+
         // FTS5 virtual table for memory full-text search
         self.conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
@@ -1607,6 +1623,80 @@ impl SqliteStorage {
             stmt.execute(params![conversation_id, mid, now])?;
         }
         Ok(())
+    }
+
+    /// Latest persisted user message id in a conversation (for memory-recall attribution).
+    pub fn get_latest_user_message_id(&self, conversation_id: &str) -> SqliteResult<Option<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM messages WHERE conversation_id = ?1 AND role = 'user' ORDER BY created_at DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![conversation_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Record which memories were recalled for a specific user message.
+    pub fn record_message_memory_recalls(
+        &self,
+        message_id: i64,
+        memory_ids: &[i64],
+    ) -> SqliteResult<()> {
+        if memory_ids.is_empty() {
+            return Ok(());
+        }
+        let now = Utc::now().timestamp();
+        let mut stmt = self.conn.prepare(
+            "INSERT OR IGNORE INTO message_memory_recalls (message_id, memory_id, recalled_at) VALUES (?1, ?2, ?3)",
+        )?;
+        for &mid in memory_ids {
+            stmt.execute(params![message_id, mid, now])?;
+        }
+        Ok(())
+    }
+
+    /// Batch-load recalled memories for the given user message ids.
+    pub fn get_recalled_memories_for_messages(
+        &self,
+        message_ids: &[i64],
+    ) -> SqliteResult<std::collections::HashMap<i64, Vec<MemoryEntry>>> {
+        use std::collections::HashMap;
+        if message_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders: String = (0..message_ids.len())
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT mmr.message_id, m.id, m.content, m.category, m.importance, m.created_at, m.updated_at
+             FROM message_memory_recalls mmr
+             JOIN memory m ON m.id = mmr.memory_id
+             WHERE mmr.message_id IN ({placeholders})
+             ORDER BY mmr.message_id ASC, mmr.recalled_at ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> = message_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::ToSql)
+            .collect();
+        let mut rows = stmt.query(params.as_slice())?;
+        let mut map: HashMap<i64, Vec<MemoryEntry>> = HashMap::new();
+        while let Some(row) = rows.next()? {
+            let message_id: i64 = row.get(0)?;
+            let entry = MemoryEntry {
+                id: row.get(1)?,
+                content: row.get(2)?,
+                category: row.get(3)?,
+                importance: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            };
+            map.entry(message_id).or_default().push(entry);
+        }
+        Ok(map)
     }
 
     /// Insert a scheduled job

@@ -37,6 +37,14 @@ pub fn handle_chat_messages(
             app.chat_menu_open = !app.chat_menu_open;
             None
         }
+        Message::CloseRecalledMemories => {
+            app.recalled_memories_popup = None;
+            None
+        }
+        Message::ShowRecalledMemories(message_id) => {
+            app.recalled_memories_popup = Some(message_id);
+            None
+        }
         Message::CloseChatMenu => {
             app.chat_menu_open = false;
             None

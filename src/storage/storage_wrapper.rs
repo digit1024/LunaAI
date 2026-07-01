@@ -599,6 +599,30 @@ impl Storage {
             .record_memory_recalls(conversation_id, memory_ids)
     }
 
+    pub fn get_latest_user_message_id(
+        &self,
+        conversation_id: &str,
+    ) -> SqliteResult<Option<i64>> {
+        self.sqlite.get_latest_user_message_id(conversation_id)
+    }
+
+    pub fn record_message_memory_recalls(
+        &self,
+        message_id: i64,
+        memory_ids: &[i64],
+    ) -> SqliteResult<()> {
+        self.sqlite
+            .record_message_memory_recalls(message_id, memory_ids)
+    }
+
+    pub fn get_recalled_memories_for_messages(
+        &self,
+        message_ids: &[i64],
+    ) -> SqliteResult<std::collections::HashMap<i64, Vec<super::sqlite_storage_simple::MemoryEntry>>>
+    {
+        self.sqlite.get_recalled_memories_for_messages(message_ids)
+    }
+
     /// Insert a scheduled job
     pub fn insert_scheduled_job(&self, job: &ScheduledJob) -> SqliteResult<()> {
         self.sqlite.insert_scheduled_job(job)

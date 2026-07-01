@@ -1,5 +1,5 @@
 use super::{
-    helpers::{to_conversation_view, truncate_preview}, ServerHandler,
+    helpers::{recalls_map_for_conversation, to_conversation_view, truncate_preview}, ServerHandler,
 };
 use crate::server::dto::{
         ConversationSummary, SearchResult, ServerEvent,
@@ -62,7 +62,8 @@ impl ServerHandler {
                 .set_viewing(self.connection_id, Some(uuid), self.outbound.clone())
                 .await;
 
-            let view = to_conversation_view(&conv);
+            let recalls = recalls_map_for_conversation(&storage, &conv)?;
+            let view = to_conversation_view(&conv, &recalls);
             let _ = self
                 .outbound
                 .send(ServerEvent::ConversationLoaded { conversation: view });
@@ -251,7 +252,8 @@ impl ServerHandler {
                 conversation_id,
                 conv.messages.len()
             );
-            let view = to_conversation_view(&conv);
+            let recalls = recalls_map_for_conversation(&storage, &conv)?;
+            let view = to_conversation_view(&conv, &recalls);
             self.send_event(ServerEvent::ConversationLoaded {
                 conversation: view,
             })?;

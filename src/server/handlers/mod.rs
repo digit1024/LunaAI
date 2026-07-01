@@ -24,6 +24,7 @@ mod memory;
 mod profile;
 mod spawn;
 
+pub(crate) use helpers::record_and_build_memories_recalled_event;
 pub use spawn::run_scheduled_task;
 
 pub struct ServerContext {
@@ -46,6 +47,7 @@ pub struct ServerContext {
 
 pub(crate) struct RunAgentOptions {
     pub auto_summarize: bool,
+    pub triggering_message_rowid: Option<i64>,
 }
 
 pub struct SessionState {

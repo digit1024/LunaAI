@@ -4,12 +4,15 @@
 
 use cosmic::{
     iced::{Length, Padding},
-    widget::{container, scrollable, text, Column, Row, Space},
+    widget::{container, popover, scrollable, text, Column, Row, Space},
     Element,
 };
 
 use crate::ui::app::{BubbleType, ChatMessage, LunaThinApp, Message};
-use crate::ui::widgets::{message_bubble, typing_indicator, BubbleContext, ToolCallWidget, ToolCallStatus};
+use crate::ui::widgets::{
+    message_bubble, recalled_memories_popup, typing_indicator, BubbleContext, ToolCallWidget,
+    ToolCallStatus,
+};
 
 /// Check if a message is "assistant-like" for styling purposes (not user)
 fn is_assistant_like(msg: &ChatMessage) -> bool {
@@ -153,7 +156,14 @@ fn render_message_bubble<'a>(
         .map(|id| id == &msg.id)
         .unwrap_or(false);
     
-    message_bubble(
+    let recalled_count = msg.recalled_memories.len();
+    let on_show_recalled = if is_user_msg && recalled_count > 0 {
+        Some(Message::ShowRecalledMemories(msg.id.clone()))
+    } else {
+        None
+    };
+
+    let bubble = message_bubble(
         &msg.markdown_items,
         &app.image_cache,
         &msg.content,
@@ -189,7 +199,23 @@ fn render_message_bubble<'a>(
         } else {
             None
         },
-    )
+        recalled_count,
+        on_show_recalled,
+    );
+
+    if is_user_msg && recalled_count > 0 {
+        let show_popup = app.recalled_memories_popup.as_deref() == Some(msg.id.as_str());
+        let mut popover_widget = popover::popover(bubble)
+            .position(popover::Position::Bottom)
+            .on_close(Message::CloseRecalledMemories);
+        if show_popup {
+            popover_widget =
+                popover_widget.popup(recalled_memories_popup::popup(&msg.recalled_memories));
+        }
+        return popover_widget.into();
+    }
+
+    bubble
 }
 
 /// Render a single tool bubble (shows params, status, and result when available)
