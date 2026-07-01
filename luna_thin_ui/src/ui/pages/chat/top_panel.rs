@@ -1,17 +1,16 @@
-//! Top panel - title, new chat button, profile dropdown
+//! Top panel - title, new chat button, profile dropdown, chat actions menu
 
 use cosmic::{
     iced::Length,
-    widget::{self, button, container, dropdown, text, Column, Row, Space},
+    widget::{self, button, container, dropdown, popover, text, Column, Row, Space},
     Element,
 };
 
-use crate::ui::app::{LunaThinApp, Message, ConnectionStatus};
+use crate::ui::app::{ConnectionStatus, LunaThinApp, Message};
+use crate::ui::icons;
 
 pub fn top_panel(app: &LunaThinApp) -> Element<'static, Message> {
-    // Get conversation title
     let title = if app.current_conversation_id.is_some() {
-        // Find title from conversations list
         app.conversations
             .iter()
             .find(|c| Some(&c.id) == app.current_conversation_id.as_ref())
@@ -21,7 +20,6 @@ pub fn top_panel(app: &LunaThinApp) -> Element<'static, Message> {
         "New Chat".to_string()
     };
 
-    // Connection indicator
     let conn_icon = match app.connection_status {
         ConnectionStatus::Connected => "network-wireless-symbolic",
         ConnectionStatus::Connecting => "network-wireless-acquiring-symbolic",
@@ -29,7 +27,6 @@ pub fn top_panel(app: &LunaThinApp) -> Element<'static, Message> {
         ConnectionStatus::Error => "network-error-symbolic",
     };
 
-    // Profile dropdown - need two copies: one for display, one for closure
     let profiles_display: Vec<String> = app.profiles.clone();
     let profiles_closure: Vec<String> = app.profiles.clone();
     let current_idx = profiles_display.iter().position(|p| p == &app.current_profile);
@@ -37,70 +34,36 @@ pub fn top_panel(app: &LunaThinApp) -> Element<'static, Message> {
     let chat_actions_enabled = app.connection_status == ConnectionStatus::Connected
         && app.current_conversation_id.is_some();
     let resume_enabled = chat_actions_enabled && !app.is_current_streaming();
+    let has_conversation = app.current_conversation_id.is_some();
 
-    let compact_button: Element<Message> = if chat_actions_enabled {
-        button::text("Compact")
-            .on_press(Message::SummarizeConversation)
-            .class(widget::button::ButtonClass::Standard)
-            .into()
-    } else {
-        button::text("Compact")
-            .class(widget::button::ButtonClass::Standard)
-            .into()
-    };
-
-    let resume_button: Element<Message> = if resume_enabled {
-        button::text("Resume agent")
-            .on_press(Message::ResumeAgent)
-            .class(widget::button::ButtonClass::Standard)
-            .into()
-    } else {
-        button::text("Resume agent")
-            .class(widget::button::ButtonClass::Standard)
-            .into()
-    };
-
-    let transient_label = if app.current_conversation_internal {
-        "Remove transient"
-    } else {
-        "Mark transient"
-    };
-    let transient_button: Element<Message> = if chat_actions_enabled {
-        button::text(transient_label)
-            .on_press(Message::SetConversationInternal {
-                conversation_id: app.current_conversation_id.clone().unwrap_or_default(),
-                internal: !app.current_conversation_internal,
-            })
-            .class(widget::button::ButtonClass::Standard)
-            .into()
-    } else {
-        button::text(transient_label)
-            .class(widget::button::ButtonClass::Standard)
-            .into()
-    };
-
-    let new_chat_transient_label = if app.new_chat_internal {
-        "New chat: transient"
-    } else {
-        "New chat: normal"
-    };
-    let new_chat_transient_button = button::text(new_chat_transient_label)
-        .on_press(Message::ToggleNewChatInternal)
+    let menu_trigger = button::icon(icons::get_handle("open-menu-symbolic", 16))
+        .on_press(Message::ToggleChatMenu)
         .class(widget::button::ButtonClass::Standard);
+
+    let mut popover_widget = popover::popover(menu_trigger)
+        .position(popover::Position::Bottom)
+        .on_close(Message::CloseChatMenu);
+
+    if app.chat_menu_open {
+        popover_widget = popover_widget.popup(chat_actions_menu(
+            chat_actions_enabled,
+            resume_enabled,
+            has_conversation,
+            app.current_conversation_internal,
+            app.current_conversation_id.clone().unwrap_or_default(),
+        ));
+    }
 
     container(
         Column::new()
             .push(
-                // First row: Connection + Title <-> New chat button
                 Row::new()
-                    .push(
-                        widget::icon::from_name(conn_icon).size(16)
-                    )
+                    .push(widget::icon::from_name(conn_icon).size(16))
                     .push(Space::new().width(8))
                     .push(text(title).size(18))
                     .push(Space::new().width(Length::Fill))
                     .push(
-                        button::icon(crate::ui::icons::get_handle("plus-circle-filled-symbolic", 16))
+                        button::icon(icons::get_handle("plus-circle-filled-symbolic", 16))
                             .on_press(Message::NewConversation)
                             .class(widget::button::ButtonClass::Suggested),
                     )
@@ -108,7 +71,6 @@ pub fn top_panel(app: &LunaThinApp) -> Element<'static, Message> {
                     .align_y(cosmic::iced::Alignment::Center),
             )
             .push(
-                // Divider
                 container(Space::new().height(Length::Fixed(1.0)))
                     .width(Length::Fill)
                     .style(|_theme| cosmic::widget::container::Style {
@@ -119,28 +81,18 @@ pub fn top_panel(app: &LunaThinApp) -> Element<'static, Message> {
                     }),
             )
             .push(
-                // Second row: Profile dropdown
                 Row::new()
                     .push(text("Profile").size(12))
                     .push(Space::new().width(8))
-                    .push(
-                        dropdown(profiles_display, current_idx, move |idx| {
-                            if let Some(profile) = profiles_closure.get(idx) {
-                                Message::ChangeProfile(profile.clone())
-                            } else {
-                                Message::ChangeProfile(String::new())
-                            }
-                        })
-                    )
-                    .push(Space::new().width(8))
-                    .push(compact_button)
-                    .push(Space::new().width(8))
-                    .push(resume_button)
-                    .push(Space::new().width(8))
-                    .push(transient_button)
-                    .push(Space::new().width(8))
-                    .push(new_chat_transient_button)
+                    .push(dropdown(profiles_display, current_idx, move |idx| {
+                        if let Some(profile) = profiles_closure.get(idx) {
+                            Message::ChangeProfile(profile.clone())
+                        } else {
+                            Message::ChangeProfile(String::new())
+                        }
+                    }))
                     .push(Space::new().width(Length::Fill))
+                    .push(popover_widget)
                     .spacing(8)
                     .align_y(cosmic::iced::Alignment::Center),
             )
@@ -152,3 +104,84 @@ pub fn top_panel(app: &LunaThinApp) -> Element<'static, Message> {
     .into()
 }
 
+fn chat_actions_menu(
+    chat_actions_enabled: bool,
+    resume_enabled: bool,
+    has_conversation: bool,
+    is_internal: bool,
+    conversation_id: String,
+) -> Element<'static, Message> {
+    let internal_label = if is_internal {
+        "Mark as regular"
+    } else {
+        "Mark as internal"
+    };
+
+    let compact = menu_item(
+        "compress-symbolic",
+        "Compact",
+        chat_actions_enabled.then(|| Message::SummarizeConversation),
+    );
+    let resume = menu_item(
+        "media-playback-start-symbolic",
+        "Resume agent",
+        resume_enabled.then(|| Message::ResumeAgent),
+    );
+
+    let mut items = Column::new()
+        .push(
+            container(text("Current chat").size(12))
+                .padding([0, 4])
+                .width(Length::Fill),
+        )
+        .push(compact)
+        .push(resume);
+
+    if has_conversation {
+        items = items.push(menu_item(
+            if is_internal {
+                "view-reveal-symbolic"
+            } else {
+                "view-conceal-symbolic"
+            },
+            internal_label,
+            chat_actions_enabled.then(|| Message::SetConversationInternal {
+                conversation_id,
+                internal: !is_internal,
+            }),
+        ));
+    }
+
+    container(items.padding(4).spacing(2).width(Length::Fixed(220.0)))
+        .padding(4)
+        .class(cosmic::style::Container::Card)
+        .into()
+}
+
+fn menu_item(
+    icon_name: &str,
+    label: &str,
+    message: Option<Message>,
+) -> Element<'static, Message> {
+    let label = label.to_string();
+    let row = Row::new()
+        .push(widget::icon::icon(icons::get_handle(icon_name, 16)).size(16))
+        .push(Space::new().width(8))
+        .push(text(label).size(14))
+        .spacing(8)
+        .align_y(cosmic::iced::Alignment::Center)
+        .width(Length::Fill);
+
+    let btn = if let Some(msg) = message {
+        button::custom(row)
+            .on_press(msg)
+            .width(Length::Fill)
+            .class(widget::button::ButtonClass::Text)
+    } else {
+        button::custom(row)
+            .width(Length::Fill)
+            .class(widget::button::ButtonClass::Text)
+    };
+
+    btn.into()
+}

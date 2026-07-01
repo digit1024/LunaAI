@@ -80,7 +80,9 @@ pub enum Message {
 
     // Server events
     ServerEvent(ServerEvent),
-    ServerConnected,
+    ServerConnected {
+        insecure_warning: Option<String>,
+    },
     ServerDisconnected,
     ServerError(String),
 
@@ -101,6 +103,9 @@ pub enum Message {
     ScrollToBottom,
     DismissError,
     DismissInfo,
+    DismissConnectionWarning,
+    ToggleChatMenu,
+    CloseChatMenu,
 
     // Menu
     ShowAbout,
@@ -510,6 +515,8 @@ pub struct LunaThinApp {
     pub inline_error: Option<String>,
     /// Informational message (e.g. summarization started/finished) – show as info banner.
     pub inline_info: Option<String>,
+    pub connection_warning: Option<String>,
+    pub chat_menu_open: bool,
 
     /// Upload UUIDs waiting to be sent with the next message (`SendMessage.attachment_ids`).
     pub pending_attachment_ids: Vec<String>,
@@ -594,6 +601,8 @@ impl LunaThinApp {
             reconnect_in_progress: false,
             inline_error: None,
             inline_info: None,
+            connection_warning: None,
+            chat_menu_open: false,
             pending_attachment_ids: Vec::new(),
             image_cache: std::collections::HashMap::new(),
         }

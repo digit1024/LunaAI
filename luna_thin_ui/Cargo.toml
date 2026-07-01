@@ -44,8 +44,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # WebSocket client
-tokio-tungstenite = "0.29"
-tungstenite = "0.29"
+tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
+tungstenite = { version = "0.29", features = ["native-tls"] }
 
 # Futures
 futures = "0.3"

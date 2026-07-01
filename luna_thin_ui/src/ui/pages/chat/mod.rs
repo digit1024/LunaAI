@@ -64,6 +64,16 @@ pub fn chat_page<'a>(app: &'a LunaThinApp) -> Element<'a, Message> {
             .push(crate::ui::widgets::info_banner(info, Message::DismissInfo));
     }
 
+    // Security warning when connected over unencrypted ws://
+    if let Some(ref warning) = app.connection_warning {
+        layout = layout
+            .push(widget::Space::new().height(Length::Fixed(8.0)))
+            .push(crate::ui::widgets::warning_banner(
+                warning,
+                Message::DismissConnectionWarning,
+            ));
+    }
+
     // Messages area - takes all remaining space
     layout = layout.push(
         widget::container(message_list::message_list(app))

@@ -33,7 +33,16 @@ pub fn handle_chat_messages(
             }
             None
         }
+        Message::ToggleChatMenu => {
+            app.chat_menu_open = !app.chat_menu_open;
+            None
+        }
+        Message::CloseChatMenu => {
+            app.chat_menu_open = false;
+            None
+        }
         Message::SummarizeConversation => {
+            app.chat_menu_open = false;
             match app.current_conversation_id.clone() {
                 None => app.inline_info = Some("No active conversation.".into()),
                 Some(id) => {
@@ -46,6 +55,7 @@ pub fn handle_chat_messages(
             None
         }
         Message::ResumeAgent => {
+            app.chat_menu_open = false;
             match app.current_conversation_id.clone() {
                 None => app.inline_info = Some("No active conversation.".into()),
                 Some(id) => {
@@ -145,6 +155,10 @@ pub fn handle_chat_messages(
         }
         Message::DismissInfo => {
             app.inline_info = None;
+            None
+        }
+        Message::DismissConnectionWarning => {
+            app.connection_warning = None;
             None
         }
         Message::DownloadImage { url, title } => handle_download_image(app, url, title),

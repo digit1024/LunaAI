@@ -11,10 +11,12 @@ pub mod menu_bar;
 pub mod page_header;
 pub mod tool_call;
 pub mod typing_indicator;
+pub mod warning_banner;
 
 pub use error_banner::error_banner;
 pub use info_banner::info_banner;
 pub use message_bubble::{message_bubble, BubbleContext};
 pub use tool_call::{ToolCallWidget, ToolCallStatus, ToolCallMessage};
+pub use warning_banner::warning_banner;
 pub use typing_indicator::typing_indicator;
 

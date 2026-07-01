@@ -30,6 +30,31 @@ struct ConnectionHandle {
 /// Cleared by the background task when the socket loop exits.
 type HandleSlot = Arc<Mutex<Option<Arc<ConnectionHandle>>>>;
 
+/// Result of a successful WebSocket connect attempt.
+#[derive(Debug, Clone)]
+pub struct WsConnectResult {
+    /// Set when the client fell back to unencrypted `ws://`.
+    pub insecure_warning: Option<String>,
+}
+
+impl WsConnectResult {
+    fn secure() -> Self {
+        Self {
+            insecure_warning: None,
+        }
+    }
+
+    fn insecure(secure_failure: String, host: &str, port: u16) -> Self {
+        Self {
+            insecure_warning: Some(format!(
+                "Connected over unencrypted WebSocket (ws://{host}:{port}/ws). \
+                 Your API key and chat traffic are not protected on the network. \
+                 Secure connection (wss://) failed: {secure_failure}"
+            )),
+        }
+    }
+}
+
 pub struct LunaWsClient {
     handle_slot: HandleSlot,
     event_tx: EventTxSlot,
@@ -58,7 +83,7 @@ impl LunaWsClient {
     pub async fn connect(
         &mut self,
         config: ServerConfig,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<WsConnectResult, Box<dyn std::error::Error + Send + Sync>> {
         // Disconnect if already connected
         self.disconnect().await;
 
@@ -71,27 +96,31 @@ impl LunaWsClient {
             Ok((ws_stream, response)) => {
                 tracing::info!("✅ WebSocket connected via wss:// (status: {})", response.status());
                 self.setup_connection(ws_stream).await;
-                return Ok(());
+                return Ok(WsConnectResult::secure());
             }
             Err(e) => {
                 tracing::warn!("⚠️ Secure connection (wss://) failed: {}", e);
-            }
-        }
+                let secure_failure = e.to_string();
 
-        // Fallback to ws://
-        tracing::info!("🔌 Falling back to insecure connection (ws://)");
-        match Self::try_connect(&insecure_uri, &config).await {
-            Ok((ws_stream, response)) => {
-                tracing::info!(
-                    "✅ WebSocket connected via ws:// (fallback, status: {})",
-                    response.status()
-                );
-                self.setup_connection(ws_stream).await;
-                Ok(())
-            }
-            Err(e) => {
-                tracing::error!("❌ Both secure and insecure connections failed");
-                Err(e)
+                tracing::warn!("🔌 Falling back to insecure connection (ws://)");
+                match Self::try_connect(&insecure_uri, &config).await {
+                    Ok((ws_stream, response)) => {
+                        tracing::warn!(
+                            "⚠️ WebSocket connected via ws:// (insecure fallback, status: {})",
+                            response.status()
+                        );
+                        self.setup_connection(ws_stream).await;
+                        return Ok(WsConnectResult::insecure(
+                            secure_failure,
+                            &config.host,
+                            config.port,
+                        ));
+                    }
+                    Err(fallback_err) => {
+                        tracing::error!("❌ Both secure and insecure connections failed");
+                        return Err(fallback_err);
+                    }
+                }
             }
         }
     }

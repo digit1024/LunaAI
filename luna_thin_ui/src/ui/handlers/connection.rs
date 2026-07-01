@@ -48,7 +48,9 @@ pub fn handle_connection_messages(
                 async move {
                     let mut client = ws_client.write().await;
                     match client.connect(config).await {
-                        Ok(_) => Message::ServerConnected,
+                        Ok(result) => Message::ServerConnected {
+                            insecure_warning: result.insecure_warning,
+                        },
                         Err(e) => Message::ServerError(e.to_string()),
                     }
                 },
@@ -59,6 +61,7 @@ pub fn handle_connection_messages(
             app.user_disconnect_flag.store(true, Ordering::Relaxed);
             app.reconnect_in_progress = false;
             app.inline_info = None;
+            app.connection_warning = None;
 
             let ws_client = app.ws_client.clone();
             tokio::spawn(async move {
@@ -68,7 +71,22 @@ pub fn handle_connection_messages(
             app.connection_status = ConnectionStatus::Disconnected;
             None
         }
-        Message::ServerConnected | Message::ConnectionEstablished => {
+        Message::ServerConnected { insecure_warning } => {
+            app.user_disconnect_flag.store(false, Ordering::Relaxed);
+            app.reconnect_in_progress = false;
+            app.connection_status = ConnectionStatus::Connected;
+            app.inline_error = None;
+            app.inline_info = None;
+            app.connection_warning = insecure_warning;
+
+            if app.current_page == Page::Settings {
+                app.current_page = Page::Chat;
+            }
+
+            app.on_connect();
+            None
+        }
+        Message::ConnectionEstablished => {
             app.user_disconnect_flag.store(false, Ordering::Relaxed);
             app.reconnect_in_progress = false;
             app.connection_status = ConnectionStatus::Connected;
@@ -97,6 +115,7 @@ pub fn handle_connection_messages(
             app.connection_status = ConnectionStatus::Connecting;
             app.inline_info = Some("Reconnecting…".to_string());
             app.inline_error = None;
+            app.connection_warning = None;
 
             Some(app::Task::done(cosmic::Action::App(Message::AutoReconnect)))
         }
@@ -132,7 +151,11 @@ pub fn handle_connection_messages(
                         };
 
                         match result {
-                            Ok(_) => return Message::ServerConnected,
+                            Ok(connect_result) => {
+                                return Message::ServerConnected {
+                                    insecure_warning: connect_result.insecure_warning,
+                                };
+                            }
                             Err(e) => {
                                 tracing::warn!("Reconnect attempt {} failed: {}", attempt, e);
                                 tokio::time::sleep(delay).await;

@@ -69,6 +69,7 @@ pub fn handle_history_memories_messages(
             conversation_id,
             internal,
         } => {
+            app.chat_menu_open = false;
             app.send_command(ClientCommand::SetConversationInternal {
                 conversation_id,
                 internal,
