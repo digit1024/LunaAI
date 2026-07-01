@@ -25,7 +25,7 @@ import '../../ui/screens/qween_tts_settings_screen.dart';
 import '../../services/speech_service.dart';
 import '../../services/tts_provider_resolver.dart';
 import '../../services/tts_service.dart';
-import '../../utils/text_processing.dart';
+import '../../tts/message_speech.dart';
 import '../../utils/platform_utils.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/typing_bubble.dart';
@@ -123,7 +123,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     ),
                   );
             final cleanText = lastAssistant != null
-                ? stripEmojisAndMarkdown(lastAssistant.content)
+                ? prepareMessageForTts(lastAssistant.content)
                 : '';
             
             // Only resume if last message is empty (no TTS will play)
@@ -365,7 +365,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _processedMessageIds.add('${lastAssistantId}_tts');
 
     // Empty: don't start TTS; STT will resume when streaming goes false (handled in streaming listener)
-    final cleanText = stripEmojisAndMarkdown(lastAssistant!.content);
+    final cleanText = prepareMessageForTts(lastAssistant!.content);
     if (lastAssistant.content.isEmpty || cleanText.trim().isEmpty) {
       return;
     }
@@ -379,7 +379,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final state = ref.read(appControllerProvider);
     
     // Strip emojis and markdown
-    final cleanText = stripEmojisAndMarkdown(message.content);
+    final cleanText = prepareMessageForTts(message.content);
     if (cleanText.trim().isEmpty) return;
 
     // Get active TTS provider (Built-in or Qween) and stop any ongoing TTS

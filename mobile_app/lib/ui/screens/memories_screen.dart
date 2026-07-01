@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:intl/intl.dart';
 
 import '../../application/app_controller.dart';
 import '../../data/ws/ws_dto.dart';
 import '../widgets/edit_memory_dialog.dart';
+import '../widgets/swipe_list_tile.dart';
 
 class MemoriesScreen extends ConsumerWidget {
   const MemoriesScreen({super.key});
@@ -57,7 +59,8 @@ class MemoriesScreen extends ConsumerWidget {
           Expanded(
             child: state.memories.isEmpty
                 ? _MemoriesEmptyState(searching: searching)
-                : ListView.separated(
+                : SlidableAutoCloseBehavior(
+                    child: ListView.separated(
                     padding: const EdgeInsets.symmetric(vertical: 8),
                     itemCount: state.memories.length,
                     separatorBuilder: (_, __) => const Divider(height: 0),
@@ -73,6 +76,7 @@ class MemoriesScreen extends ConsumerWidget {
                         onDelete: () => _confirmDelete(context, controller, memory),
                       );
                     },
+                  ),
                   ),
           ),
         ],
@@ -165,28 +169,33 @@ class _MemoryTile extends StatelessWidget {
         : '';
     final updated = DateTime.fromMillisecondsSinceEpoch(memory.updatedAt * 1000);
     final dateStr = DateFormat('yyyy-MM-dd HH:mm').format(updated);
+    final colorScheme = Theme.of(context).colorScheme;
 
-    return ListTile(
-      title: Text(
-        '$categoryPrefix${memory.content}',
-        maxLines: 3,
-        overflow: TextOverflow.ellipsis,
-      ),
-      subtitle: Text('Importance ${memory.importance} · $dateStr'),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          IconButton(
-            icon: const Icon(Icons.edit_outlined),
-            tooltip: 'Edit',
-            onPressed: onEdit,
-          ),
-          IconButton(
-            icon: const Icon(Icons.delete_outline),
-            tooltip: 'Delete',
-            onPressed: onDelete,
-          ),
-        ],
+    return SwipeListTile(
+      slidableKey: ValueKey('memory-${memory.id}'),
+      startActions: [
+        SwipeAction(
+          icon: Icons.edit_outlined,
+          label: 'Edit',
+          backgroundColor: colorScheme.primary,
+          onPressed: onEdit,
+        ),
+      ],
+      endActions: [
+        SwipeAction(
+          icon: Icons.delete_outline,
+          label: 'Delete',
+          backgroundColor: colorScheme.error,
+          onPressed: onDelete,
+        ),
+      ],
+      child: ListTile(
+        title: Text(
+          '$categoryPrefix${memory.content}',
+          maxLines: 3,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text('Importance ${memory.importance} · $dateStr'),
       ),
     );
   }

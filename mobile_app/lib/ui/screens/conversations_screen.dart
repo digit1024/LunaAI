@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_slidable/flutter_slidable.dart';
 
 import '../../application/app_controller.dart';
 import '../../application/app_state.dart';
@@ -124,6 +125,16 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
       drawer: _ChatDrawer(
         profile: state.currentProfile.isNotEmpty ? state.currentProfile : config.profile,
         availableProfiles: state.availableProfiles,
+        showInternal: state.showInternal,
+        onToggleShowInternal: () {
+          setState(() {
+            _currentOffset = 0;
+            _hasMore = true;
+            _isLoadingMore = false;
+            _previousConversationCount = 0;
+          });
+          controller.toggleShowInternal();
+        },
         onProfileChanged: (newProfile) {
           controller.changeProfile(newProfile);
         },
@@ -151,30 +162,12 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    decoration: const InputDecoration(
-                      prefixIcon: Icon(Icons.search),
-                      hintText: 'Search history…',
-                    ),
-                    onChanged: controller.search,
-                  ),
-                ),
-                TextButton(
-                  onPressed: () {
-                    setState(() {
-                      _currentOffset = 0;
-                      _hasMore = true;
-                      _isLoadingMore = false;
-                      _previousConversationCount = 0;
-                    });
-                    controller.toggleShowInternal();
-                  },
-                  child: Text(state.showInternal ? 'Hide transient' : 'Show transient'),
-                ),
-              ],
+            child: TextField(
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.search),
+                hintText: 'Search history…',
+              ),
+              onChanged: controller.search,
             ),
           ),
           Expanded(
@@ -182,7 +175,8 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                 ? (_isSearchActive(state)
                     ? const _SearchEmptyPlaceholder()
                     : const _EmptyPlaceholder())
-                : ListView.separated(
+                : SlidableAutoCloseBehavior(
+                    child: ListView.separated(
                     controller: _scrollController,
                     itemCount: _items(state).length + (_hasMore && !state.searchQuery.isNotEmpty ? 1 : 0),
                     separatorBuilder: (_, __) => const Divider(height: 0),
@@ -210,7 +204,11 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                               conversationId: summary.id,
                               currentTitle: summary.title,
                             ),
-                            onDelete: () => controller.deleteConversation(summary.id),
+                            onDelete: () => _confirmDeleteConversation(
+                              context,
+                              controller,
+                              summary,
+                            ),
                             onToggleTransient: () => controller.setConversationInternal(
                               summary.id,
                               !summary.internal,
@@ -237,6 +235,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                       );
                     },
                   ),
+                  ),
           ),
         ],
       ),
@@ -246,6 +245,38 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
         child: const Icon(Icons.add),
       ),
     );
+  }
+
+  Future<void> _confirmDeleteConversation(
+    BuildContext context,
+    AppController controller,
+    ConversationSummary summary,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete conversation?'),
+        content: Text(
+          summary.title.isNotEmpty ? summary.title : 'Untitled',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      controller.deleteConversation(summary.id);
+    }
   }
 }
 
@@ -427,6 +458,8 @@ class _ChatDrawer extends ConsumerStatefulWidget {
   const _ChatDrawer({
     required this.profile,
     required this.availableProfiles,
+    required this.showInternal,
+    required this.onToggleShowInternal,
     required this.onProfileChanged,
     required this.onStartNew,
     required this.onHistory,
@@ -437,6 +470,8 @@ class _ChatDrawer extends ConsumerStatefulWidget {
 
   final String profile;
   final List<String> availableProfiles;
+  final bool showInternal;
+  final VoidCallback onToggleShowInternal;
   final Function(String) onProfileChanged;
   final VoidCallback onStartNew;
   final VoidCallback onHistory;
@@ -656,6 +691,13 @@ class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
               widget.onHistory();
               Navigator.pop(context);
             },
+          ),
+          SwitchListTile(
+            secondary: const Icon(Icons.visibility_off_outlined),
+            title: const Text('Show internal'),
+            subtitle: const Text('Include internal conversations in history'),
+            value: widget.showInternal,
+            onChanged: (_) => widget.onToggleShowInternal(),
           ),
           // Memories
           ListTile(

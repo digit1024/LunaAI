@@ -10,7 +10,7 @@ import 'package:luna_mobile/core/theme/app_theme.dart';
 import 'package:luna_mobile/services/notification_service.dart';
 import 'package:luna_mobile/services/foreground_guard.dart';
 import 'package:luna_mobile/services/tts_service.dart';
-import 'package:luna_mobile/utils/text_processing.dart';
+import 'package:luna_mobile/tts/message_speech.dart';
 import 'wear_chat_screen.dart';
 import 'wear_setup_screen.dart';
 import 'wear_connecting_screen.dart';
@@ -141,7 +141,7 @@ class _AmbientScreen extends ConsumerWidget {
       ),
     );
     final snippet = lastAssistant.content.isNotEmpty
-        ? stripEmojisAndMarkdown(lastAssistant.content)
+        ? prepareMessageForTts(lastAssistant.content)
         : '';
 
     return Scaffold(

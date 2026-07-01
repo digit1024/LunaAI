@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
+import '../tts/tts_text_chunker.dart';
 import 'tts_provider.dart';
 import 'tts_service.dart';
 
@@ -20,8 +23,41 @@ class BuiltInTtsProvider implements TtsProvider {
     String text, {
     VoidCallback? onComplete,
   }) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      onComplete?.call();
+      return;
+    }
+
     await _ttsService.setLanguage(_getLanguage());
-    await _ttsService.speak(text, onComplete: onComplete);
+
+    final chunks = chunkTextForTts(
+      trimmed,
+      maxLen: kBuiltInTtsMaxInputLength,
+    );
+    if (chunks.isEmpty) {
+      onComplete?.call();
+      return;
+    }
+
+    for (var i = 0; i < chunks.length; i++) {
+      final isLast = i == chunks.length - 1;
+      final chunkDone = Completer<void>();
+
+      await _ttsService.stop();
+      await _ttsService.speak(
+        chunks[i],
+        onComplete: () {
+          if (!chunkDone.isCompleted) {
+            chunkDone.complete();
+          }
+          if (isLast) {
+            onComplete?.call();
+          }
+        },
+      );
+      await chunkDone.future;
+    }
   }
 
   @override

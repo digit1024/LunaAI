@@ -11,7 +11,7 @@ import 'package:luna_mobile/application/app_state.dart';
 import 'package:luna_mobile/core/config/stt_preferences.dart';
 import 'package:luna_mobile/core/config/tts_preferences.dart';
 import 'package:luna_mobile/services/tts_service.dart';
-import 'package:luna_mobile/utils/text_processing.dart';
+import 'package:luna_mobile/tts/message_speech.dart';
 import 'package:luna_mobile/utils/platform_utils.dart';
 import 'widgets/wear_message_bubble.dart';
 import 'widgets/wear_voice_overlay.dart';
@@ -111,7 +111,7 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
     if (message.content.isEmpty) return;
 
     final ttsPrefs = ref.read(ttsPreferencesProvider);
-    final cleanText = stripEmojisAndMarkdown(message.content);
+    final cleanText = prepareMessageForTts(message.content);
     if (cleanText.trim().isEmpty) return;
 
     final ttsService = ref.read(ttsServiceProvider);

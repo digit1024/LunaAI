@@ -15,41 +15,6 @@ const String kQweenTtsModel = 'qwen3-tts-flash';
 /// Qwen TTS sample rate (24 kHz PCM).
 const int kQweenTtsSampleRate = 24000;
 
-/// Max input length per API (qwen3-tts-flash).
-const int kQweenTtsMaxInputLength = 600;
-
-/// Splits text into chunks ≤ [maxLen] chars. Prefers sentence, then word boundaries.
-List<String> chunkTextForTts(String text, {int maxLen = kQweenTtsMaxInputLength}) {
-  final trimmed = text.trim();
-  if (trimmed.isEmpty) return [];
-
-  final chunks = <String>[];
-  var start = 0;
-
-  while (start < trimmed.length) {
-    final end = (start + maxLen).clamp(0, trimmed.length);
-    if (end >= trimmed.length) {
-      chunks.add(trimmed.substring(start).trim());
-      break;
-    }
-
-    // Prefer sentence boundary: . ! ?
-    var cut = end;
-    final lastSentence = trimmed.lastIndexOf(RegExp(r'[.!?]\s+'), end);
-    if (lastSentence > start) {
-      cut = lastSentence + 1;
-    } else {
-      final lastSpace = trimmed.lastIndexOf(' ', end);
-      if (lastSpace > start) cut = lastSpace + 1;
-    }
-
-    chunks.add(trimmed.substring(start, cut).trim());
-    start = cut;
-  }
-
-  return chunks.where((c) => c.isNotEmpty).toList();
-}
-
 /// Client for Qwen TTS API.
 ///
 /// Response format (discovered via probing):

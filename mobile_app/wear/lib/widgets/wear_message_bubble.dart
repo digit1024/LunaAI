@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:luna_mobile/application/app_state.dart';
-import 'package:luna_mobile/utils/text_processing.dart';
+import 'package:luna_mobile/tts/message_speech.dart';
 
 class WearMessageBubble extends StatelessWidget {
   const WearMessageBubble({
@@ -22,7 +22,7 @@ class WearMessageBubble extends StatelessWidget {
     }
 
     final content = isAssistant
-        ? stripEmojisAndMarkdown(message.content)
+        ? prepareMessageForTts(message.content)
         : message.content;
 
     return Align(

@@ -6,6 +6,7 @@ import 'package:flutter_sound/flutter_sound.dart';
 
 import '../core/config/qween_tts_preferences.dart';
 import '../data/http/qween_tts_client.dart';
+import '../tts/tts_text_chunker.dart';
 import '../utils/platform_utils.dart';
 import 'tts_provider.dart';
 
@@ -17,6 +18,9 @@ import 'tts_provider.dart';
 /// Splits text into chunks ≤ 600 chars (API limit) and plays them sequentially.
 class QweenTtsProvider implements TtsProvider {
   QweenTtsProvider(this._ref);
+
+  /// PCM16 mono bytes produced per millisecond at 24 kHz.
+  static const double _pcmBytesPerMs = kQweenTtsSampleRate * 2 / 1000;
 
   final Ref _ref;
 
@@ -69,16 +73,21 @@ class QweenTtsProvider implements TtsProvider {
 
     try {
       for (var i = 0; i < chunks.length && !_stopped; i++) {
-        await _playSingleChunk(
-          apiKey: apiKey,
-          voice: qweenPrefs.voice,
-          text: chunks[i],
-          isLast: i == chunks.length - 1,
-        );
+        try {
+          await _playSingleChunk(
+            apiKey: apiKey,
+            voice: qweenPrefs.voice,
+            text: chunks[i],
+            isLast: i == chunks.length - 1,
+          );
+        } catch (e, st) {
+          debugPrint('Qween TTS: chunk ${i + 1}/${chunks.length} failed: $e\n$st');
+        }
       }
-    } catch (e) {
-      debugPrint('Qween TTS error: $e');
-      _callOnComplete();
+    } finally {
+      if (!_stopped) {
+        _callOnComplete();
+      }
     }
   }
 
@@ -99,15 +108,12 @@ class QweenTtsProvider implements TtsProvider {
     final playbackDone = Completer<void>();
     bool playbackCompleted = false;
 
-    // Helper to complete playback and call onComplete if needed
+    // Helper to mark this audio chunk as finished playing.
     void completePlayback() {
       if (!playbackCompleted && !_stopped) {
         playbackCompleted = true;
         if (!playbackDone.isCompleted) {
           playbackDone.complete();
-        }
-        if (isLast) {
-          _callOnComplete();
         }
       }
     }
@@ -132,13 +138,6 @@ class QweenTtsProvider implements TtsProvider {
             // flutter_sound startPlayerFromStream only has onBufferUnderflow (no whenFinished)
             onBufferUnderflow: () {
               if (!_allChunksFed || _stopped || playbackCompleted) return;
-              // Intermediate chunks: only complete playbackDone so we can proceed to next chunk (no signal to app)
-              if (!isLast) {
-                playbackCompleted = true;
-                if (!playbackDone.isCompleted) playbackDone.complete();
-                return;
-              }
-              // Last chunk: complete playback and send onComplete signal to app
               completePlayback();
             },
           );
@@ -170,26 +169,13 @@ class QweenTtsProvider implements TtsProvider {
       // Mark that all chunks have been fed to the player
       _allChunksFed = true;
 
-      // For intermediate chunks: wait for onBufferUnderflow (should fire when buffer drains)
-      // For last chunk: onBufferUnderflow often never fires on Android (flutter_sound #1058),
-      // so calculate duration from PCM bytes and delay that long to let it finish.
-      if (isLast) {
-        final totalDurationMs = _calculateTotalDurationMillis(chunkPcmBytes);
-        final elapsedMs = playbackStartTime != null
-            ? DateTime.now().difference(playbackStartTime).inMilliseconds
-            : 0;
-        
-        // Remaining time is total duration minus what's played, with a safety buffer.
-        final remainingMs = (totalDurationMs - elapsedMs).clamp(0, 999999) + 250;
-        debugPrint('Qween TTS: total=${totalDurationMs}ms, elapsed=${elapsedMs}ms, delay=${remainingMs}ms');
-
-        await Future<void>.delayed(Duration(milliseconds: remainingMs));
-        completePlayback();
-        await playbackDone.future; // Will resolve immediately
-      } else {
-        // Intermediate chunk: wait for onBufferUnderflow to fire (playback actually done)
-        await playbackDone.future;
-      }
+      await _waitForChunkPlayback(
+        pcmBytes: chunkPcmBytes,
+        playbackStartTime: playbackStartTime,
+        playbackDone: playbackDone,
+        label: isLast ? 'last' : 'intermediate',
+      );
+      completePlayback();
     } finally {
       _client?.dispose();
       _client = null;
@@ -208,15 +194,11 @@ class QweenTtsProvider implements TtsProvider {
 
     bool playbackCompleted = false;
 
-    // Helper to complete playback and call onComplete if needed
     void completePlayback() {
       if (!playbackCompleted && !_stopped) {
         playbackCompleted = true;
         if (!playbackDone.isCompleted) {
           playbackDone.complete();
-        }
-        if (isLast) {
-          _callOnComplete();
         }
       }
     }
@@ -225,14 +207,12 @@ class QweenTtsProvider implements TtsProvider {
       final url = await _client!.synthesizeUrl(text);
       if (_stopped || url == null) {
         playbackDone.complete();
-        if (isLast) _callOnComplete();
         return;
       }
 
       final wavBytes = await _client!.downloadWav(url);
       if (_stopped || wavBytes == null || wavBytes.isEmpty) {
         playbackDone.complete();
-        if (isLast) _callOnComplete();
         return;
       }
 
@@ -250,12 +230,6 @@ class QweenTtsProvider implements TtsProvider {
         bufferSize: 8192,
         onBufferUnderflow: () {
           if (!_allChunksFed || _stopped || playbackCompleted) return;
-          // Intermediate: only complete playbackDone (no signal to app)
-          if (!isLast) {
-            playbackCompleted = true;
-            if (!playbackDone.isCompleted) playbackDone.complete();
-            return;
-          }
           completePlayback();
         },
       );
@@ -263,30 +237,58 @@ class QweenTtsProvider implements TtsProvider {
 
       await _player!.feedUint8FromStream(pcmData);
       _allChunksFed = true;
-      
-      // For intermediate chunks: wait for onBufferUnderflow (should fire when buffer drains)
-      // For last chunk: use calculated duration to wait for playback to finish
-      if (isLast) {
-        final totalDurationMs = _calculateTotalDurationMillis(pcmData.length);
-        final elapsedMs = DateTime.now().difference(playbackStartTime).inMilliseconds;
-        final remainingMs = (totalDurationMs - elapsedMs).clamp(0, 999999) + 250;
-        debugPrint('Qween TTS URL: total=${totalDurationMs}ms, elapsed=${elapsedMs}ms, delay=${remainingMs}ms');
 
-        await Future<void>.delayed(Duration(milliseconds: remainingMs));
-        completePlayback();
-        await playbackDone.future;
-      } else {
-        // Intermediate chunk: wait for onBufferUnderflow to fire
-        await playbackDone.future;
-      }
+      await _waitForChunkPlayback(
+        pcmBytes: pcmData.length,
+        playbackStartTime: playbackStartTime,
+        playbackDone: playbackDone,
+        label: isLast ? 'url-last' : 'url-intermediate',
+      );
+      completePlayback();
     } catch (e) {
       debugPrint('Qween TTS URL fallback error: $e');
       playbackDone.complete();
-      if (isLast) _callOnComplete();
     } finally {
       _client?.dispose();
       _client = null;
     }
+  }
+
+  /// Waits until buffered PCM audio should have finished playing.
+  ///
+  /// [onBufferUnderflow] is unreliable on Android (flutter_sound #1058) and can
+  /// fire early while audio is still playing. We always wait at least the
+  /// estimated remaining playback time based on bytes fed vs elapsed time.
+  Future<void> _waitForChunkPlayback({
+    required int pcmBytes,
+    required DateTime? playbackStartTime,
+    required Completer<void> playbackDone,
+    required String label,
+  }) async {
+    if (pcmBytes <= 0) {
+      return;
+    }
+
+    final elapsedMs = playbackStartTime != null
+        ? DateTime.now().difference(playbackStartTime).inMilliseconds
+        : 0;
+    final waitMs = _remainingPlaybackMs(pcmBytes, elapsedMs);
+    final totalMs = _calculateTotalDurationMillis(pcmBytes);
+
+    debugPrint(
+      'Qween TTS: wait $label total=${totalMs}ms elapsed=${elapsedMs}ms remaining=${waitMs}ms',
+    );
+
+    // Always wait the estimated remaining time. onBufferUnderflow can fire early
+    // on Android while audio is still buffered (flutter_sound #1058).
+    await Future<void>.delayed(Duration(milliseconds: waitMs));
+  }
+
+  int _remainingPlaybackMs(int pcmBytes, int elapsedSincePlaybackStartMs) {
+    final playedBytes =
+        (elapsedSincePlaybackStartMs * _pcmBytesPerMs).round().clamp(0, pcmBytes);
+    final remainingBytes = pcmBytes - playedBytes;
+    return _calculateTotalDurationMillis(remainingBytes) + 500;
   }
 
   /// Calculates the total duration of PCM data in milliseconds.

@@ -9,6 +9,7 @@ import '../../application/app_controller.dart';
 import '../../application/app_state.dart';
 import '../../core/config/server_config.dart';
 import '../../services/tts_provider_resolver.dart';
+import '../../tts/message_speech.dart';
 
 /// Slide direction for bubble animations
 enum SlideDirection { left, right, center }
@@ -395,14 +396,7 @@ class _TtsPlayButtonState extends ConsumerState<_TtsPlayButton> {
       await ttsProvider.stop();
       setState(() => _isPlaying = false);
     } else {
-      // Clean text (remove markdown)
-      final cleanText = widget.text
-          .replaceAll(RegExp(r'#+\s+'), '') // Remove headers
-          .replaceAll(RegExp(r'\*\*(.*?)\*\*'), r'$1') // Remove bold
-          .replaceAll(RegExp(r'\*(.*?)\*'), r'$1') // Remove italic
-          .replaceAll(RegExp(r'`(.*?)`'), r'$1') // Remove code
-          .replaceAll(RegExp(r'\[(.*?)\]\(.*?\)'), r'$1') // Remove links
-          .trim();
+      final cleanText = prepareMessageForTts(widget.text);
 
       if (cleanText.isNotEmpty) {
         setState(() => _isPlaying = true);
