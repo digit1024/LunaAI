@@ -1,7 +1,7 @@
 //! Memory RAG: automatic recall of relevant long-term memories.
 //!
 //! Behavior (per user turn, both interactive chat and scheduled tasks):
-//!   1. Build a query from the current user message + last N prior user messages.
+//!   1. Build a query from the current user message + recent user/assistant turns.
 //!   2. Embed the query and run vector search over the `memory` table.
 //!   3. Filter by configured `max_distance` and `min_importance`.
 //!   4. Cap the resulting set to fit a token budget (`max_memory_tokens`).
@@ -29,6 +29,8 @@ use tokio::sync::Mutex;
 pub const MEMORY_BLOCK_PREFIX: &str = "[Relevant memories from past conversations]";
 const MEMORY_BLOCK_FOOTER: &str =
     "[End of memories - use these only when relevant to the user's question]";
+/// Hard cap for embedding query size so larger history windows don't bloat latency/cost.
+const MAX_RECALL_QUERY_CHARS: usize = 4000;
 
 /// Result of a memory RAG injection.
 pub struct InjectionOutcome {
@@ -48,26 +50,49 @@ fn is_memory_block(msg: &LlmMessage) -> bool {
     matches!(msg.role, Role::System) && msg.content.starts_with(MEMORY_BLOCK_PREFIX)
 }
 
-/// Build the recall query from the most recent user turns in `messages`.
-/// Concatenates up to `query_history_turns + 1` user messages (newest first),
-/// joined by newlines. Returns `None` if no user message is found.
+/// Build the recall query from recent dialogue turns in `messages`.
+/// Includes up to `query_history_turns + 1` user turns plus assistant context,
+/// newest-first, with a hard character cap for stable embedding size.
 fn build_query(messages: &[LlmMessage], query_history_turns: usize) -> Option<String> {
-    let max_turns = query_history_turns.saturating_add(1);
-    let user_msgs: Vec<&str> = messages
-        .iter()
-        .rev()
-        .filter(|m| matches!(m.role, Role::User))
-        .map(|m| m.content.as_str())
-        .filter(|c| !c.trim().is_empty())
-        .take(max_turns)
-        .collect();
+    let max_user_turns = query_history_turns.saturating_add(1);
+    let max_assistant_turns = query_history_turns.max(1);
+    let mut user_count = 0usize;
+    let mut assistant_count = 0usize;
+    let mut snippets: Vec<String> = Vec::new();
 
-    if user_msgs.is_empty() {
+    for msg in messages.iter().rev() {
+        let content = msg.content.trim();
+        if content.is_empty() {
+            continue;
+        }
+
+        match msg.role {
+            Role::User if user_count < max_user_turns => {
+                snippets.push(format!("User: {content}"));
+                user_count += 1;
+            }
+            Role::Assistant if assistant_count < max_assistant_turns => {
+                snippets.push(format!("Assistant: {content}"));
+                assistant_count += 1;
+            }
+            _ => {}
+        }
+
+        if user_count >= max_user_turns && assistant_count >= max_assistant_turns {
+            break;
+        }
+    }
+
+    if user_count == 0 {
         return None;
     }
 
     // Newest first reads better for the embedding model: the current question is the anchor.
-    Some(user_msgs.join("\n"))
+    let mut query = snippets.join("\n");
+    if query.chars().count() > MAX_RECALL_QUERY_CHARS {
+        query = query.chars().take(MAX_RECALL_QUERY_CHARS).collect();
+    }
+    Some(query)
 }
 
 /// Find a stable insertion position for the memory block: right after any
@@ -291,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn build_query_uses_recent_user_turns_newest_first() {
+    fn build_query_uses_recent_dialogue_turns_newest_first() {
         let msgs = vec![
             Message::new(Role::User, "first question".into()),
             Message::new(Role::Assistant, "first answer".into()),
@@ -300,19 +325,21 @@ mod tests {
             Message::new(Role::User, "third question".into()),
         ];
         let q = build_query(&msgs, 1).expect("query");
-        assert!(q.starts_with("third question"));
-        assert!(q.contains("second question"));
+        assert!(q.starts_with("User: third question"));
+        assert!(q.contains("Assistant: second answer"));
+        assert!(q.contains("User: second question"));
         assert!(!q.contains("first question"));
     }
 
     #[test]
-    fn build_query_skips_empty_user_messages() {
+    fn build_query_skips_empty_messages() {
         let msgs = vec![
             Message::new(Role::User, "".into()),
+            Message::new(Role::Assistant, "   ".into()),
             Message::new(Role::User, "real question".into()),
         ];
         let q = build_query(&msgs, 2).expect("query");
-        assert_eq!(q, "real question");
+        assert!(q.contains("User: real question"));
     }
 
     #[test]

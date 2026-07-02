@@ -112,6 +112,7 @@ api_key = ""  # optional, falls back to OPENAI_API_KEY
 
 # Memory retrieval control (only used when embedding is enabled)
 max_memories = 3           # Maximum memories to return per query (default: 3)
+# query_history_turns = 10  # Prior user turns to include (assistant turns are also used as context).
 # max_distance = 0.4       # Maximum cosine distance (0.0-2.0, lower = more similar). Comment out for no filter.
 # min_importance = 2       # Minimum importance score (1-5). Comment out for no filter.
 

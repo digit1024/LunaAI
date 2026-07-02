@@ -332,7 +332,7 @@ fn default_max_memory_tokens() -> Option<usize> {
 }
 
 fn default_query_history_turns() -> usize {
-    2
+    10
 }
 
 #[derive(Debug, Deserialize, Clone, Serialize)]
@@ -361,6 +361,7 @@ pub struct EmbeddingConfig {
     #[serde(default = "default_max_memory_tokens")]
     pub max_memory_tokens: Option<usize>,
     /// Number of prior user turns (in addition to the current one) included when building the recall query.
+    /// Recent assistant turns are also included as context.
     #[serde(default = "default_query_history_turns")]
     pub query_history_turns: usize,
 }
