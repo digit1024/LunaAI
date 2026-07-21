@@ -4,6 +4,7 @@
 
 use cosmic::{
     app::{self, Core},
+    core::Auto,
     iced::Subscription,
     widget::{self, menu, text_editor},
     Application, Element,
@@ -1765,7 +1766,11 @@ impl Application for LunaThinApp {
         &mut self.core
     }
 
-    fn init(core: Core, _flags: Self::Flags) -> (Self, app::Task<Self::Message>) {
+    fn init(mut core: Core, _flags: Self::Flags) -> (Self, app::Task<Self::Message>) {
+        // Ask COSMIC to apply the compositor's frosted-glass effect to the main
+        // window and popups when the session supports it.
+        core.set_auto_blur(Auto::Window | Auto::Popup);
+
         // Initialize icon cache
         if let Err(e) = crate::ui::icons::ICON_CACHE
             .set(std::sync::Mutex::new(crate::ui::icons::IconCache::new()))
@@ -1792,6 +1797,15 @@ impl Application for LunaThinApp {
             |tts_client| cosmic::Action::App(Message::TtsClientInitialized(tts_client)),
         );
         
+        // libcosmic normally receives this after the Wayland compositor reports
+        // blur support. Request the same state transition at startup so the
+        // window uses the system's frosted surface immediately.
+        let frosted_startup_task = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            app::Task::done(cosmic::Action::Cosmic(app::Action::BlurEnabled))
+        } else {
+            app::Task::none()
+        };
+
         // Auto-connect if server config is valid (has host and api_key)
         if !app.server_config.host.is_empty() && !app.server_config.api_key.is_empty() {
             tracing::info!("🔌 Will auto-connect after TTS initialization...");
@@ -1801,7 +1815,7 @@ impl Application for LunaThinApp {
         }
         
         // Always initialize TTS client - it will complete asynchronously
-        (app, tts_init_task)
+        (app, app::Task::batch([tts_init_task, frosted_startup_task]))
     }
 
     fn update(&mut self, message: Self::Message) -> app::Task<Self::Message> {

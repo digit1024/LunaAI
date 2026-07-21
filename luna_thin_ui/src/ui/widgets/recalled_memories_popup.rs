@@ -71,7 +71,7 @@ fn memory_card(memory: &MemoryView) -> Element<'static, Message> {
     .width(Length::Fill)
     .style(|theme| cosmic::widget::container::Style {
         background: Some(cosmic::iced::Background::Color(
-            theme.cosmic().background.component.hover.into(),
+            theme.cosmic().background(theme.transparent).component.hover.into(),
         )),
         border: cosmic::iced::Border {
             color: cosmic::iced::Color::from_rgb(0.35, 0.35, 0.35),

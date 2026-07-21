@@ -180,7 +180,7 @@ fn memory_card<'a>(
     .width(Length::Fill)
     .style(|theme| cosmic::widget::container::Style {
         background: Some(cosmic::iced::Background::Color(
-            theme.cosmic().background.component.hover.into(),
+            theme.cosmic().background(theme.transparent).component.hover.into(),
         )),
         border: cosmic::iced::Border {
             color: cosmic::iced::Color::TRANSPARENT,

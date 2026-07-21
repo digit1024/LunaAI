@@ -307,10 +307,10 @@ fn conversation_card<'a>(
         if is_selected {
             cosmic::widget::container::Style {
                 background: Some(cosmic::iced::Background::Color(
-                    theme.cosmic().primary.component.hover.into(),
+                    theme.cosmic().primary(theme.transparent).component.hover.into(),
                 )),
                 border: cosmic::iced::Border {
-                    color: theme.cosmic().primary.base.into(),
+                    color: theme.cosmic().primary(theme.transparent).base.into(),
                     width: 2.0,
                     radius: 8.0.into(),
                 },
@@ -319,7 +319,7 @@ fn conversation_card<'a>(
         } else {
             cosmic::widget::container::Style {
                 background: Some(cosmic::iced::Background::Color(
-                    theme.cosmic().background.component.hover.into(),
+                    theme.cosmic().background(theme.transparent).component.hover.into(),
                 )),
                 border: cosmic::iced::Border {
                     color: cosmic::iced::Color::TRANSPARENT,

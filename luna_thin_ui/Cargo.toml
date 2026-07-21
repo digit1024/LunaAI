@@ -9,8 +9,8 @@ name = "luna-thin"
 path = "src/main.rs"
 
 [dependencies]
-# COSMIC desktop framework
-libcosmic = { git = "https://github.com/pop-os/libcosmic.git", branch = "master", default-features = false, features = ["multi-window", "tokio", "winit", "wayland", "about", "wgpu", "dbus-config", "rfd", "markdown", "highlighter"] }
+# COSMIC desktop framework. Pin to Cosmic Files' frosted-window revision.
+libcosmic = { git = "https://github.com/pop-os/libcosmic.git", rev = "8cb10bf6e24b86a7d2a9cf8c662d3e0154db1b21", default-features = false, features = ["multi-window", "tokio", "winit", "wayland", "about", "wgpu", "dbus-config", "rfd", "markdown", "highlighter"] }
 
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }

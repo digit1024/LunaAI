@@ -11,6 +11,8 @@ pub fn settings() -> cosmic::app::Settings {
     cosmic::app::Settings::default()
         .antialiasing(true)
         .client_decorations(true)
+        // Required for the compositor to render the automatic window blur.
+        .transparent(true)
         .size_limits(
             cosmic::iced::Limits::NONE
                 .min_width(800.0)

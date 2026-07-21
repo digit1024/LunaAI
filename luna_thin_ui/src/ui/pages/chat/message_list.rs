@@ -272,7 +272,7 @@ fn render_tool_bubble(app: &LunaThinApp, msg: &ChatMessage, idx: usize) -> Eleme
         .padding(Padding::from([12, 16]))
         .style(move |theme| cosmic::widget::container::Style {
             background: Some(cosmic::iced::Background::Color(
-                theme.cosmic().background.component.hover.into(),
+                theme.cosmic().background(theme.transparent).component.hover.into(),
             )),
             border: cosmic::iced::Border {
                 width: 0.0,

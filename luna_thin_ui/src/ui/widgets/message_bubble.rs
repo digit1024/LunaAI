@@ -109,7 +109,7 @@ pub fn user_bubble<'a>(
     .padding(Padding::from([12, 16]))
     .style(|theme| cosmic::widget::container::Style {
         background: Some(cosmic::iced::Background::Color(
-            theme.cosmic().primary.component.hover.into(),
+            theme.cosmic().primary(theme.transparent).component.hover.into(),
         )),
         border: cosmic::iced::Border {
             width: 0.0,
@@ -265,7 +265,7 @@ pub fn assistant_bubble<'a>(
         .padding(Padding::from([12, 16]))
         .style(move |theme| cosmic::widget::container::Style {
             background: Some(cosmic::iced::Background::Color(
-                theme.cosmic().background.component.hover.into(),
+                theme.cosmic().background(theme.transparent).component.hover.into(),
             )),
             border: cosmic::iced::Border {
                 width: 0.0,
