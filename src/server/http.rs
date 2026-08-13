@@ -1,25 +1,32 @@
 use super::handlers::ServerContext;
 use super::websocket;
 use axum::{
+    body::Body,
     extract::{
         ws::WebSocketUpgrade,
-        Path, State,
+        DefaultBodyLimit, Path, Request, State,
     },
     http::{header, HeaderMap, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Json, Response},
     routing::{delete, get, post},
     Router,
-    body::Body,
 };
 use futures::stream;
 use multer::Multipart;
 use serde::Serialize;
-use std::path::{Path as StdPath, PathBuf};
+use std::path::{Component, Path as StdPath, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use subtle::ConstantTimeEq;
+use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
 const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024; // 50 MB
+/// Cap for non-upload HTTP JSON/small requests.
+const MAX_HTTP_BODY_BYTES: usize = 2 * 1024 * 1024;
+/// Idle/request timeout for HTTP handlers only (not WebSocket).
+const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Serialize)]
 pub struct AttachFileResponse {
@@ -75,15 +82,37 @@ fn authorize(headers: &HeaderMap, expected_key: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn ct_eq_str(a: &str, b: &str) -> bool {
+    bool::from(a.as_bytes().ct_eq(b.as_bytes()))
+}
+
+/// True when `name` is exactly `{attachment_uid}.{ext}` with a single extension segment.
+fn attachment_filename_matches(name: &str, attachment_uid: &str) -> bool {
+    let Some((stem, ext)) = name.split_once('.') else {
+        return false;
+    };
+    !ext.is_empty()
+        && !ext.contains('.')
+        && !stem.is_empty()
+        && stem == attachment_uid
+}
+
+async fn require_api_key(
+    State(ctx): State<Arc<ServerContext>>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    if !authorize(request.headers(), &ctx.server_cfg.api_key) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    Ok(next.run(request).await)
+}
+
 pub async fn attach_file_handler(
     State(ctx): State<Arc<ServerContext>>,
     headers: HeaderMap,
     body: Body,
 ) -> Result<Json<AttachFileResponse>, StatusCode> {
-    if !authorize(&headers, &ctx.server_cfg.api_key) {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-
     let content_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|ct| ct.to_str().ok())
@@ -157,11 +186,10 @@ pub async fn attach_file_handler(
     let stored_path = path.display().to_string();
 
     tracing::info!(
-        "File uploaded: original_name={}, uid={}, stored_path={}, size={}",
-        original_name,
-        uid,
-        stored_path,
-        data.len()
+        uid = %uid,
+        original_name = %original_name,
+        path = %stored_path,
+        "Stored upload"
     );
 
     Ok(Json(AttachFileResponse {
@@ -174,14 +202,18 @@ pub async fn attach_file_handler(
 pub async fn remove_file_handler(
     State(ctx): State<Arc<ServerContext>>,
     Path(uid): Path<String>,
-    headers: HeaderMap,
 ) -> Result<Json<RemoveFileResponse>, StatusCode> {
-    if !authorize(&headers, &ctx.server_cfg.api_key) {
-        return Err(StatusCode::UNAUTHORIZED);
+    // Reject path-ish or non-uuid-looking ids early.
+    if uid.is_empty()
+        || uid.contains('/')
+        || uid.contains('\\')
+        || uid.contains("..")
+        || !uid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err(StatusCode::BAD_REQUEST);
     }
 
     let uploads_base = ctx.config.uploads_dir();
-    let prefix = format!("{}.", uid);
     let mut removed = false;
     if let Ok(mut rd) = tokio::fs::read_dir(&uploads_base).await {
         while let Ok(Some(sub)) = rd.next_entry().await {
@@ -193,7 +225,7 @@ pub async fn remove_file_handler(
                 while let Ok(Some(e)) = inner.next_entry().await {
                     let name = e.file_name();
                     if let Some(s) = name.to_str() {
-                        if s.starts_with(&prefix) {
+                        if attachment_filename_matches(s, &uid) {
                             if tokio::fs::remove_file(e.path()).await.is_ok() {
                                 removed = true;
                                 tracing::info!("Removed upload {}", s);
@@ -214,13 +246,7 @@ pub async fn remove_file_handler(
 
 pub async fn list_mcp_servers_handler(
     State(ctx): State<Arc<ServerContext>>,
-    headers: HeaderMap,
 ) -> Result<Json<ListMCPServersResponse>, StatusCode> {
-    // Check authorization
-    if !authorize(&headers, &ctx.server_cfg.api_key) {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-
     let registry = ctx.mcp_registry.read().await;
     let servers_with_status = registry
         .get_all_server_names_and_statuses()
@@ -275,14 +301,10 @@ pub async fn list_mcp_servers_handler(
     Ok(Json(ListMCPServersResponse { servers }))
 }
 
-async fn ws_handler(
+pub async fn ws_handler(
     ws: WebSocketUpgrade,
-    headers: HeaderMap,
     State(ctx): State<Arc<ServerContext>>,
 ) -> Response {
-    if !authorize(&headers, &ctx.server_cfg.api_key) {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
     let ctx = ctx.clone();
     ws.on_upgrade(move |socket| async move {
         if let Err(e) = websocket::handle_ws_upgraded(socket, ctx).await {
@@ -292,24 +314,41 @@ async fn ws_handler(
     .into_response()
 }
 
+/// Resolve `path` under `static_base` without escaping via `..`, absolute segments, or symlinks.
+fn resolve_static_path(static_base: &StdPath, path: &str) -> Option<PathBuf> {
+    let path = path.trim_start_matches('/');
+    if path.is_empty() {
+        return None;
+    }
+    let user = StdPath::new(path);
+    let mut joined = static_base.to_path_buf();
+    for component in user.components() {
+        match component {
+            Component::Normal(seg) => joined.push(seg),
+            _ => return None,
+        }
+    }
+    let base_canon = std::fs::canonicalize(static_base).ok()?;
+    let full_canon = std::fs::canonicalize(&joined).ok()?;
+    if !full_canon.starts_with(&base_canon) {
+        return None;
+    }
+    Some(full_canon)
+}
+
 /// Serve static files from config_dir/static at /api/static/{static_token}/{*path}.
 /// Auth: ephemeral capability token from HealthOk (not the permanent API key).
 pub async fn static_file_handler(
     Path((token, path)): Path<(String, String)>,
     State(ctx): State<Arc<ServerContext>>,
 ) -> Response {
-    if token != ctx.static_token {
+    if !ct_eq_str(&token, &ctx.static_token) {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
-    let path = path.trim_start_matches('/');
-    if path.is_empty() || path.contains("..") {
-        return (StatusCode::NOT_FOUND, "Not found").into_response();
-    }
     let static_base = ctx.config.static_dir();
-    let full_path: PathBuf = static_base.join(path);
-    if !full_path.starts_with(&static_base) {
+    let Some(full_path) = resolve_static_path(&static_base, &path) else {
         return (StatusCode::NOT_FOUND, "Not found").into_response();
-    }
+    };
     let meta = match tokio::fs::metadata(&full_path).await {
         Ok(m) => m,
         Err(_) => return (StatusCode::NOT_FOUND, "Not found").into_response(),
@@ -330,12 +369,71 @@ pub async fn static_file_handler(
 }
 
 pub fn create_http_router(ctx: Arc<ServerContext>) -> Router {
-    Router::new()
+    let auth_layer = middleware::from_fn_with_state(ctx.clone(), require_api_key);
+
+    // Upload path: larger body limit, still authenticated.
+    let upload = Router::new()
         .route("/api/attach-file", post(attach_file_handler))
+        .route_layer(auth_layer.clone())
+        .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES));
+
+    // Other authenticated HTTP routes (not WebSocket).
+    let authed_http = Router::new()
         .route("/api/attach-file/{file_id}", delete(remove_file_handler))
         .route("/api/mcp-servers", get(list_mcp_servers_handler))
-        .route("/api/static/{static_token}/{*path}", get(static_file_handler))
+        .route_layer(auth_layer.clone())
+        .layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES));
+
+    // Static files: capability token auth inside handler.
+    let static_routes = Router::new()
+        .route(
+            "/api/static/{static_token}/{*path}",
+            get(static_file_handler),
+        )
+        .layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES));
+
+    // Timed HTTP surface — do NOT wrap /ws (TimeoutLayer would kill long-lived sockets).
+    let http = Router::new()
+        .merge(upload)
+        .merge(authed_http)
+        .merge(static_routes)
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            HTTP_REQUEST_TIMEOUT,
+        ));
+
+    let ws = Router::new()
         .route("/ws", get(ws_handler))
+        .route_layer(auth_layer);
+
+    Router::new()
+        .merge(http)
+        .merge(ws)
         .with_state(ctx)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attachment_filename_exact_match() {
+        let uid = "11111111-2222-3333-4444-555555555555";
+        assert!(attachment_filename_matches(&format!("{uid}.png"), uid));
+        assert!(!attachment_filename_matches(&format!("{uid}x.png"), uid));
+        assert!(!attachment_filename_matches(&format!("{uid}.tar.gz"), uid));
+        assert!(!attachment_filename_matches(uid, uid));
+    }
+
+    #[test]
+    fn resolve_static_rejects_traversal() {
+        let base = std::env::temp_dir().join(format!("luna_static_test_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("ok.txt"), b"hi").unwrap();
+        assert!(resolve_static_path(&base, "ok.txt").is_some());
+        assert!(resolve_static_path(&base, "../ok.txt").is_none());
+        assert!(resolve_static_path(&base, "/etc/passwd").is_none());
+        assert!(resolve_static_path(&base, "a/../../etc/passwd").is_none());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}

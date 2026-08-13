@@ -1970,7 +1970,16 @@ impl Application for LunaThinApp {
                 self.show_about = false;
             }
             Message::OpenUrl(url) => {
-                let _ = webbrowser::open(&url);
+                // webbrowser <1.2.2 had BROWSER arg injection; still restrict schemes.
+                let allowed = url::Url::parse(&url)
+                    .ok()
+                    .map(|u| matches!(u.scheme(), "http" | "https"))
+                    .unwrap_or(false);
+                if allowed {
+                    let _ = webbrowser::open(&url);
+                } else {
+                    tracing::warn!("Refusing to open non-http(s) URL");
+                }
             }
             Message::Quit => {
                 std::process::exit(0);

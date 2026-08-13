@@ -31,6 +31,10 @@ pub fn run(options: ServerOptions) -> Result<()> {
 
 async fn launch(options: ServerOptions) -> Result<()> {
     let config = Arc::new(load_config_or_default(options.config_path.as_ref()));
+    config
+        .server
+        .validate_security()
+        .map_err(|msg| anyhow::anyhow!(msg))?;
     warn_if_default_profile_unresolved(&config);
 
     let prompt_manager = load_prompt_manager(&config);
@@ -55,6 +59,12 @@ async fn launch(options: ServerOptions) -> Result<()> {
     spawn_background_workers(ctx.clone());
 
     let bind_addr = format!("{}:{}", ctx.config.server.host, ctx.config.server.port);
+    if ctx.config.server.host.trim() == "0.0.0.0" || ctx.config.server.host.trim() == "::" {
+        tracing::warn!(
+            host = %ctx.config.server.host,
+            "Server is binding on all interfaces; ensure api_key is strong and network exposure is intentional"
+        );
+    }
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .context("failed to bind server")?;

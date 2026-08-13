@@ -61,7 +61,7 @@ dirs = "6.0.0"
 base64 = "0.22.1"
 
 # Document to markdown conversion
-markdownify = "0.3.2"
+markdownify = "0.3.7"
 
 # Hashing
 sha2 = "0.11"
@@ -73,7 +73,7 @@ rand = "0.10"
 # HTTP server for file attachments (async)
 axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "fs"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "timeout", "limit"] }
 multer = "3.0"
 
 # URL handling
@@ -110,6 +110,9 @@ tokio-test = "0.4"
 default = ["openai", "anthropic"]
 openai = []
 anthropic = []
+
+[profile.release]
+overflow-checks = true
 
 [workspace]
 members = [".", "luna_thin_ui", "agentic-loop"]

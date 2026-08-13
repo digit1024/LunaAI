@@ -55,7 +55,7 @@ async-stream = "0.3"
 dirs = "6.0.0"
 
 # Web browser
-webbrowser = "1.0.5"
+webbrowser = "1.2.4"
 
 # License handling
 license = "3.7.0"

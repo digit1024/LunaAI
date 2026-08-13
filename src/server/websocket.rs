@@ -9,6 +9,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+/// Reject oversized WebSocket text frames (DoS / memory exhaustion).
+const MAX_WS_TEXT_BYTES: usize = 1024 * 1024; // 1 MiB
+
 /// Runs the WebSocket command loop after upgrade. Auth is performed by the HTTP layer before upgrade.
 pub async fn handle_ws_upgraded(socket: WebSocket, ctx: Arc<ServerContext>) -> Result<()> {
     let connection_start = Instant::now();
@@ -54,6 +57,21 @@ pub async fn handle_ws_upgraded(socket: WebSocket, ctx: Arc<ServerContext>) -> R
         let msg_start = Instant::now();
         match msg {
             Ok(Message::Text(text)) => {
+                if text.len() > MAX_WS_TEXT_BYTES {
+                    tracing::warn!(
+                        connection_id = %connection_id.0,
+                        size = text.len(),
+                        limit = MAX_WS_TEXT_BYTES,
+                        "Rejected oversized WebSocket text frame"
+                    );
+                    let _ = out_tx.send(ServerEvent::Error {
+                        message: format!(
+                            "WebSocket message exceeds {} byte limit",
+                            MAX_WS_TEXT_BYTES
+                        ),
+                    });
+                    continue;
+                }
                 log_incoming_request(&connection_id.0, &text, msg_start.elapsed());
                 match serde_json::from_str::<ClientCommand>(&text) {
                     Ok(command) => {

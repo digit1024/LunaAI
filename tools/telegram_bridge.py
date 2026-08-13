@@ -28,7 +28,7 @@ chat_profiles: dict[int, Optional[str]] = {}
 _chat_sessions: dict[int, "LunaClientCollect"] = {}
 _chat_locks: dict[int, asyncio.Lock] = {}
 
-# Allowed Telegram user IDs (None or empty = allow everyone)
+# Allowed Telegram user IDs. REQUIRED at startup (fail closed).
 # Set via env: ALLOWED_TELEGRAM_IDS=123,456,789
 _allowed_user_ids: Optional[frozenset[int]] = None
 
@@ -49,9 +49,9 @@ def _parse_allowed_ids() -> Optional[frozenset[int]]:
 
 
 def _is_allowed(update: Update) -> bool:
-    """True if no allow-list is set, or the message sender's user ID is in the list."""
+    """True only when the sender's Telegram user ID is in ALLOWED_TELEGRAM_IDS."""
     if _allowed_user_ids is None:
-        return True
+        return False
     user = update.effective_user
     return user is not None and user.id in _allowed_user_ids
 
@@ -370,6 +370,14 @@ def main() -> None:
         sys.exit(1)
     if not os.getenv("LUNA_API_KEY"):
         print("LUNA_API_KEY environment variable not set", file=sys.stderr)
+        sys.exit(1)
+    # Fail closed: without an allow-list, anyone who can message the bot drives Luna.
+    if _allowed_user_ids is None:
+        print(
+            "ALLOWED_TELEGRAM_IDS environment variable not set or empty. "
+            "Set comma-separated Telegram user IDs (e.g. ALLOWED_TELEGRAM_IDS=123,456).",
+            file=sys.stderr,
+        )
         sys.exit(1)
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", cmd_start))

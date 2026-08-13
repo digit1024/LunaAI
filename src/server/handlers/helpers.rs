@@ -12,8 +12,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use uuid::Uuid;
 
-/// Locate an uploaded file by attachment UUID prefix under `uploads/{conversation_id}/`,
-/// or `uploads/_no_conversation/` when the client uploaded before a conversation id existed.
+/// Locate an uploaded file by exact `{attachment_uid}.{ext}` under
+/// `uploads/{conversation_id}/`, or `uploads/_no_conversation/` when the client
+/// uploaded before a conversation id existed.
 pub(super) async fn resolve_attachment_upload_path(
     uploads_base: &Path,
     conversation_id: &Uuid,
@@ -31,14 +32,18 @@ pub(super) async fn resolve_attachment_upload_path(
         while let Some(entry) = entries.next_entry().await.context("read upload directory")? {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.starts_with(attachment_uid) {
-                let p = entry.path();
-                let meta = tokio::fs::symlink_metadata(&p).await?;
-                if meta.file_type().is_symlink() {
-                    return Err(anyhow!("attachment path must not be a symlink"));
-                }
-                return Ok(p);
+            let Some((stem, ext)) = name.split_once('.') else {
+                continue;
+            };
+            if ext.is_empty() || ext.contains('.') || stem != attachment_uid {
+                continue;
             }
+            let p = entry.path();
+            let meta = tokio::fs::symlink_metadata(&p).await?;
+            if meta.file_type().is_symlink() {
+                return Err(anyhow!("attachment path must not be a symlink"));
+            }
+            return Ok(p);
         }
     }
     Err(anyhow!(

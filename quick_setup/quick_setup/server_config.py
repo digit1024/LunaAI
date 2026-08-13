@@ -12,7 +12,7 @@ from .profile_creator import load_config, save_config
 
 SERVER_DEFAULTS = {
     "enabled": True,
-    "host": "0.0.0.0",
+    "host": "127.0.0.1",
     "port": 8080,
     "api_key": "",
     "stream_timeout_secs": 300,
@@ -28,21 +28,28 @@ def _clamp_port(port: int) -> int:
     return max(1, min(65535, port))
 
 
+def _generate_api_key() -> str:
+    import secrets
+    return secrets.token_urlsafe(24)
+
+
 def merge_server_into_config(
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 8080,
     api_key: str = "",
     config_path: Path | None = None,
-) -> None:
-    """Merge [server] section into config.toml. Creates file if missing. Port clamped to 1-65535."""
+) -> str:
+    """Merge [server] into config.toml. Returns the api_key written (generated if blank)."""
     data = load_config(config_path)
+    key = (api_key or "").strip() or _generate_api_key()
     data["server"] = {
         **SERVER_DEFAULTS,
         "host": host,
         "port": _clamp_port(port),
-        "api_key": api_key or SERVER_DEFAULTS["api_key"],
+        "api_key": key,
     }
     save_config(data, config_path)
+    return key
 
 
 def thin_ui_connect_host(server_host: str) -> str:
@@ -64,10 +71,13 @@ def write_thin_ui_server_config(
     path = config_path or paths.thin_ui_server_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     connect_host = thin_ui_connect_host(host)
+    key = (api_key or "").strip()
+    if not key:
+        raise ValueError("api_key is required for thin UI server_config.toml")
     data: dict[str, Any] = {
         "host": connect_host,
         "port": port,
-        "api_key": api_key,
+        "api_key": key,
     }
     try:
         import toml

@@ -152,10 +152,7 @@ impl LunaWsClient {
             format!("Bearer {}", config.api_key).parse()?,
         );
 
-        tracing::debug!(
-            "Auth headers: x-api-key={}, authorization=Bearer ...",
-            config.api_key
-        );
+        tracing::debug!("Auth headers attached (x-api-key + Bearer; values redacted)");
 
         // Connect with timeout
         let connect_future = tokio_tungstenite::connect_async(request);

@@ -150,7 +150,7 @@ def _clamp_port(port: int) -> int:
 
 def _ask_server() -> tuple[str, int, str]:
     print("\n  Server API (Luna backend):")
-    host = input("  Host [0.0.0.0]: ").strip() or "0.0.0.0"
+    host = input("  Host [127.0.0.1]: ").strip() or "127.0.0.1"
     port_raw = input("  Port [8080]: ").strip() or "8080"
     try:
         port = _clamp_port(int(port_raw))
@@ -158,7 +158,7 @@ def _ask_server() -> tuple[str, int, str]:
             print("  Port adjusted to valid range 1-65535.")
     except ValueError:
         port = 8080
-    api_key = input("  Server API key (optional): ").strip()
+    api_key = input("  Server API key (blank = generate): ").strip()
     return host, port, api_key
 
 
@@ -322,13 +322,15 @@ def run() -> None:
 
     # 4) Server
     host, port, server_api_key = _ask_server()
-    merge_server_into_config(host=host, port=port, api_key=server_api_key)
+    server_api_key = merge_server_into_config(host=host, port=port, api_key=server_api_key)
     thin_ui_path = write_thin_ui_server_config(host=host, port=port, api_key=server_api_key)
     connect_host = thin_ui_connect_host(host)
     print("  Server section written to config.toml.")
     print(f"  Thin UI configured: {thin_ui_path} → {connect_host}:{port} (run luna-thin to connect).")
+    print(f"  Server API key: {server_api_key}")
     if host.strip() == "0.0.0.0":
         print("  (Thin UI uses localhost → same-machine only; for remote access edit server_config.toml host.)")
+        print("  WARNING: binding 0.0.0.0 exposes the privileged agent on the LAN — keep api_key secret.")
 
     # 4b) Install self_config skill (for skills MCP server)
     ok, msg = install_self_config_skill(_project_root())

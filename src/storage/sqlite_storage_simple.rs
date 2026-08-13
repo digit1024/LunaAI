@@ -13,6 +13,9 @@ use crate::{
 
 // Load sqlite-vec extension for memory vector search (must be called before opening any connection)
 fn load_sqlite_vec_extension() {
+    // SAFETY: `sqlite3_vec_init` is the official sqlite-vec entry point with the
+    // sqlite3 auto-extension ABI. We only register it; SQLite invokes it later
+    // when opening connections. The transmute matches rusqlite's RawExt signature.
     unsafe {
         use rusqlite::auto_extension::register_auto_extension;
         type RawExt = unsafe extern "C" fn(

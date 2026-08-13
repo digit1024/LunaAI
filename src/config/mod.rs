@@ -181,15 +181,39 @@ fn default_server_enabled() -> bool {
 }
 
 fn default_server_host() -> String {
-    "0.0.0.0".to_string()
+    "127.0.0.1".to_string()
 }
 
 fn default_server_port() -> u16 {
     8080
 }
 
+/// Empty by default — launch refuses weak/empty keys (see `ServerConfig::validate_security`).
 fn default_server_api_key() -> String {
-    "LUna".to_string()
+    String::new()
+}
+
+/// Insecure historical default; still rejected at startup if present in config.
+pub const INSECURE_DEFAULT_API_KEY: &str = "LUna";
+
+impl ServerConfig {
+    /// True when the key is missing or matches the known insecure default.
+    pub fn is_weak_api_key(&self) -> bool {
+        let key = self.api_key.trim();
+        key.is_empty() || key.eq_ignore_ascii_case(INSECURE_DEFAULT_API_KEY)
+    }
+
+    /// Refuse network exposure without a strong server API key.
+    pub fn validate_security(&self) -> Result<(), String> {
+        if self.is_weak_api_key() {
+            return Err(
+                "Refusing to start: [server].api_key is empty or uses the insecure default \"LUna\". \
+                 Set a strong api_key in config.toml (and matching thin UI server_config.toml)."
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
 }
 
 fn default_stream_timeout_secs() -> u64 {
@@ -735,5 +759,33 @@ impl MCPConfig {
         }
 
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_empty_and_luna_api_keys() {
+        let mut cfg = ServerConfig::default();
+        assert!(cfg.is_weak_api_key());
+        assert!(cfg.validate_security().is_err());
+
+        cfg.api_key = "LUna".into();
+        assert!(cfg.is_weak_api_key());
+        assert!(cfg.validate_security().is_err());
+
+        cfg.api_key = "luna".into();
+        assert!(cfg.is_weak_api_key());
+
+        cfg.api_key = "a-strong-random-key".into();
+        assert!(!cfg.is_weak_api_key());
+        assert!(cfg.validate_security().is_ok());
+    }
+
+    #[test]
+    fn default_host_is_localhost() {
+        assert_eq!(ServerConfig::default().host, "127.0.0.1");
     }
 }
