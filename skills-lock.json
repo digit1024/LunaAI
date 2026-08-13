@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "rust-security": {
+      "source": "juburr/mad-skills",
+      "sourceType": "github",
+      "skillPath": "rust-security/SKILL.md",
+      "computedHash": "75179eb04da7e032faadb63e07a2471072ee1415530e71180c130f6001a06336"
+    }
+  }
+}
