@@ -459,6 +459,59 @@ impl Default for AttachmentRagConfig {
     }
 }
 
+// ── Time awareness: ephemeral "time since last message" system context ──
+
+fn default_time_awareness_enabled() -> bool {
+    false
+}
+
+fn default_time_awareness_min_gap_hours() -> f64 {
+    6.0
+}
+
+fn default_time_awareness_include_current() -> bool {
+    true
+}
+
+fn default_time_awareness_include_last() -> bool {
+    true
+}
+
+fn default_time_awareness_timezone() -> String {
+    "utc".to_string()
+}
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct TimeAwarenessConfig {
+    #[serde(default = "default_time_awareness_enabled")]
+    pub enabled: bool,
+    /// Minimum gap (in hours) since the last message before the time context is injected.
+    /// Fractional values allowed; `0.0` injects on every turn.
+    #[serde(default = "default_time_awareness_min_gap_hours")]
+    pub min_gap_hours: f64,
+    /// Include the current wall-clock time in the injected block.
+    #[serde(default = "default_time_awareness_include_current")]
+    pub include_current_time: bool,
+    /// Include the timestamp of the previous message in the injected block.
+    #[serde(default = "default_time_awareness_include_last")]
+    pub include_last_message_time: bool,
+    /// `"utc"` (default) or `"local"` for display formatting.
+    #[serde(default = "default_time_awareness_timezone")]
+    pub timezone: String,
+}
+
+impl Default for TimeAwarenessConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_time_awareness_enabled(),
+            min_gap_hours: default_time_awareness_min_gap_hours(),
+            include_current_time: default_time_awareness_include_current(),
+            include_last_message_time: default_time_awareness_include_last(),
+            timezone: default_time_awareness_timezone(),
+        }
+    }
+}
+
 // ── Deep Sleep config ──
 
 fn default_deep_sleep_enabled() -> bool {
@@ -577,6 +630,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub conversation_compact: ConversationCompactConfig,
     #[serde(default)]
+    pub time_awareness: TimeAwarenessConfig,
+    #[serde(default)]
     pub deep_sleep: DeepSleepConfig,
     #[serde(default)]
     pub embedding: EmbeddingConfig,
@@ -622,6 +677,7 @@ impl Default for AppConfig {
             server: ServerConfig::default(),
             title_summary: TitleSummaryConfig::default(),
             conversation_compact: ConversationCompactConfig::default(),
+            time_awareness: TimeAwarenessConfig::default(),
             deep_sleep: DeepSleepConfig::default(),
             embedding: EmbeddingConfig::default(),
             attachment_rag: AttachmentRagConfig::default(),

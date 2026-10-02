@@ -127,7 +127,7 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
         .ok_or_else(|| anyhow!("No profile or preset found for scheduled job"))?;
     let llm_client = llm::build_llm_client(resolved.preset());
 
-    let (conversation_id, mut agent_messages) = if let Some(conv_id_str) = &job.conversation_id {
+    let (conversation_id, mut agent_messages, time_last_at) = if let Some(conv_id_str) = &job.conversation_id {
         let conv_uuid = Uuid::parse_str(conv_id_str).context("invalid conversation_id in job")?;
         let exists = {
             let storage = ctx.storage.lock().await;
@@ -165,7 +165,9 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
         ));
         let agent_messages =
             ContextService::inject_prompts(llm_messages, &ctx.prompt_manager, resolved.profile())?;
-        (conv_uuid, agent_messages)
+        // Synthetic "due now" turn is not persisted; last stored row is the prior activity.
+        let time_last_at = db_messages.last().map(|m| m.created_at);
+        (conv_uuid, agent_messages, time_last_at)
     } else {
         let title = job
             .title
@@ -196,7 +198,7 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
         let llm_messages = MessageConverter::db_to_llm(&context, true);
         let agent_messages =
             ContextService::inject_prompts(llm_messages, &ctx.prompt_manager, resolved.profile())?;
-        (conv_id, agent_messages)
+        (conv_id, agent_messages, None)
     };
 
     // Memory RAG: same path as interactive chat.
@@ -233,6 +235,18 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
             } else {
                 tracing::warn!("Scheduled task: no user message to attribute memory recalls");
             }
+        }
+    }
+
+    // Time awareness: same ephemeral system block as interactive chat.
+    if ctx.config.time_awareness.enabled {
+        let last_at = time_last_at.and_then(|ts| chrono::DateTime::from_timestamp(ts, 0));
+        if let Some(body) = crate::services::time_awareness::build_time_context(
+            last_at,
+            chrono::Utc::now(),
+            &ctx.config.time_awareness,
+        ) {
+            crate::services::time_awareness::insert_time_context(&mut agent_messages, body, false);
         }
     }
 

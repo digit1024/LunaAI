@@ -23,6 +23,12 @@ pub fn handle_settings_messages(
             app.settings_api_key = api_key;
             None
         }
+        Message::ReadAloudToggled(enabled) => {
+            app.read_aloud_enabled = enabled;
+            app.server_config.read_aloud = enabled;
+            let _ = app.server_config.save();
+            None
+        }
         Message::ChangeProfile(profile) => {
             app.send_command(crate::server::dto::ClientCommand::ChangeProfile { profile });
             None

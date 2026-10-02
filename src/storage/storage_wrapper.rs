@@ -606,6 +606,16 @@ impl Storage {
         self.sqlite.get_latest_user_message_id(conversation_id)
     }
 
+    /// Creation timestamp of the most recent stored message, excluding an optional row.
+    pub fn get_last_message_created_at(
+        &self,
+        conversation_id: &str,
+        exclude_rowid: Option<i64>,
+    ) -> SqliteResult<Option<i64>> {
+        self.sqlite
+            .get_last_message_created_at(conversation_id, exclude_rowid)
+    }
+
     pub fn record_message_memory_recalls(
         &self,
         message_id: i64,

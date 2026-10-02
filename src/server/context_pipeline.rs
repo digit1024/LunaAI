@@ -72,7 +72,41 @@ impl<'a> ContextPipeline<'a> {
 
         self.inject_memory(&mut llm_messages).await?;
 
-        Ok(self.enforce_token_budget(llm_messages, resolved))
+        let mut final_messages = self.enforce_token_budget(llm_messages, resolved);
+        self.inject_time_context(&mut final_messages).await;
+        Ok(final_messages)
+    }
+
+    /// Inject an ephemeral "time since last message" system block before the current
+    /// user turn. Runs *after* `enforce_token_budget` so `SmartContextManager`'s
+    /// system-message hoisting cannot relocate it. Never persisted.
+    async fn inject_time_context(&self, messages: &mut Vec<LlmMessage>) {
+        let cfg = &self.ctx.config.time_awareness;
+        if !cfg.enabled {
+            return;
+        }
+
+        let last_at = {
+            let storage = self.ctx.storage.lock().await;
+            match storage.get_last_message_created_at(
+                &self.conversation_id.to_string(),
+                self.triggering_message_rowid,
+            ) {
+                Ok(ts) => ts,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Time awareness: failed to read last message timestamp");
+                    return;
+                }
+            }
+        };
+
+        let last_at = last_at.and_then(|ts| chrono::DateTime::from_timestamp(ts, 0));
+        let now = chrono::Utc::now();
+        if let Some(body) = crate::services::time_awareness::build_time_context(last_at, now, cfg) {
+            // With a fresh triggering turn, place before that user turn; otherwise append.
+            let at_end = self.triggering_message_rowid.is_none();
+            crate::services::time_awareness::insert_time_context(messages, body, at_end);
+        }
     }
 
     async fn maybe_summarize<F, Fut>(

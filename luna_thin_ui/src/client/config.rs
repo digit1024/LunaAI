@@ -7,11 +7,20 @@ pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub api_key: String,
+    /// When enabled, the client automatically speaks the last assistant message
+    /// via TTS when a conversation turn completes.
+    #[serde(default)]
+    pub read_aloud: bool,
 }
 
 impl ServerConfig {
     pub fn new(host: String, port: u16, api_key: String) -> Self {
-        Self { host, port, api_key }
+        Self {
+            host,
+            port,
+            api_key,
+            read_aloud: false,
+        }
     }
 
     /// Returns secure WebSocket URI (wss://) – WebSocket route is /ws

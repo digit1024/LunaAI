@@ -1641,6 +1641,27 @@ impl SqliteStorage {
         }
     }
 
+    /// Creation timestamp of the most recent stored message in a conversation,
+    /// optionally excluding a specific row (e.g. the just-inserted triggering turn).
+    /// Used for time-awareness context.
+    pub fn get_last_message_created_at(
+        &self,
+        conversation_id: &str,
+        exclude_rowid: Option<i64>,
+    ) -> SqliteResult<Option<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT created_at FROM messages \
+             WHERE conversation_id = ?1 AND (?2 IS NULL OR id != ?2) \
+             ORDER BY created_at DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![conversation_id, exclude_rowid])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Record which memories were recalled for a specific user message.
     pub fn record_message_memory_recalls(
         &self,

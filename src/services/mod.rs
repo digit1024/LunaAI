@@ -10,6 +10,7 @@ pub mod schedule_service;
 pub mod memory_rag;
 pub mod attachment_rag;
 pub mod deep_sleep_service;
+pub mod time_awareness;
 
 pub use message_converter::MessageConverter;
 pub use context_service::ContextService;

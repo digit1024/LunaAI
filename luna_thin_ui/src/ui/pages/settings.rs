@@ -2,7 +2,7 @@
 
 use cosmic::{
     iced::Length,
-    widget::{self, button, container, text, text_input, Column, Row, Space},
+    widget::{self, button, container, text, text_input, toggler, Column, Row, Space},
     Element,
 };
 
@@ -135,6 +135,37 @@ pub fn settings_page(app: &LunaThinApp) -> Element<'_, Message> {
         }
         content = content.push(profile_row);
     }
+
+    // Read Aloud section
+    content = content.push(Space::new().height(24));
+    content = content.push(text("🔊 Read Aloud").size(18));
+    content = content.push(
+        container(
+            Row::new()
+                .push(
+                    Column::new()
+                        .push(text("Auto read responses aloud").size(14))
+                        .push(
+                            text("Speak the last assistant message when a turn completes.")
+                                .size(12)
+                                .class(cosmic::style::Text::Color(
+                                    cosmic::iced::Color::from_rgb(0.6, 0.6, 0.6),
+                                )),
+                        )
+                        .spacing(4),
+                )
+                .push(Space::new().width(Length::Fill))
+                .push(
+                    toggler(app.read_aloud_enabled)
+                        .on_toggle(Message::ReadAloudToggled),
+                )
+                .spacing(12)
+                .align_y(cosmic::iced::Alignment::Center),
+        )
+        .padding(16)
+        .width(Length::Fill)
+        .class(cosmic::style::Container::Card),
+    );
 
     // Info section
     content = content.push(Space::new().height(24));

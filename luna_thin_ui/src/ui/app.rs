@@ -97,6 +97,7 @@ pub enum Message {
     HostChanged(String),
     PortChanged(String),
     ApiKeyChanged(String),
+    ReadAloudToggled(bool),
 
     // UI state
     ToggleReasoning(usize),
@@ -543,6 +544,8 @@ pub struct LunaThinApp {
     pub settings_host: String,
     pub settings_port: String,
     pub settings_api_key: String,
+    /// When enabled, auto-speak the last assistant message when a turn completes.
+    pub read_aloud_enabled: bool,
 }
 
 // ============================================================================
@@ -570,6 +573,7 @@ impl LunaThinApp {
             settings_host: server_config.host.clone(),
             settings_port: server_config.port.to_string(),
             settings_api_key: server_config.api_key.clone(),
+            read_aloud_enabled: server_config.read_aloud,
             server_config,
             ws_client: Arc::new(RwLock::new(LunaWsClient::new())),
             file_client: None,
@@ -1535,6 +1539,24 @@ impl LunaThinApp {
                     self.current_assistant_bubble_id = None;
                     crate::ui::audio::AudioService::play_sound("done.mp3");
                     self.list_conversations();
+
+                    // Auto read-aloud: if enabled, speak the last assistant message
+                    if self.read_aloud_enabled {
+                        // Find the last assistant bubble (not user / summary / tool)
+                        if let Some(last_assistant_id) = self
+                            .messages
+                            .iter()
+                            .rev()
+                            .find(|m| {
+                                !m.is_user() && !m.is_summary() && !m.content.trim().is_empty()
+                            })
+                            .map(|m| m.id.clone())
+                        {
+                            return app::Task::done(cosmic::Action::App(
+                                Message::StartTts(last_assistant_id),
+                            ));
+                        }
+                    }
                 }
             }
             ServerEvent::ConversationDeleted { conversation_id } => {

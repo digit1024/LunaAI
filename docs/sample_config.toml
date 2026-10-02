@@ -145,3 +145,12 @@ title_generation_system_prompt = "Your task is to generate a conversation title 
 [conversation_compact]
 # system_prompt = "..."      # compaction system prompt (built-in default if omitted)
 # max_tokens = 4000          # max output tokens for compaction summary
+
+# Time awareness: inject an ephemeral system message when time has passed between messages.
+# Never stored in conversation history. On the first message only the current time is injected.
+[time_awareness]
+enabled = false
+min_gap_hours = 6.0          # fractional allowed; 0.0 injects on every turn
+include_current_time = true
+include_last_message_time = true
+timezone = "utc"             # "utc" or "local"
