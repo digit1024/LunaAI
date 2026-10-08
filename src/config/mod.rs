@@ -121,6 +121,12 @@ pub struct ShellToolConfig {
     /// Optional directory confinement. Empty = any existing absolute directory.
     #[serde(default)]
     pub allowed_directories: Vec<String>,
+    /// Opt out of the built-in default-deny list. When true, commands like
+    /// interpreters (`sh`, `python`, `node`, ...) and dangerous options
+    /// (`find -exec`, `tar --to-command`, dangerous `git -c`) are allowed if they
+    /// match `allow_commands`/`allow_patterns`. Shell operators are still rejected.
+    #[serde(default)]
+    pub allow_unsafe_commands: bool,
     /// Working directory used when the tool call omits `directory`.
     #[serde(default)]
     pub default_directory: Option<String>,
@@ -140,6 +146,7 @@ impl Default for ShellToolConfig {
             allow_commands: Vec::new(),
             allow_patterns: Vec::new(),
             allowed_directories: Vec::new(),
+            allow_unsafe_commands: false,
             default_directory: None,
             default_timeout_secs: default_shell_default_timeout_secs(),
             max_timeout_secs: default_shell_max_timeout_secs(),

@@ -22,12 +22,23 @@ pub const DANGEROUS_COMMANDS: &[&str] = &[
 pub struct CommandValidator {
     allowed: HashSet<String>,
     patterns: Vec<Regex>,
+    /// When false, the built-in default-deny policy is not enforced.
+    enforce_default_deny: bool,
 }
 
 impl CommandValidator {
     /// Build a validator from the configured whitelist. Invalid patterns are
     /// logged and skipped rather than disabling the tool entirely.
     pub fn new(allow_commands: &[String], allow_patterns: &[String]) -> Self {
+        Self::with_default_deny(allow_commands, allow_patterns, true)
+    }
+
+    /// Like [`Self::new`], but lets the caller opt out of the default-deny policy.
+    pub fn with_default_deny(
+        allow_commands: &[String],
+        allow_patterns: &[String],
+        enforce_default_deny: bool,
+    ) -> Self {
         let allowed = allow_commands
             .iter()
             .map(|c| c.trim().to_string())
@@ -50,7 +61,11 @@ impl CommandValidator {
             }
         }
 
-        Self { allowed, patterns }
+        Self {
+            allowed,
+            patterns,
+            enforce_default_deny,
+        }
     }
 
     /// True when no command can ever be allowed.
@@ -223,7 +238,9 @@ impl CommandValidator {
         let cleaned = Self::validate_command_name_form(&command[0])?;
         let mut full = vec![cleaned.clone()];
         full.extend_from_slice(&command[1..]);
-        Self::validate_default_argument_policy(&full)?;
+        if self.enforce_default_deny {
+            Self::validate_default_argument_policy(&full)?;
+        }
 
         if !self.is_command_allowed(&cleaned) {
             return Err(format!("Command not allowed: {}", cleaned));
@@ -265,6 +282,19 @@ mod tests {
         let v = validator(&["python3"]);
         let err = v.validate_command(&["python3".into(), "-c".into()]).unwrap_err();
         assert!(err.contains("default security policy"));
+    }
+
+    #[test]
+    fn unsafe_opt_out_allows_dangerous_interpreter() {
+        let v = CommandValidator::with_default_deny(&["python3".to_string()], &[], false);
+        assert!(v.validate_command(&["python3".into(), "-c".into(), "print(1)".into()]).is_ok());
+        // Still not allowed unless whitelisted.
+        assert!(v.validate_command(&["bash".into()]).is_err());
+    }
+
+    #[test]
+    fn unsafe_opt_out_still_rejects_shell_operators() {
+        assert!(CommandValidator::validate_no_shell_operators(";").is_err());
     }
 
     #[test]

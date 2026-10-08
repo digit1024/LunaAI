@@ -25,7 +25,11 @@ pub struct ShellTool {
 
 impl ShellTool {
     pub fn new(config: ShellToolConfig) -> Self {
-        let validator = CommandValidator::new(&config.allow_commands, &config.allow_patterns);
+        let validator = CommandValidator::with_default_deny(
+            &config.allow_commands,
+            &config.allow_patterns,
+            !config.allow_unsafe_commands,
+        );
         Self { config, validator }
     }
 

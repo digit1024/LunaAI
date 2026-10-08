@@ -78,6 +78,7 @@ enabled = true
 allow_commands = ["ls", "cat", "pwd", "grep", "wc", "touch", "find", "echo", "mkdir", "rmdir", "cp", "mv", "rm", "chmod", "chown", "git", "ps", "df", "du", "whoami", "head", "tail", "sort", "uniq", "curl", "wget", "sqlite3", "flatpak", "systemctl", "cargo"]
 # allow_patterns = ["ls.*"]        # optional regex, matched with fullmatch
 # allowed_directories = ["/home/you"]  # optional confinement; [] = any existing abs dir
+# allow_unsafe_commands = false    # true = also allow interpreters/dangerous options if whitelisted
 # default_directory = "/home/you"  # used when a call omits `directory`
 # default_timeout_secs = 30
 # max_timeout_secs = 300
