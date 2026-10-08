@@ -2,6 +2,7 @@ use super::protocol::{AgentUpdate, PlannedTool, RunContext};
 use crate::llm::{ChatStreamEvent, LlmClient, LlmError, Message, Role, ToolCall, ToolDefinition, ToolResult};
 use crate::mcp::conversions::{tool_call_to_params, tools_to_definitions};
 use crate::services::{ScheduleService, ScheduleTaskRequest};
+use crate::tools::EmbeddedToolRegistry;
 use agentic_loop::mcp_servers_registry::MCPServerRegistry;
 use anyhow::{Context, Result};
 use futures::StreamExt;
@@ -430,6 +431,7 @@ pub struct AgenticLoop {
     pub schedule_service: Option<Arc<ScheduleService>>,
     pub storage: Option<Arc<tokio::sync::Mutex<crate::storage::Storage>>>,
     pub app_config: Option<Arc<crate::config::AppConfig>>,
+    pub embedded_tools: EmbeddedToolRegistry,
     pub tool_call_timeout_secs: u64,
 }
 
@@ -446,6 +448,9 @@ impl AgenticLoop {
             schedule_service,
             storage: None,
             app_config: None,
+            embedded_tools: EmbeddedToolRegistry::from_config(
+                &crate::config::EmbeddedToolsConfig::default(),
+            ),
             tool_call_timeout_secs,
         }
     }
@@ -456,6 +461,7 @@ impl AgenticLoop {
     }
 
     pub fn with_app_config(mut self, app_config: Arc<crate::config::AppConfig>) -> Self {
+        self.embedded_tools = EmbeddedToolRegistry::from_config(&app_config.embedded_tools);
         self.app_config = Some(app_config);
         self
     }
@@ -488,6 +494,12 @@ impl AgenticLoop {
             .context("Failed to get MCP tools")?;
         let mut defs = Vec::new();
         for d in tools_to_definitions(&tools) {
+            if !allow(&d.name) {
+                continue;
+            }
+            upsert_tool_definition(&mut defs, d);
+        }
+        for d in self.embedded_tools.definitions() {
             if !allow(&d.name) {
                 continue;
             }
@@ -970,6 +982,8 @@ impl AgenticLoop {
                         }
                         Err(tool_result) => tool_result,
                     }
+                } else if let Some(r) = self.embedded_tools.dispatch(&tool_call).await {
+                    r
                 } else {
                     self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref()).await
                 };
@@ -1944,6 +1958,8 @@ impl AgenticLoop {
                 } else if tool_call.name == "publish_image" {
                     self.execute_publish_image(&tool_call, run_context.as_ref())
                         .await
+                } else if let Some(r) = self.embedded_tools.dispatch(&tool_call).await {
+                    r
                 } else {
                     self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref()).await
                 };

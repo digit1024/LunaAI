@@ -1,12 +1,5 @@
 {
   "mcpServers": {
-    "shell": {
-      "command": "uvx",
-      "args": ["mcp-shell-server"],
-      "env": {
-        "ALLOW_COMMANDS": "ls,cat,pwd,grep,wc,touch,find,echo,mkdir,rmdir,cp,mv,rm,chmod,chown,git,ps,df,du,whoami,head,tail,sort,uniq,curl,wget,sqlite3,flatpak,python3,systemctl,cargo"
-      }
-    },
     "filesystem": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/youruser"],

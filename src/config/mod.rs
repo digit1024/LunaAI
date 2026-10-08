@@ -86,6 +86,103 @@ pub struct ToolsPolicy {
     pub disabled_tools: Vec<String>,
 }
 
+// ── Embedded tools: compiled-in tools that used to be external MCP servers ──
+//
+// The command whitelist that used to live in the shell MCP server's
+// `ALLOW_COMMANDS` env var now lives in `[embedded_tools.shell]`.
+
+fn default_shell_enabled() -> bool {
+    true
+}
+
+fn default_shell_default_timeout_secs() -> u64 {
+    30
+}
+
+fn default_shell_max_timeout_secs() -> u64 {
+    300
+}
+
+fn default_shell_output_limit_bytes() -> usize {
+    1024 * 1024
+}
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct ShellToolConfig {
+    /// When false, `shell_execute` is not exposed at all.
+    #[serde(default = "default_shell_enabled")]
+    pub enabled: bool,
+    /// Basename whitelist for `argv[0]` (e.g. "ls", "git"). Empty = deny all commands.
+    #[serde(default)]
+    pub allow_commands: Vec<String>,
+    /// Optional regex patterns matched with `fullmatch` against `argv[0]`.
+    #[serde(default)]
+    pub allow_patterns: Vec<String>,
+    /// Optional directory confinement. Empty = any existing absolute directory.
+    #[serde(default)]
+    pub allowed_directories: Vec<String>,
+    /// Working directory used when the tool call omits `directory`.
+    #[serde(default)]
+    pub default_directory: Option<String>,
+    #[serde(default = "default_shell_default_timeout_secs")]
+    pub default_timeout_secs: u64,
+    #[serde(default = "default_shell_max_timeout_secs")]
+    pub max_timeout_secs: u64,
+    /// Combined stdout+stderr cap; output beyond this is truncated.
+    #[serde(default = "default_shell_output_limit_bytes")]
+    pub output_limit_bytes: usize,
+}
+
+impl Default for ShellToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_shell_enabled(),
+            allow_commands: Vec::new(),
+            allow_patterns: Vec::new(),
+            allowed_directories: Vec::new(),
+            default_directory: None,
+            default_timeout_secs: default_shell_default_timeout_secs(),
+            max_timeout_secs: default_shell_max_timeout_secs(),
+            output_limit_bytes: default_shell_output_limit_bytes(),
+        }
+    }
+}
+
+fn default_time_tool_enabled() -> bool {
+    true
+}
+
+fn default_time_tool_local_timezone() -> String {
+    "local".to_string()
+}
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct TimeToolConfig {
+    /// When false, `get_current_time` / `convert_time` are not exposed.
+    #[serde(default = "default_time_tool_enabled")]
+    pub enabled: bool,
+    /// `"local"` (default) or an explicit IANA name (e.g. "Europe/Warsaw").
+    #[serde(default = "default_time_tool_local_timezone")]
+    pub local_timezone: String,
+}
+
+impl Default for TimeToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_time_tool_enabled(),
+            local_timezone: default_time_tool_local_timezone(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone, Serialize, Default)]
+pub struct EmbeddedToolsConfig {
+    #[serde(default)]
+    pub shell: ShellToolConfig,
+    #[serde(default)]
+    pub time: TimeToolConfig,
+}
+
 // ── Profile: references preset + policy + prompts ──
 
 #[derive(Debug, Deserialize, Clone, Serialize)]
@@ -620,6 +717,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub tools_policies: HashMap<String, ToolsPolicy>,
     #[serde(default)]
+    pub embedded_tools: EmbeddedToolsConfig,
+    #[serde(default)]
     pub prompts: crate::prompts::PromptConfig,
     #[serde(default)]
     pub mcp: MCPConfig,
@@ -672,6 +771,7 @@ impl Default for AppConfig {
             profiles,
             model_presets,
             tools_policies,
+            embedded_tools: EmbeddedToolsConfig::default(),
             prompts: crate::prompts::PromptConfig::default(),
             mcp: MCPConfig::default(),
             server: ServerConfig::default(),

@@ -146,7 +146,7 @@ class TestMcpConfig:
         cat = load_mcp_catalog(path)
         assert "servers" in cat
         ids = [s["id"] for s in cat["servers"] if "id" in s]
-        assert "shell" in ids
+        assert "filesystem" in ids
         assert "fetch" in ids
 
     def test_build_servers_from_catalog(self, tmp_config_dir):
@@ -156,13 +156,13 @@ class TestMcpConfig:
         if not path.exists():
             pytest.skip("catalog/mcp_servers.json not found")
         servers = build_servers_from_catalog(
-            ["shell", "filesystem"],
+            ["fetch", "filesystem"],
             cosmic_llm_dir=tmp_config_dir,
             catalog_path=path,
         )
-        assert "shell" in servers
+        assert "fetch" in servers
         assert "filesystem" in servers
-        assert servers["shell"]["command"] == "uvx"
+        assert servers["fetch"]["command"] == "uvx"
         # {{HOME}} and {{COSMIC_LLM_DIR}} should be expanded (no placeholders left)
         assert "{{" not in str(servers["filesystem"]["args"])
 
@@ -248,14 +248,14 @@ class TestLunaFeatures:
     def test_enabled_mcp_for_selection_with_memory(self):
         from quick_setup.luna_features import enabled_mcp_for_selection
 
-        ids = enabled_mcp_for_selection(["shell", "skills"], True)
-        assert ids == ["shell", "skills", "cosmic-llm-memory"]
+        ids = enabled_mcp_for_selection(["filesystem", "skills"], True)
+        assert ids == ["filesystem", "skills", "cosmic-llm-memory"]
 
     def test_enabled_mcp_for_selection_dedupes(self):
         from quick_setup.luna_features import enabled_mcp_for_selection
 
-        ids = enabled_mcp_for_selection(["shell", "shell", "fetch"], False)
-        assert ids == ["shell", "fetch"]
+        ids = enabled_mcp_for_selection(["filesystem", "filesystem", "fetch"], False)
+        assert ids == ["filesystem", "fetch"]
 
     def test_finalize_full_luna_config(self, tmp_config_dir):
         from quick_setup.profile_creator import load_config, save_config
@@ -265,7 +265,7 @@ class TestLunaFeatures:
         save_config({"default": "p1", "profiles": {"p1": {}}, "tools_policies": {"default": {}}}, path)
         summary = finalize_full_luna_config(
             profile_name="p1",
-            enabled_mcp=["shell", "cosmic-llm-memory"],
+            enabled_mcp=["filesystem", "cosmic-llm-memory"],
             chat_api_key="sk-chat",
             chat_backend="openai",
             full_luna=True,
@@ -273,9 +273,11 @@ class TestLunaFeatures:
         )
         data = load_config(path)
         assert data["tools_policies"]["default"]["enabled_mcp"] == [
-            "shell",
+            "filesystem",
             "cosmic-llm-memory",
         ]
+        assert data["embedded_tools"]["shell"]["enabled"] is True
+        assert data["embedded_tools"]["time"]["enabled"] is True
         assert data["embedding"]["enabled"] is True
         assert data["embedding"]["api_key"] == "sk-chat"
         assert data["deep_sleep"]["enabled"] is True

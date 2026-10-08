@@ -134,7 +134,7 @@ Not in the no-setup catalog; quick setup adds it by default (`[Y/n]`).
 
 ```toml
 [tools_policies.default]
-enabled_mcp = ["shell", "filesystem", "fetch", "skills", "markitdown", "cosmic-llm-memory"]
+enabled_mcp = ["filesystem", "fetch", "skills", "markitdown", "cosmic-llm-memory"]
 enabled_tools = ["*"]
 disabled_tools = []
 ```

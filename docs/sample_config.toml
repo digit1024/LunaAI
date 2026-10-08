@@ -64,9 +64,28 @@ temperature = 0.7
 
 [tools_policies.default]
 # Server ids must match mcp_config.json keys; empty = no MCP tools allowed
-enabled_mcp = ["shell", "filesystem", "fetch", "skills", "markitdown", "search", "cosmic-llm-memory"]
+enabled_mcp = ["filesystem", "fetch", "skills", "markitdown", "search", "cosmic-llm-memory"]
 enabled_tools = ["*"]
 disabled_tools = []
+
+# ── Embedded tools: compiled-in tools (formerly external MCP servers) ──
+# `shell_execute` and the time tools are always available to profiles whose
+# `enabled_tools` matches them; they do not appear in `enabled_mcp`.
+[embedded_tools.shell]
+enabled = true
+# Basename whitelist for argv[0]. Empty = deny all commands. Interpreters
+# (sh, bash, python, node, ...) and dangerous options are rejected regardless.
+allow_commands = ["ls", "cat", "pwd", "grep", "wc", "touch", "find", "echo", "mkdir", "rmdir", "cp", "mv", "rm", "chmod", "chown", "git", "ps", "df", "du", "whoami", "head", "tail", "sort", "uniq", "curl", "wget", "sqlite3", "flatpak", "systemctl", "cargo"]
+# allow_patterns = ["ls.*"]        # optional regex, matched with fullmatch
+# allowed_directories = ["/home/you"]  # optional confinement; [] = any existing abs dir
+# default_directory = "/home/you"  # used when a call omits `directory`
+# default_timeout_secs = 30
+# max_timeout_secs = 300
+# output_limit_bytes = 1048576
+
+[embedded_tools.time]
+enabled = true
+local_timezone = "local"           # "local" or an IANA name (e.g. "Europe/Warsaw")
 
 [tools_policies.restricted]
 enabled_mcp = ["filesystem"]

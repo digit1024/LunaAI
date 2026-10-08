@@ -7,6 +7,7 @@ mod prompts;
 mod server;
 mod services;
 mod storage;
+mod tools;
 mod tools_policy;
 mod types;
 

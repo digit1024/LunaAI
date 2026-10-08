@@ -281,7 +281,7 @@ model = "model-name"
 endpoint = "https://api.provider.com/v1/chat/completions"
 temperature = 0.3
 max_tokens = 4000
-enabled_mcp = ["filesystem", "shell", "time"]
+enabled_mcp = ["filesystem"]
 hidden = false
 summarize_threshold = 0.7
 ```
@@ -309,7 +309,7 @@ Edit `config.toml` profile section:
 ```toml
 [profiles.profilename]
 # ... other settings ...
-enabled_mcp = ["filesystem", "shell", "time", "mail"]  # Add or remove servers
+enabled_mcp = ["filesystem", "mail"]  # Add or remove servers
 ```
 
 ### Update System Prompt

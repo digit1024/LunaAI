@@ -53,7 +53,7 @@ See `quick_setup/docs/QUICK_SETUP.md` and `quick_setup/docs/MEMORY.md`.
 
 ```toml
 [tools_policies.default]
-enabled_mcp = ["shell", "filesystem", "fetch", "skills", "markitdown", "cosmic-llm-memory"]
+enabled_mcp = ["filesystem", "fetch", "skills", "markitdown", "cosmic-llm-memory"]
 enabled_tools = ["*"]
 ```
 
@@ -100,7 +100,7 @@ temperature = 0.3
 max_tokens = 4000
 
 [tools_policies.default]
-enabled_mcp = ["shell", "filesystem", "fetch", "skills", "markitdown", "cosmic-llm-memory"]
+enabled_mcp = ["filesystem", "fetch", "skills", "markitdown", "cosmic-llm-memory"]
 enabled_tools = ["*"]
 disabled_tools = []
 
@@ -144,23 +144,19 @@ Thin UI: `$HOME/.config/luna_thin_ui/server_config.toml`
 
 | id | Purpose |
 |----|---------|
-| `shell` | Whitelisted commands (`uvx mcp-shell-server`) |
 | `filesystem` | Home directory (`npx @modelcontextprotocol/server-filesystem`) |
 | `fetch` | URL → markdown |
 | `skills` | `skills/` folder (`agent-skills-mcp`) |
 | `markitdown` | Office/PDF/URL → markdown |
 | `cosmic-llm-memory` | Luna history binary (`mcp_luna_history`, `COSMIC_LLM_DB_PATH`) |
 
+`shell_execute` and the time tools are **embedded** (no MCP server); configure them under `[embedded_tools]` in `config.toml`.
+
 Example:
 
 ```json
 {
   "mcpServers": {
-    "shell": {
-      "command": "uvx",
-      "args": ["mcp-shell-server"],
-      "env": { "ALLOW_COMMANDS": "ls,cat,..." }
-    },
     "cosmic-llm-memory": {
       "command": "/home/USER/.local/share/cosmic_llm/bin/mcp_luna_history",
       "args": [],
@@ -220,7 +216,7 @@ Edit **`[tools_policies.default]`** (not the profile block):
 
 ```toml
 [tools_policies.default]
-enabled_mcp = ["filesystem", "shell", "cosmic-llm-memory"]
+enabled_mcp = ["filesystem", "cosmic-llm-memory"]
 enabled_tools = ["*"]
 ```
 

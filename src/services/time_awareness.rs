@@ -10,7 +10,8 @@
 
 use crate::config::TimeAwarenessConfig;
 use crate::llm::{Message as LlmMessage, Role};
-use chrono::{DateTime, Local, Utc};
+use crate::tools::time_format::format_utc_or_local;
+use chrono::{DateTime, Utc};
 
 /// Build the time-context block, or `None` when there is nothing worth injecting.
 ///
@@ -41,12 +42,12 @@ pub fn build_time_context(
             humanize_duration(elapsed_secs)
         ));
         if cfg.include_last_message_time {
-            lines.push(format!("Last message: {}", format_dt(last, display_local)));
+            lines.push(format!("Last message: {}", format_utc_or_local(last, display_local)));
         }
     }
 
     if cfg.include_current_time {
-        lines.push(format!("Current time: {}", format_dt(now, display_local)));
+        lines.push(format!("Current time: {}", format_utc_or_local(now, display_local)));
     }
 
     if lines.len() == 1 {
@@ -102,16 +103,6 @@ fn humanize_duration(secs: i64) -> String {
         "less than a minute".to_string()
     } else {
         parts.join(" ")
-    }
-}
-
-fn format_dt(dt: DateTime<Utc>, local: bool) -> String {
-    if local {
-        dt.with_timezone(&Local)
-            .format("%Y-%m-%d %H:%M %Z (%A)")
-            .to_string()
-    } else {
-        dt.format("%Y-%m-%d %H:%M UTC (%A)").to_string()
     }
 }
 

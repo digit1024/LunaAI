@@ -23,7 +23,6 @@ Analysis of [awesome-mcp-servers](https://github.com/punkpeye/awesome-mcp-server
 
 | id | Purpose | Command |
 |----|---------|---------|
-| shell | Whitelisted shell | `uvx mcp-shell-server` |
 | filesystem | Home directory RW | `npx @modelcontextprotocol/server-filesystem` |
 | fetch | URL → markdown | `uvx mcp-server-fetch` |
 | skills | Agent skills folder | `uvx agent-skills-mcp` |

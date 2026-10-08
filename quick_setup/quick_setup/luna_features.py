@@ -15,6 +15,31 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 EMBEDDING_DIMENSIONS = 1536
 LUNA_MEMORY_SERVER_ID = "cosmic-llm-memory"
 
+# Baseline command whitelist for the embedded shell tool. Commands here are
+# matched on basename; interpreters/indirection are rejected by the built-in
+# default-deny policy regardless of this list.
+DEFAULT_SHELL_ALLOW_COMMANDS = [
+    "ls", "cat", "pwd", "grep", "wc", "touch", "find", "echo", "mkdir", "rmdir",
+    "cp", "mv", "rm", "chmod", "chown", "git", "ps", "df", "du", "whoami",
+    "head", "tail", "sort", "uniq", "curl", "wget", "sqlite3", "flatpak",
+    "systemctl", "cargo",
+]
+
+
+def build_embedded_tools_config() -> dict[str, Any]:
+    """Embedded shell + time tools (formerly external MCP servers)."""
+    return {
+        "shell": {
+            "enabled": True,
+            "allow_commands": list(DEFAULT_SHELL_ALLOW_COMMANDS),
+        },
+        "time": {
+            "enabled": True,
+            "local_timezone": "local",
+        },
+    }
+
+
 
 def _normalize_backend(backend: str) -> str:
     if backend in ("deepseek", "openrouter"):
@@ -121,6 +146,7 @@ def finalize_full_luna_config(
     """
     data = load_config(config_path)
     merge_tools_policy_enabled_mcp(data, enabled_mcp)
+    data["embedded_tools"] = build_embedded_tools_config()
 
     summary: dict[str, Any] = {
         "enabled_mcp": enabled_mcp,

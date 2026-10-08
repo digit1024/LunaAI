@@ -6,5 +6,6 @@ pub mod mcp;
 pub mod prompts;
 pub mod services;
 pub mod storage;
+pub mod tools;
 pub mod tools_policy;
 pub mod types;

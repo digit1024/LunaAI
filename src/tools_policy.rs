@@ -57,10 +57,12 @@ fn name_matches_any(name: &str, patterns: &[String]) -> bool {
 }
 
 /// Pure policy computation: given registry guard and policy, returns the full allowed tool name set
-/// (MCP tools + internal tools, after enabled_mcp / enabled_tools / disabled_tools filtering).
+/// (MCP tools + internal tools + enabled embedded tools, after enabled_mcp / enabled_tools /
+/// disabled_tools filtering).
 async fn compute_policy_result(
     guard: &MCPServerRegistry,
     policy: &ToolsPolicy,
+    embedded_tool_names: &[String],
 ) -> Result<HashSet<String>> {
     let server_names: Vec<String> = guard.servers.keys().cloned().collect();
     let allowed_servers: Vec<String> = if policy.enabled_mcp.is_empty() {
@@ -86,6 +88,11 @@ async fn compute_policy_result(
     let mut candidates: HashSet<String> = mcp_tool_names.into_iter().collect();
     for &name in INTERNAL_TOOL_NAMES {
         candidates.insert(name.to_string());
+    }
+    // Embedded tools (compiled-in, formerly MCP servers) behave like internal tools:
+    // they are candidates whenever enabled, gated only by enabled_tools/disabled_tools.
+    for name in embedded_tool_names {
+        candidates.insert(name.clone());
     }
 
     let after_allow: HashSet<String> = if policy.enabled_tools.is_empty() {
@@ -120,6 +127,106 @@ pub async fn compute_allowed_tool_names(
         .get(&profile.tools_policy)
         .cloned()
         .unwrap_or_else(ToolsPolicy::default);
+    let embedded_names = crate::tools::enabled_tool_names(&app_config.embedded_tools);
     let guard = registry.read().await;
-    compute_policy_result(&guard, &policy).await
+    compute_policy_result(&guard, &policy, &embedded_names).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{EmbeddedToolsConfig, ShellToolConfig, TimeToolConfig};
+
+    fn profile_with_policy(policy: &str) -> LlmProfile {
+        LlmProfile {
+            tools_policy: policy.to_string(),
+            ..LlmProfile::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn embedded_names_are_candidates_when_enabled() {
+        let registry = RwLock::new(MCPServerRegistry::new());
+        let mut app_config = AppConfig::default();
+        app_config.embedded_tools = EmbeddedToolsConfig {
+            shell: ShellToolConfig {
+                enabled: true,
+                ..ShellToolConfig::default()
+            },
+            time: TimeToolConfig {
+                enabled: true,
+                ..TimeToolConfig::default()
+            },
+        };
+        app_config.tools_policies.insert(
+            "p".to_string(),
+            ToolsPolicy {
+                enabled_mcp: Vec::new(),
+                enabled_tools: vec!["*".to_string()],
+                disabled_tools: Vec::new(),
+            },
+        );
+
+        let allowed = compute_allowed_tool_names(&registry, &app_config, &profile_with_policy("p"))
+            .await
+            .unwrap();
+
+        assert!(allowed.contains("shell_execute"));
+        assert!(allowed.contains("get_current_time"));
+        assert!(allowed.contains("convert_time"));
+    }
+
+    #[tokio::test]
+    async fn disabled_embedded_tools_are_not_candidates() {
+        let registry = RwLock::new(MCPServerRegistry::new());
+        let mut app_config = AppConfig::default();
+        app_config.embedded_tools = EmbeddedToolsConfig {
+            shell: ShellToolConfig {
+                enabled: false,
+                ..ShellToolConfig::default()
+            },
+            time: TimeToolConfig {
+                enabled: false,
+                ..TimeToolConfig::default()
+            },
+        };
+        app_config.tools_policies.insert(
+            "p".to_string(),
+            ToolsPolicy {
+                enabled_mcp: Vec::new(),
+                enabled_tools: vec!["*".to_string()],
+                disabled_tools: Vec::new(),
+            },
+        );
+
+        let allowed = compute_allowed_tool_names(&registry, &app_config, &profile_with_policy("p"))
+            .await
+            .unwrap();
+        assert!(!allowed.contains("shell_execute"));
+    }
+
+    #[tokio::test]
+    async fn disabled_tools_glob_removes_embedded() {
+        let registry = RwLock::new(MCPServerRegistry::new());
+        let mut app_config = AppConfig::default();
+        app_config.embedded_tools = EmbeddedToolsConfig {
+            shell: ShellToolConfig::default(),
+            time: TimeToolConfig::default(),
+        };
+        app_config.tools_policies.insert(
+            "p".to_string(),
+            ToolsPolicy {
+                enabled_mcp: Vec::new(),
+                enabled_tools: vec!["*".to_string()],
+                disabled_tools: vec!["get_*".to_string()],
+            },
+        );
+
+        let allowed = compute_allowed_tool_names(&registry, &app_config, &profile_with_policy("p"))
+            .await
+            .unwrap();
+        assert!(allowed.contains("shell_execute"));
+        assert!(!allowed.contains("get_current_time"));
+        assert!(allowed.contains("convert_time"));
+    }
 }

@@ -24,6 +24,8 @@ clap = { version = "4.0", features = ["derive"] }
 
 # Date/time
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+iana-time-zone = "0.1"
 cron = "0.16"
 
 # UUIDs
@@ -96,6 +98,9 @@ tokio-util = { version = "0.7", features = ["codec", "io"] }
 
 # Glob pattern matching for tools policy (enabled_mcp, enabled_tools, disabled_tools)
 globset = "0.4"
+
+# Regex for embedded shell tool allow_patterns
+regex = "1"
 
 # Agentic loop library (MCP support)
 agentic-loop = { path = "agentic-loop" }

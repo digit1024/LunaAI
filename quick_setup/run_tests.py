@@ -96,11 +96,11 @@ def run():
             assert "servers" in cat
             with tempfile.TemporaryDirectory() as d:
                 servers = build_servers_from_catalog(
-                    ["shell", "fetch"],
+                    ["fetch", "filesystem"],
                     cosmic_llm_dir=Path(d),
                     catalog_path=cat_path,
                 )
-                assert "shell" in servers
+                assert "fetch" in servers
             mem = build_luna_memory_server("/bin/foo", cosmic_llm_db_path="/tmp/db")
             assert mem["command"] == "/bin/foo"
         ok.append("mcp_config")
@@ -121,7 +121,7 @@ def run():
 
     # luna_features
     try:
-        ids = enabled_mcp_for_selection(["shell"], True)
+        ids = enabled_mcp_for_selection(["filesystem"], True)
         assert "cosmic-llm-memory" in ids
         assert embedding_api_key_from_chat("k", "openai") == "k"
         import tempfile
@@ -130,14 +130,14 @@ def run():
             save_config({"tools_policies": {"default": {}}}, config_path=path)
             s = finalize_full_luna_config(
                 profile_name="t",
-                enabled_mcp=["shell"],
+                enabled_mcp=["filesystem"],
                 chat_api_key="sk",
                 chat_backend="openai",
                 full_luna=True,
                 config_path=path,
             )
             data = load_config(path)
-            assert data["tools_policies"]["default"]["enabled_mcp"] == ["shell"]
+            assert data["tools_policies"]["default"]["enabled_mcp"] == ["filesystem"]
             assert s["embedding_on"] is True
         ok.append("luna_features")
     except Exception as e:
