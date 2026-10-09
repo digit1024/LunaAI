@@ -991,24 +991,27 @@ void _copyToClipboard(BuildContext context, String text) {
   );
 }
 
-/// Attachment chips shown under a user message.
-class _AttachmentChips extends StatelessWidget {
+/// Attachment chips shown under a user message. Image attachments are tappable
+/// and open an authenticated preview fetched from `GET /api/attachment/{uid}`.
+class _AttachmentChips extends ConsumerWidget {
   const _AttachmentChips({required this.attachments});
 
   final List<AttachmentView> attachments;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final colorScheme = Theme.of(context).colorScheme;
+    final config = ref.watch(serverConfigProvider);
+
     return Wrap(
       spacing: 6,
       runSpacing: 6,
       alignment: WrapAlignment.end,
       children: attachments.map((a) {
-        return Container(
+        final chip = Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           decoration: BoxDecoration(
-            color: colorScheme.surfaceContainerHighest,
+            color: colorScheme.secondaryContainer,
             borderRadius: BorderRadius.circular(8),
           ),
           child: Row(
@@ -1027,9 +1030,104 @@ class _AttachmentChips extends StatelessWidget {
             ],
           ),
         );
+
+        if (!a.isImage || a.uid.isEmpty) {
+          return chip;
+        }
+        return InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () => _showAttachmentImage(context, config, a),
+          child: chip,
+        );
       }).toList(),
     );
   }
+}
+
+/// Map of auth headers for the attachment endpoint.
+Map<String, String> _attachmentHeaders(ServerConfig config) => {
+      'x-api-key': config.apiKey,
+      'authorization': 'Bearer ${config.apiKey}',
+    };
+
+/// Build the authenticated URL for a stored attachment, trying the configured
+/// REST bases in order.
+List<String> _attachmentUrls(ServerConfig config, String uid) => config
+    .httpRestBaseUris()
+    .map((base) => base.resolve('/api/attachment/$uid').toString())
+    .toList();
+
+void _showAttachmentImage(
+  BuildContext context,
+  ServerConfig config,
+  AttachmentView attachment,
+) {
+  final urls = _attachmentUrls(config, attachment.uid);
+  if (urls.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('No server URL configured')),
+    );
+    return;
+  }
+  final headers = _attachmentHeaders(config);
+
+  showDialog<void>(
+    context: context,
+    builder: (ctx) => Dialog(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            child: Text(
+              attachment.fileName,
+              style: Theme.of(ctx).textTheme.titleSmall,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Flexible(
+            child: InteractiveViewer(
+              maxScale: 5,
+              child: Image.network(
+                urls.first,
+                headers: headers,
+                fit: BoxFit.contain,
+                loadingBuilder: (context, child, progress) {
+                  if (progress == null) return child;
+                  return const Padding(
+                    padding: EdgeInsets.all(32),
+                    child: CircularProgressIndicator(),
+                  );
+                },
+                errorBuilder: (context, error, stackTrace) {
+                  debugPrint('Attachment image load failed (${urls.first}): $error');
+                  return Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.broken_image_outlined, size: 48),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Could not load image\n${urls.first}',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 String _formatBytes(int bytes) {
