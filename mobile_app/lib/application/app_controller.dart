@@ -439,10 +439,9 @@ class AppController extends Notifier<AppState> {
     // Clear staged files immediately so the chips disappear on send.
     state = state.copyWith(attachedFiles: []);
 
-    // Text/document uploads are sent as positional `@attach:` tokens so the
-    // server inlines them where they sit; images ride turn-level instead.
+    // Text/document uploads also get a positional `@attach:` token so the server
+    // inlines them where they sit; all uploads stay in attachmentIds for chips.
     final textFiles = stagedFiles.where((f) => _isTextAttachment(f.fileName)).toList();
-    final mediaFiles = stagedFiles.where((f) => !_isTextAttachment(f.fileName)).toList();
 
     var content = hasText ? trimmed : stagedFiles.map((f) => f.fileName).join(', ');
     for (final f in textFiles) {
@@ -455,7 +454,7 @@ class AppController extends Notifier<AppState> {
     wsClient.send(ClientCommand.sendMessage(
       conversationId: conversationId,
       content: content,
-      attachmentIds: mediaFiles.isNotEmpty ? mediaFiles.map((f) => f.fileId).toList() : null,
+      attachmentIds: hasFiles ? stagedFiles.map((f) => f.fileId).toList() : null,
       internal: conversationId == null && state.newChatInternal ? true : null,
     ));
   }
@@ -993,6 +992,7 @@ class AppController extends Notifier<AppState> {
           timestamp: timestamp,
           bubbleType: m.role == 'user' ? BubbleType.user : BubbleType.assistant,
           reasoningContent: m.reasoningContent,
+          attachments: m.attachments,
         ));
       }
     }

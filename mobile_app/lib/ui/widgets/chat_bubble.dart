@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../application/app_controller.dart';
 import '../../application/app_state.dart';
 import '../../core/config/server_config.dart';
+import '../../data/ws/ws_dto.dart';
 import '../../services/tts_provider_resolver.dart';
 import '../../tts/message_speech.dart';
 
@@ -211,6 +212,10 @@ class _UserBubble extends StatelessWidget {
                     message.content,
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
+                  if (message.attachments.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    _AttachmentChips(attachments: message.attachments),
+                  ],
                   const SizedBox(height: 6),
                   Row(
                     mainAxisSize: MainAxisSize.min,
@@ -283,7 +288,7 @@ class _AssistantBubble extends ConsumerWidget {
               bottom: isNextAssistant ? 0 : 6,
             ),
             decoration: BoxDecoration(
-              color: colorScheme.surfaceContainerHighest,
+            color: colorScheme.secondaryContainer,
               borderRadius: BorderRadius.only(
                 topLeft: Radius.circular(topLeftRadius),
                 topRight: Radius.circular(topRightRadius),
@@ -984,4 +989,55 @@ void _copyToClipboard(BuildContext context, String text) {
       duration: Duration(seconds: 2),
     ),
   );
+}
+
+/// Attachment chips shown under a user message.
+class _AttachmentChips extends StatelessWidget {
+  const _AttachmentChips({required this.attachments});
+
+  final List<AttachmentView> attachments;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      alignment: WrapAlignment.end,
+      children: attachments.map((a) {
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(a.isImage ? Icons.image : Icons.description, size: 14),
+              const SizedBox(width: 4),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 180),
+                child: Text(
+                  '${a.fileName} (${_formatBytes(a.fileSize)})',
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+              ),
+            ],
+          ),
+        );
+      }).toList(),
+    );
+  }
+}
+
+String _formatBytes(int bytes) {
+  if (bytes >= 1024 * 1024) {
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+  if (bytes >= 1024) {
+    return '${(bytes / 1024).toStringAsFixed(0)} KB';
+  }
+  return '$bytes B';
 }

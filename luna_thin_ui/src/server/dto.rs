@@ -290,15 +290,13 @@ pub struct PlannedToolView {
     pub params_json: Value,
 }
 
-/// File attachment (matches server `llm::Attachment` JSON)
+/// File attachment descriptor from the server (no server paths / content).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AttachmentView {
-    pub file_path: String,
+    pub uid: String,
     pub file_name: String,
     pub mime_type: String,
     pub file_size: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
 }
 
 /// MCP Server status

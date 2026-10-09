@@ -17,7 +17,8 @@ use uuid::Uuid;
 
 use crate::client::{FileClient, LunaWsClient, ServerConfig};
 use crate::server::dto::{
-    ClientCommand, ConversationSummary, MemoryView, MessageView, SearchResult, ServerEvent,
+    AttachmentView, ClientCommand, ConversationSummary, MemoryView, MessageView, SearchResult,
+    ServerEvent,
 };
 use crate::ui::pages::{
     chat_page, history_page, memories_page, mcp_servers_page, settings_page, ChatPageState,
@@ -159,6 +160,11 @@ pub enum Message {
     DownloadImage { url: String, title: String },
     ImageSaved(String),
     ImageSaveError(String),
+
+    // Attachment image preview (loaded from GET /api/attachment/{uid})
+    LoadAttachmentImage { uid: String },
+    AttachmentImageLoaded { uid: String, data: Vec<u8>, is_svg: bool },
+    AttachmentImageFailed { uid: String, error: String },
 
     /// Incrementally parse markdown for a loaded conversation off the
     /// synchronous load path so long histories don't freeze the UI.
@@ -324,6 +330,8 @@ pub struct ChatMessage {
     pub is_streaming: bool,
     /// Long-term memories injected for this user turn (memory RAG).
     pub recalled_memories: Vec<MemoryView>,
+    /// File attachments on this message (user turns).
+    pub attachments: Vec<AttachmentView>,
 }
 
 impl ChatMessage {
@@ -347,7 +355,7 @@ impl ChatMessage {
             tool_result: None,
             tool_status: None,
             is_streaming: false,
-            recalled_memories: Vec::new(),
+            recalled_memories: Vec::new(), attachments: Vec::new(),
         }
     }
     
@@ -368,7 +376,7 @@ impl ChatMessage {
             tool_result: None,
             tool_status: None,
             is_streaming: false,
-            recalled_memories: Vec::new(),
+            recalled_memories: Vec::new(), attachments: Vec::new(),
         }
     }
     
@@ -388,7 +396,7 @@ impl ChatMessage {
             tool_result: None,
             tool_status: Some(status.to_string()),
             is_streaming: false,
-            recalled_memories: Vec::new(),
+            recalled_memories: Vec::new(), attachments: Vec::new(),
         }
     }
     
@@ -408,7 +416,7 @@ impl ChatMessage {
             tool_result: Some(result),
             tool_status: Some(if is_error { "error".to_string() } else { "done".to_string() }),
             is_streaming: false,
-            recalled_memories: Vec::new(),
+            recalled_memories: Vec::new(), attachments: Vec::new(),
         }
     }
     
@@ -429,7 +437,7 @@ impl ChatMessage {
             tool_result: None,
             tool_status: None,
             is_streaming: false,
-            recalled_memories: Vec::new(),
+            recalled_memories: Vec::new(), attachments: Vec::new(),
         }
     }
     
@@ -544,6 +552,9 @@ pub struct LunaThinApp {
     /// Remote image cache for markdown rendering.
     pub image_cache: std::collections::HashMap<String, ImageState>,
 
+    /// Attachment image previews, keyed by attachment uid.
+    pub attachment_images: std::collections::HashMap<String, ImageState>,
+
     // Settings input
     pub settings_host: String,
     pub settings_port: String,
@@ -632,6 +643,7 @@ impl LunaThinApp {
             pending_attachment_ids: Vec::new(),
             pending_text_attachment_tokens: Vec::new(),
             image_cache: std::collections::HashMap::new(),
+            attachment_images: std::collections::HashMap::new(),
         }
     }
 
@@ -1166,7 +1178,7 @@ impl LunaThinApp {
                     tool_result: None,
                     tool_status: None,
                     is_streaming: false,
-                    recalled_memories: Vec::new(),
+                    recalled_memories: Vec::new(), attachments: Vec::new(),
                 });
             } else {
                 // Regular user/assistant message. Markdown parsing is deferred to
@@ -1198,6 +1210,7 @@ impl LunaThinApp {
                     } else {
                         Vec::new()
                     },
+                    attachments: m.attachments.clone().unwrap_or_default(),
                 });
             }
         }
@@ -1241,7 +1254,7 @@ impl LunaThinApp {
             tool_result: None,
             tool_status: None,
             is_streaming: true,
-            recalled_memories: Vec::new(),
+            recalled_memories: Vec::new(), attachments: Vec::new(),
         });
     }
     
@@ -1275,7 +1288,7 @@ impl LunaThinApp {
             tool_result: None,
             tool_status: None,
             is_streaming: true,
-            recalled_memories: Vec::new(),
+            recalled_memories: Vec::new(), attachments: Vec::new(),
         });
     }
     

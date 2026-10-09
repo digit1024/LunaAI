@@ -167,6 +167,8 @@ fn render_message_bubble<'a>(
         &msg.markdown_items,
         &app.image_cache,
         &msg.content,
+        &msg.attachments,
+        &app.attachment_images,
         is_user_msg,
         is_summary_msg,
         msg.summarized_count,

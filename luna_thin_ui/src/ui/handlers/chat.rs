@@ -106,10 +106,11 @@ pub fn handle_chat_messages(
             }
         }
         Message::UploadSuccess { uid, original_name, .. } => {
+            // Keep every upload in attachment_ids (so it renders as a chip); text
+            // uploads also get a positional token so the server inlines them.
+            app.pending_attachment_ids.push(uid.clone());
             if is_text_attachment(&original_name) {
                 app.pending_text_attachment_tokens.push(format!("@attach:{uid}"));
-            } else {
-                app.pending_attachment_ids.push(uid);
             }
             app.messages.push(ChatMessage::user(format!(
                 "📎 Attached: {} (send a message to include it)",
@@ -174,6 +175,22 @@ pub fn handle_chat_messages(
             None
         }
         Message::DownloadImage { url, title } => handle_download_image(app, url, title),
+        Message::LoadAttachmentImage { uid } => handle_load_attachment_image(app, uid),
+        Message::AttachmentImageLoaded { uid, data, is_svg } => {
+            let state = if is_svg {
+                ImageState::Svg(data)
+            } else {
+                let handle = cosmic::widget::image::Handle::from_bytes(data.clone());
+                ImageState::Raster { handle, data }
+            };
+            app.attachment_images.insert(uid, state);
+            None
+        }
+        Message::AttachmentImageFailed { uid, error } => {
+            tracing::warn!("Failed to load attachment image {uid}: {error}");
+            app.attachment_images.insert(uid, ImageState::Error(error));
+            None
+        }
         Message::ImageSaved(path) => {
             app.inline_info = Some(format!("Image saved to {path}"));
             None
@@ -223,7 +240,7 @@ fn handle_send_message(app: &mut LunaThinApp) -> Option<app::Task<Message>> {
     let bubble_text = if message_content.trim().is_empty() {
         "(attachment)".to_string()
     } else {
-        message_content.clone()
+        strip_attach_tokens(&message_content)
     };
     app.messages.push(ChatMessage::user(bubble_text));
 
@@ -443,4 +460,42 @@ fn is_text_attachment(name: &str) -> bool {
             | "scala" | "r" | "m" | "pl" | "lua" | "sql" | "ini" | "cfg" | "conf" | "pdf"
             | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "odt" | "ods" | "odp"
     )
+}
+
+/// Spawn a task to fetch an attachment image for inline preview.
+fn handle_load_attachment_image(app: &mut LunaThinApp, uid: String) -> Option<app::Task<Message>> {
+    if matches!(
+        app.attachment_images.get(&uid),
+        Some(ImageState::Raster { .. }) | Some(ImageState::Svg(_)) | Some(ImageState::Fetching)
+    ) {
+        return None;
+    }
+    app.attachment_images.insert(uid.clone(), ImageState::Fetching);
+    let config = app.server_config.clone();
+    Some(app::Task::perform(
+        async move {
+            let client = crate::client::FileClient::new(config);
+            match client.download_attachment(&uid).await {
+                Ok(bytes) => {
+                    let is_svg = bytes.starts_with(b"<svg") || bytes.starts_with(b"<?xml");
+                    Message::AttachmentImageLoaded { uid, data: bytes, is_svg }
+                }
+                Err(e) => Message::AttachmentImageFailed {
+                    uid,
+                    error: e.to_string(),
+                },
+            }
+        },
+        cosmic::Action::App,
+    ))
+}
+
+/// Remove positional `@attach:<uid>` tokens from display text (they are shown as
+/// attachment chips instead).
+fn strip_attach_tokens(content: &str) -> String {
+    content
+        .split_whitespace()
+        .filter(|token| !token.starts_with("@attach:"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }

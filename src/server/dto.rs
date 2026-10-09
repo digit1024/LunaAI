@@ -1,4 +1,4 @@
-use crate::llm::{Attachment, ToolCall};
+use crate::llm::ToolCall;
 use crate::storage::conversation_storage::StoredMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -232,6 +232,46 @@ pub struct ConversationView {
 }
 
 #[derive(Debug, Serialize, Clone)]
+pub struct AttachmentView {
+    /// Attachment id (`{uid}.{ext}` file stem) for `GET /api/attachment/{uid}`.
+    pub uid: String,
+    pub file_name: String,
+    pub mime_type: String,
+    pub file_size: u64,
+}
+
+impl AttachmentView {
+    fn from_stored(attachment: &crate::llm::Attachment) -> Self {
+        let uid = std::path::Path::new(&attachment.file_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        Self {
+            uid,
+            file_name: attachment.file_name.clone(),
+            mime_type: attachment.mime_type.clone(),
+            file_size: attachment.file_size,
+        }
+    }
+}
+
+/// Remove `@attach:<uid>` tokens from stored content before it is shown to a
+/// client (the structure lives in `attachments`); the LLM payload keeps the
+/// token and expands it at build time.
+fn strip_attach_tokens(content: &str) -> String {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"@attach:[0-9a-zA-Z-]{1,64}").expect("attach token regex")
+    });
+    if !re.is_match(content) {
+        return content.to_string();
+    }
+    re.replace_all(content, "").trim().to_string()
+}
+
+#[derive(Debug, Serialize, Clone)]
 pub struct MessageView {
     pub id: String,
     pub role: String,
@@ -244,7 +284,7 @@ pub struct MessageView {
     pub tool_params_json: Option<Value>,
     pub tool_result_json: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub attachments: Option<Vec<Attachment>>,
+    pub attachments: Option<Vec<AttachmentView>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>, // For DeepSeek thinking/reasoning content
     #[serde(default, skip_serializing_if = "is_false")]
@@ -277,7 +317,7 @@ impl MessageView {
         Self {
             id: msg.id.to_string(),
             role: msg.role.clone(),
-            content: msg.content.clone(),
+            content: strip_attach_tokens(&msg.content),
             timestamp: msg.timestamp.timestamp(),
             tool_calls: msg.tool_calls.clone(),
             tool_call_id: msg.tool_call_id.clone(),
@@ -285,7 +325,9 @@ impl MessageView {
             tool_status: msg.tool_status.clone(),
             tool_params_json: msg.tool_params_json.clone(),
             tool_result_json: msg.tool_result_json.clone(),
-            attachments: msg.attachments.clone(),
+            attachments: msg.attachments.as_ref().map(|atts| {
+                atts.iter().map(AttachmentView::from_stored).collect::<Vec<_>>()
+            }).filter(|atts| !atts.is_empty()),
             reasoning_content: msg.reasoning_content.clone(),
             is_summary: msg.is_summary,
             summarized_count: msg.summarized_count,

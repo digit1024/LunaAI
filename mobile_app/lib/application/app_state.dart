@@ -35,6 +35,7 @@ class ChatMessage extends Equatable {
   final String? reasoningContent; // For DeepSeek thinking/reasoning content
   final bool isSummary; // True if this message is a summary
   final int? summarizedCount; // Count of messages summarized
+  final List<AttachmentView> attachments; // File attachments (user turns)
 
   const ChatMessage({
     required this.id,
@@ -52,6 +53,7 @@ class ChatMessage extends Equatable {
     this.reasoningContent,
     this.isSummary = false,
     this.summarizedCount,
+    this.attachments = const [],
   });
 
   ChatMessage copyWith({
@@ -70,6 +72,7 @@ class ChatMessage extends Equatable {
     String? reasoningContent,
     bool? isSummary,
     int? summarizedCount,
+    List<AttachmentView>? attachments,
   }) {
     return ChatMessage(
       id: id ?? this.id,
@@ -87,6 +90,7 @@ class ChatMessage extends Equatable {
       reasoningContent: reasoningContent ?? this.reasoningContent,
       isSummary: isSummary ?? this.isSummary,
       summarizedCount: summarizedCount ?? this.summarizedCount,
+      attachments: attachments ?? this.attachments,
     );
   }
 

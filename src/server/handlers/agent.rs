@@ -407,27 +407,37 @@ impl ServerHandler {
             }
         }
 
-        // Expand `@attach:<uid>` positional tokens: text is inlined at the token;
-        // image tokens are dropped (the image is attached turn-level).
+        // Expand `@attach:<uid>` positional tokens: text is inlined at the token
+        // and removed from the turn-level attachment list; image tokens are
+        // dropped (the image is attached turn-level).
         let uploads_base = self.ctx.config.uploads_dir();
         let max_inline = self.ctx.config.attachment_rag.inline_max_chars;
-        let mut expansions: Vec<(usize, String)> = Vec::new();
+        let mut expansions: Vec<(usize, String, Vec<String>)> = Vec::new();
         for (index, message) in messages.iter().enumerate() {
             if message.role == Role::User && message.content.contains("@attach:") {
-                expansions.push((
-                    index,
-                    super::helpers::expand_attach_tokens(
-                        &message.content,
-                        &uploads_base,
-                        &conversation_id,
-                        max_inline,
-                    )
-                    .await,
-                ));
+                let (content, inlined) = super::helpers::expand_attach_tokens(
+                    &message.content,
+                    &uploads_base,
+                    &conversation_id,
+                    max_inline,
+                )
+                .await;
+                expansions.push((index, content, inlined));
             }
         }
-        for (index, content) in expansions {
+        for (index, content, inlined) in expansions {
             messages[index].content = content;
+            if !inlined.is_empty() {
+                if let Some(atts) = messages[index].attachments.as_mut() {
+                    atts.retain(|a| {
+                        let uid = std::path::Path::new(&a.file_path)
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("");
+                        !inlined.iter().any(|inlined_uid| inlined_uid == uid)
+                    });
+                }
+            }
         }
 
         Ok(messages)

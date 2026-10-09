@@ -29,19 +29,21 @@ fn attach_ref_regex() -> &'static regex::Regex {
 
 /// Expand `@attach:<uid>` tokens in a user message at prompt-build time.
 ///
-/// Text/document attachments are inlined at the token position; image tokens are
-/// dropped (the image rides turn-level via message metadata). Unresolved tokens
-/// stay verbatim. Never persisted — the transcript keeps the token.
+/// Returns the rewritten content plus the uids that were inlined as text (so the
+/// caller can drop those attachments from the turn-level list and avoid sending
+/// them twice). Image tokens are dropped (the image rides turn-level via message
+/// metadata); unresolved tokens stay verbatim. Never persisted.
 pub(super) async fn expand_attach_tokens(
     content: &str,
     uploads_base: &Path,
     conversation_id: &Uuid,
     max_inline_chars: usize,
-) -> String {
+) -> (String, Vec<String>) {
     if !content.contains("@attach:") {
-        return content.to_string();
+        return (content.to_string(), Vec::new());
     }
 
+    let mut inlined: Vec<String> = Vec::new();
     let mut out = String::with_capacity(content.len());
     let mut last = 0usize;
     for caps in attach_ref_regex().captures_iter(content) {
@@ -64,6 +66,7 @@ pub(super) async fn expand_attach_tokens(
                         out.push_str("\n```\n");
                         out.push_str(&truncate_chars(&body, max_inline_chars));
                         out.push_str("\n```\n");
+                        inlined.push(uid.to_string());
                     }
                     Err(_) => out.push_str(whole.as_str()),
                 }
@@ -72,7 +75,7 @@ pub(super) async fn expand_attach_tokens(
         }
     }
     out.push_str(&content[last..]);
-    out
+    (out, inlined)
 }
 
 /// Locate an uploaded file by exact `{attachment_uid}.{ext}` under
@@ -249,7 +252,7 @@ mod tests {
             .unwrap();
 
         let content = format!("before @attach:{text_uid} middle @attach:{img_uid} after");
-        let out = expand_attach_tokens(&content, &base, &conv, 100_000).await;
+        let out = expand_attach_tokens(&content, &base, &conv, 100_000).await.0;
 
         assert!(out.contains("hello inline"), "{out}");
         assert!(!out.contains(&format!("@attach:{text_uid}")), "{out}");
@@ -262,7 +265,7 @@ mod tests {
         let base = std::env::temp_dir().join(format!("luna_attach_tok2_{}", std::process::id()));
         let conv = Uuid::new_v4();
         let content = "keep @attach:deadbeefdeadbeefdeadbeefdeadbeef here";
-        let out = expand_attach_tokens(content, &base, &conv, 100_000).await;
+        let out = expand_attach_tokens(content, &base, &conv, 100_000).await.0;
         assert_eq!(out, content);
         let _ = std::fs::remove_dir_all(&base);
     }

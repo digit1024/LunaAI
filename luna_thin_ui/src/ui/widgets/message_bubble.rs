@@ -7,10 +7,88 @@ use cosmic::{
     widget::{self, button, container, markdown, text, Column, Row, Space},
     Element,
 };
+use crate::server::dto::AttachmentView;
 use crate::ui::app::{ImageState, Message};
 use crate::ui::icons;
 use crate::ui::widgets::markdown_viewer::{ImageViewer, SelectableImageViewer};
 use crate::ui::widgets::selectable_text;
+
+fn human_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// One attachment row: icon + name/size; image attachments show a thumbnail
+/// once loaded, or a "preview" button that triggers the fetch.
+fn attachment_row<'a>(
+    attachment: &'a AttachmentView,
+    attachment_images: &'a HashMap<String, ImageState>,
+) -> Element<'a, Message> {
+    let is_image = attachment.mime_type.starts_with("image/");
+    let icon_name = if is_image {
+        "image-x-generic-symbolic"
+    } else {
+        "text-x-generic-symbolic"
+    };
+
+    let mut row = Row::new()
+        .spacing(6)
+        .align_y(cosmic::iced::Alignment::Center)
+        .push(widget::icon::icon(icons::get_handle(icon_name, 14)).size(14))
+        .push(
+            text(format!(
+                "{} ({})",
+                attachment.file_name,
+                human_size(attachment.file_size)
+            ))
+            .size(12),
+        );
+
+    if is_image {
+        match attachment_images.get(&attachment.uid) {
+            Some(ImageState::Raster { handle, .. }) => {
+                row = row.push(
+                    widget::image::Image::new(handle.clone())
+                        .width(Length::Fixed(220.0))
+                        .height(Length::Shrink),
+                );
+            }
+            Some(ImageState::Svg(bytes)) => {
+                let handle = widget::svg::Handle::from_memory(bytes.clone());
+                row = row.push(
+                    widget::Svg::new(handle)
+                        .width(Length::Fixed(220.0))
+                        .height(Length::Shrink),
+                );
+            }
+            Some(ImageState::Fetching) => {
+                row = row.push(text("loading…").size(11));
+            }
+            Some(ImageState::Error(_)) => {
+                row = row.push(text("⚠ preview failed").size(11));
+            }
+            None => {
+                row = row.push(
+                    button::text("preview")
+                        .on_press(Message::LoadAttachmentImage {
+                            uid: attachment.uid.clone(),
+                        })
+                        .padding(2),
+                );
+            }
+        }
+    }
+
+    row.into()
+}
 
 /// Context for rendering message bubbles with smart corners
 #[derive(Debug, Clone, Copy)]
@@ -49,6 +127,8 @@ fn bubble_markdown_style() -> widget::markdown::Style {
 /// Message bubble for user messages (right-aligned, primary color)
 pub fn user_bubble<'a>(
     content: &str,
+    attachments: &'a [AttachmentView],
+    attachment_images: &'a HashMap<String, ImageState>,
     on_copy: Message,
     on_retry: Option<Message>,
     recalled_count: usize,
@@ -58,6 +138,11 @@ pub fn user_bubble<'a>(
 
     let content_widget = container(selectable_text::bubble_text(content_owned))
         .width(Length::Fill);
+
+    let mut attachments_col = Column::new().spacing(4);
+    for attachment in attachments {
+        attachments_col = attachments_col.push(attachment_row(attachment, attachment_images));
+    }
 
     let mut buttons = Row::new().push(Space::new().width(Length::Fill));
 
@@ -103,6 +188,7 @@ pub fn user_bubble<'a>(
     let message_widget = container(
         Column::new()
             .push(content_widget)
+            .push(attachments_col)
             .push(buttons)
             .spacing(4),
     )
@@ -348,6 +434,8 @@ pub fn message_bubble<'a>(
     markdown_items: &'a [markdown::Item],
     image_cache: &'a HashMap<String, ImageState>,
     content: &str,
+    attachments: &'a [AttachmentView],
+    attachment_images: &'a HashMap<String, ImageState>,
     is_user: bool,
     is_summary: bool,
     summarized_count: Option<usize>,
@@ -377,6 +465,8 @@ pub fn message_bubble<'a>(
     } else if is_user {
         user_bubble(
             content,
+            attachments,
+            attachment_images,
             on_copy,
             on_retry,
             recalled_count,

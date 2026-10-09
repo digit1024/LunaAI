@@ -151,6 +151,29 @@ impl FileClient {
             .unwrap_or_else(|| "File removal failed: no reachable REST base".into()))
     }
 
+    /// Fetch an uploaded attachment's bytes via GET /api/attachment/{uid}.
+    pub async fn download_attachment(
+        &self,
+        uid: &str,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut last_err: Option<Box<dyn std::error::Error + Send + Sync>> = None;
+        for base in self.request_bases() {
+            let url = format!("{}/api/attachment/{}", base.trim_end_matches('/'), uid);
+            let response = match self.client.get(&url).headers(self.headers()).send().await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    last_err = Some(e.into());
+                    continue;
+                }
+            };
+            if response.status().is_success() {
+                return Ok(response.bytes().await?.to_vec());
+            }
+            last_err = Some(format!("attachment fetch failed: HTTP {}", response.status()).into());
+        }
+        Err(last_err.unwrap_or_else(|| "attachment fetch failed: no reachable REST base".into()))
+    }
+
     pub async fn list_mcp_servers(
         &self,
     ) -> Result<crate::server::dto::MCPServersResponse, Box<dyn std::error::Error + Send + Sync>>

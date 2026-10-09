@@ -454,6 +454,7 @@ class MessageView {
   final String? reasoningContent; // For DeepSeek thinking/reasoning content
   final bool isSummary; // True if this message is a summary of previous messages
   final int? summarizedCount; // Count of messages summarized
+  final List<AttachmentView> attachments;
 
   MessageView({
     required this.id,
@@ -468,6 +469,7 @@ class MessageView {
     this.reasoningContent,
     this.isSummary = false,
     this.summarizedCount,
+    this.attachments = const [],
   });
 
   factory MessageView.fromJson(Map<String, dynamic> json) {
@@ -484,8 +486,36 @@ class MessageView {
       reasoningContent: json['reasoning_content'] as String?,
       isSummary: json['is_summary'] as bool? ?? false,
       summarizedCount: json['summarized_count'] as int?,
+      attachments: (json['attachments'] as List<dynamic>?)
+              ?.map((e) => AttachmentView.fromJson(e as Map<String, dynamic>))
+              .toList() ??
+          const [],
     );
   }
+}
+
+/// File attachment descriptor (matches server `AttachmentView`).
+class AttachmentView {
+  final String uid;
+  final String fileName;
+  final String mimeType;
+  final int fileSize;
+
+  const AttachmentView({
+    required this.uid,
+    required this.fileName,
+    required this.mimeType,
+    required this.fileSize,
+  });
+
+  bool get isImage => mimeType.startsWith('image/');
+
+  factory AttachmentView.fromJson(Map<String, dynamic> json) => AttachmentView(
+        uid: json['uid'] as String? ?? '',
+        fileName: json['file_name'] as String? ?? 'file',
+        mimeType: json['mime_type'] as String? ?? '',
+        fileSize: json['file_size'] as int? ?? 0,
+      );
 }
 
 class PlannedToolView {
