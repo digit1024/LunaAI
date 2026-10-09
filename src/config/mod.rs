@@ -632,6 +632,41 @@ impl Default for AttachmentRagConfig {
     }
 }
 
+// ── `@file:` / `@folder:` reference expansion ──
+
+fn default_files_max_refs() -> usize {
+    16
+}
+
+fn default_files_max_bytes() -> usize {
+    131_072
+}
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct FilesConfig {
+    /// Root that `@file:`/`@folder:` references resolve within. `None` = the
+    /// user's home directory (matches the filesystem MCP scope). References
+    /// outside this root — including symlink escapes — are left literal.
+    #[serde(default)]
+    pub root: Option<String>,
+    /// Maximum references expanded per message; the rest stay literal.
+    #[serde(default = "default_files_max_refs")]
+    pub max_refs: usize,
+    /// Maximum bytes inlined per file reference.
+    #[serde(default = "default_files_max_bytes")]
+    pub max_bytes: usize,
+}
+
+impl Default for FilesConfig {
+    fn default() -> Self {
+        Self {
+            root: None,
+            max_refs: default_files_max_refs(),
+            max_bytes: default_files_max_bytes(),
+        }
+    }
+}
+
 // ── Time awareness: ephemeral "time since last message" system context ──
 
 fn default_time_awareness_enabled() -> bool {
@@ -812,6 +847,8 @@ pub struct AppConfig {
     pub embedding: EmbeddingConfig,
     #[serde(default)]
     pub attachment_rag: AttachmentRagConfig,
+    #[serde(default)]
+    pub files: FilesConfig,
 }
 
 impl Default for AppConfig {
@@ -857,6 +894,7 @@ impl Default for AppConfig {
             deep_sleep: DeepSleepConfig::default(),
             embedding: EmbeddingConfig::default(),
             attachment_rag: AttachmentRagConfig::default(),
+            files: FilesConfig::default(),
         }
     }
 }
@@ -880,6 +918,16 @@ impl AppConfig {
     /// Directory for static assets served at /api/static: `config_dir/static`
     pub fn static_dir(&self) -> PathBuf {
         Self::config_dir().join("static")
+    }
+
+    /// Root that `@file:`/`@folder:` references resolve within (default HOME).
+    pub fn files_root(&self) -> PathBuf {
+        self.files
+            .root
+            .as_ref()
+            .map(PathBuf::from)
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| PathBuf::from("."))
     }
 
     pub fn load() -> Result<Self, ConfigError> {

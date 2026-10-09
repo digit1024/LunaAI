@@ -296,6 +296,7 @@ pub mod compaction;
 pub mod context_manager;
 pub mod file_utils;
 pub mod gemini;
+pub mod mime;
 pub mod ollama;
 pub mod openai;
 pub mod tokenizer;

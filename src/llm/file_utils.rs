@@ -1,10 +1,21 @@
-use crate::llm::attachment_limits::{MAX_IMAGE_BYTES, MAX_INLINE_TEXT_CHARS};
+use crate::llm::attachment_limits::MAX_IMAGE_BYTES;
+use crate::llm::mime;
 use crate::llm::Attachment;
 use anyhow::{Context, Result};
 use base64::Engine;
 use std::fs;
 use std::path::Path;
 use tracing;
+
+/// Read up to `max` leading bytes of a file (for content sniffing).
+fn read_head(path: &Path, max: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut file = fs::File::open(path)?;
+    let mut buf = vec![0u8; max];
+    let n = file.read(&mut buf)?;
+    buf.truncate(n);
+    Ok(buf)
+}
 
 /// Supported file types for LLM processing
 #[derive(Debug, Clone, PartialEq)]
@@ -51,25 +62,37 @@ pub fn create_attachment(file_path: &str) -> Result<Attachment> {
     let metadata = fs::metadata(path)?;
     let file_size = metadata.len();
 
-    // Determine MIME type from extension
-    let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
-    let mime_type = get_mime_type_from_extension(extension);
-    let file_type = FileType::from_extension(extension);
+    // Determine type: prefer the extension, but fall back to content sniffing
+    // for extension-less / unknown files so `.bin` uploads still classify.
+    let mut extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_string();
+    let mut mime_type = get_mime_type_from_extension(&extension);
+    let mut file_type = FileType::from_extension(&extension);
+
+    if extension.is_empty() || !mime::is_known_ext(&extension) {
+        if let Ok(head) = read_head(path, 8192) {
+            if let Some(sniffed) = mime::sniff(&head) {
+                if sniffed.mime.starts_with("image/") || sniffed.ext == "pdf" {
+                    extension = sniffed.ext.to_string();
+                    mime_type = sniffed.mime.to_string();
+                    file_type = FileType::from_extension(&extension);
+                } else if extension.is_empty() && sniffed.ext == "txt" {
+                    mime_type = "text/plain".to_string();
+                    file_type = FileType::Text;
+                }
+            }
+        }
+    }
 
     // Extract content based on file type
     let (content, final_mime_type, final_file_name) = match file_type {
         FileType::Text => {
-            let text_content = fs::read_to_string(path).ok().map(|s| {
-                if s.chars().count() > MAX_INLINE_TEXT_CHARS {
-                    let truncated: String = s.chars().take(MAX_INLINE_TEXT_CHARS).collect();
-                    format!(
-                        "{}\n\n[... truncated to {} characters ...]",
-                        truncated, MAX_INLINE_TEXT_CHARS
-                    )
-                } else {
-                    s
-                }
-            });
+            // Full text. The RAG-aware inline trim happens exactly once, later,
+            // in the send handler — this function must not truncate.
+            let text_content = fs::read_to_string(path).ok();
             (text_content, mime_type, file_name)
         }
         FileType::Document => {
@@ -81,18 +104,6 @@ pub fn create_attachment(file_path: &str) -> Result<Attachment> {
                         content_length = markdown_content.len(),
                         "Converted file to markdown"
                     );
-                    let md = if markdown_content.chars().count() > MAX_INLINE_TEXT_CHARS {
-                        let truncated: String = markdown_content
-                            .chars()
-                            .take(MAX_INLINE_TEXT_CHARS)
-                            .collect();
-                        format!(
-                            "{}\n\n[... truncated to {} characters ...]",
-                            truncated, MAX_INLINE_TEXT_CHARS
-                        )
-                    } else {
-                        markdown_content
-                    };
                     // Update file name to indicate it's now markdown
                     let markdown_file_name = if let Some(base_name) = path
                         .file_stem()
@@ -103,7 +114,7 @@ pub fn create_attachment(file_path: &str) -> Result<Attachment> {
                         format!("{}.md", file_name)
                     };
                     (
-                        Some(md),
+                        Some(markdown_content),
                         "text/markdown".to_string(),
                         markdown_file_name,
                     )
@@ -287,4 +298,43 @@ pub fn hydrate_attachments_for_llm(attachments: &mut [Attachment]) -> Result<()>
         a.content = Some(base64::engine::general_purpose::STANDARD.encode(bytes));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn temp_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("luna_attach_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn unknown_extension_text_classifies_as_text() {
+        let path = temp_file("blob.bin", b"hello, this is plain text");
+        let attachment = create_attachment(path.to_str().unwrap()).unwrap();
+        assert!(attachment.mime_type.starts_with("text/"), "{}", attachment.mime_type);
+        assert_eq!(attachment.content.as_deref(), Some("hello, this is plain text"));
+    }
+
+    #[test]
+    fn extensionless_png_classifies_as_image() {
+        let path = temp_file("blob_no_ext", b"\x89PNG\r\n\x1a\n\x00\x00\x00\x00");
+        let attachment = create_attachment(path.to_str().unwrap()).unwrap();
+        assert_eq!(attachment.mime_type, "image/png");
+        assert!(attachment.content.is_some(), "image should be base64-encoded");
+    }
+
+    #[test]
+    fn text_is_not_truncated_at_creation() {
+        let big = "a".repeat(600_000);
+        let path = temp_file("big.txt", big.as_bytes());
+        let attachment = create_attachment(path.to_str().unwrap()).unwrap();
+        assert_eq!(attachment.content.as_ref().unwrap().chars().count(), 600_000);
+    }
 }

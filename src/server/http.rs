@@ -1,5 +1,7 @@
 use super::handlers::ServerContext;
+use super::upload_policy;
 use super::websocket;
+use crate::llm::attachment_limits::MAX_UPLOAD_BYTES;
 use axum::{
     body::Body,
     extract::{
@@ -22,7 +24,6 @@ use subtle::ConstantTimeEq;
 use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
-const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024; // 50 MB
 /// Cap for non-upload HTTP JSON/small requests.
 const MAX_HTTP_BODY_BYTES: usize = 2 * 1024 * 1024;
 /// Idle/request timeout for HTTP handlers only (not WebSocket).
@@ -86,17 +87,6 @@ fn ct_eq_str(a: &str, b: &str) -> bool {
     bool::from(a.as_bytes().ct_eq(b.as_bytes()))
 }
 
-/// True when `name` is exactly `{attachment_uid}.{ext}` with a single extension segment.
-fn attachment_filename_matches(name: &str, attachment_uid: &str) -> bool {
-    let Some((stem, ext)) = name.split_once('.') else {
-        return false;
-    };
-    !ext.is_empty()
-        && !ext.contains('.')
-        && !stem.is_empty()
-        && stem == attachment_uid
-}
-
 async fn require_api_key(
     State(ctx): State<Arc<ServerContext>>,
     request: Request,
@@ -108,39 +98,47 @@ async fn require_api_key(
     Ok(next.run(request).await)
 }
 
+type UploadError = (StatusCode, String);
+
 pub async fn attach_file_handler(
     State(ctx): State<Arc<ServerContext>>,
     headers: HeaderMap,
     body: Body,
-) -> Result<Json<AttachFileResponse>, StatusCode> {
+) -> Result<Json<AttachFileResponse>, UploadError> {
+    let bad_request = |msg: &str| (StatusCode::BAD_REQUEST, msg.to_string());
+
     let content_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|ct| ct.to_str().ok())
-        .ok_or(StatusCode::BAD_REQUEST)?;
+        .ok_or_else(|| bad_request("Missing Content-Type"))?;
     let boundary = content_type
         .strip_prefix("multipart/form-data; boundary=")
-        .ok_or(StatusCode::BAD_REQUEST)?;
+        .ok_or_else(|| bad_request("Expected multipart/form-data"))?;
 
     let body_bytes = axum::body::to_bytes(body, MAX_UPLOAD_BYTES)
         .await
-        .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)?;
+        .map_err(|_| (StatusCode::PAYLOAD_TOO_LARGE, "Upload exceeds the size limit".to_string()))?;
     let body_stream = stream::once(async move { Ok::<_, std::io::Error>(body_bytes) });
     let mut multipart = Multipart::new(body_stream, boundary);
 
     let mut file_data: Option<(String, Vec<u8>)> = None;
     let mut conversation_id: Option<String> = None;
-    while let Some(field) = multipart.next_field().await.map_err(|_| StatusCode::BAD_REQUEST)? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| bad_request("Malformed multipart body"))?
+    {
         let name = field.name().unwrap_or("");
         match name {
             "file" => {
                 let file_name = field
                     .file_name()
-                    .ok_or(StatusCode::BAD_REQUEST)?
+                    .ok_or_else(|| bad_request("File field has no filename"))?
                     .to_string();
                 let data = field
                     .bytes()
                     .await
-                    .map_err(|_| StatusCode::BAD_REQUEST)?
+                    .map_err(|_| bad_request("Failed to read file field"))?
                     .to_vec();
                 file_data = Some((file_name, data));
             }
@@ -148,7 +146,7 @@ pub async fn attach_file_handler(
                 let s = field
                     .text()
                     .await
-                    .map_err(|_| StatusCode::BAD_REQUEST)?
+                    .map_err(|_| bad_request("Failed to read conversation_id field"))?
                     .trim()
                     .to_string();
                 if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
@@ -159,35 +157,49 @@ pub async fn attach_file_handler(
         }
     }
 
-    let (original_name, data) = file_data.ok_or(StatusCode::BAD_REQUEST)?;
+    let (original_name, data) = file_data.ok_or_else(|| bad_request("Missing file field"))?;
+
+    // Content is authoritative: reject spoofed/unsupported/oversized uploads.
+    let class = upload_policy::classify(&original_name, &data).map_err(|reject| {
+        (
+            StatusCode::from_u16(reject.status_code()).unwrap_or(StatusCode::BAD_REQUEST),
+            reject.message(),
+        )
+    })?;
 
     let subdir = conversation_id
         .as_deref()
         .filter(|s| !s.is_empty())
         .unwrap_or("_no_conversation");
-    let uid = Uuid::new_v4();
-    let ext = StdPath::new(&original_name)
-        .extension()
-        .and_then(|e| e.to_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("bin");
-    let storage_name = format!("{}.{}", uid, ext);
-
     let uploads_base = ctx.config.uploads_dir();
     let target_dir = uploads_base.join(subdir);
-    tokio::fs::create_dir_all(&target_dir)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tokio::fs::create_dir_all(&target_dir).await.map_err(|_| {
+        (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create upload directory".to_string())
+    })?;
+
+    // Dedupe: reuse an identical existing upload instead of storing a copy.
+    if let Some((existing_uid, existing_path)) = find_duplicate(&target_dir, &data).await {
+        tracing::info!(uid = %existing_uid, original_name = %original_name, "Reused identical upload");
+        return Ok(Json(AttachFileResponse {
+            uid: existing_uid,
+            original_name,
+            stored_path: existing_path.display().to_string(),
+        }));
+    }
+
+    let uid = Uuid::new_v4();
+    let storage_name = format!("{}.{}", uid, class.ext);
     let path = target_dir.join(&storage_name);
-    tokio::fs::write(&path, &data)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tokio::fs::write(&path, &data).await.map_err(|_| {
+        (StatusCode::INTERNAL_SERVER_ERROR, "Failed to write upload".to_string())
+    })?;
 
     let stored_path = path.display().to_string();
-
     tracing::info!(
         uid = %uid,
         original_name = %original_name,
+        ext = %class.ext,
+        kind = ?class.kind,
         path = %stored_path,
         "Stored upload"
     );
@@ -197,6 +209,82 @@ pub async fn attach_file_handler(
         original_name,
         stored_path,
     }))
+}
+
+/// Return an existing file in `dir` with identical bytes (size prefilter + byte compare).
+async fn find_duplicate(dir: &StdPath, data: &[u8]) -> Option<(String, PathBuf)> {
+    let mut entries = tokio::fs::read_dir(dir).await.ok()?;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        let meta = match tokio::fs::symlink_metadata(&path).await {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !meta.is_file() || meta.len() != data.len() as u64 {
+            continue;
+        }
+        if let Ok(existing) = tokio::fs::read(&path).await {
+            if existing == data {
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                return Some((stem, path));
+            }
+        }
+    }
+    None
+}
+
+/// Resolve an uploaded file by attachment uid across conversation subdirs.
+async fn find_upload_by_uid(uploads_base: &StdPath, uid: &str) -> Option<PathBuf> {
+    let mut subdirs = tokio::fs::read_dir(uploads_base).await.ok()?;
+    while let Ok(Some(sub)) = subdirs.next_entry().await {
+        if !sub.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let Ok(mut inner) = tokio::fs::read_dir(sub.path()).await else {
+            continue;
+        };
+        while let Ok(Some(entry)) = inner.next_entry().await {
+            let matches = entry
+                .file_name()
+                .to_str()
+                .map(|name| upload_policy::filename_matches(name, uid))
+                .unwrap_or(false);
+            if matches {
+                return Some(entry.path());
+            }
+        }
+    }
+    None
+}
+
+/// Serve an uploaded attachment's bytes for preview, by uid (authenticated).
+pub async fn attachment_file_handler(
+    State(ctx): State<Arc<ServerContext>>,
+    Path(uid): Path<String>,
+) -> Result<Response, StatusCode> {
+    if uid.is_empty()
+        || uid.contains('/')
+        || uid.contains('\\')
+        || uid.contains("..")
+        || !uid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let uploads_base = ctx.config.uploads_dir();
+    let path = find_upload_by_uid(&uploads_base, &uid)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mime = crate::llm::mime::sniff(&bytes)
+        .map(|s| s.mime)
+        .unwrap_or("application/octet-stream");
+    Ok(([(header::CONTENT_TYPE, mime)], bytes).into_response())
 }
 
 pub async fn remove_file_handler(
@@ -225,7 +313,7 @@ pub async fn remove_file_handler(
                 while let Ok(Some(e)) = inner.next_entry().await {
                     let name = e.file_name();
                     if let Some(s) = name.to_str() {
-                        if attachment_filename_matches(s, &uid) {
+                        if upload_policy::filename_matches(s, &uid) {
                             if tokio::fs::remove_file(e.path()).await.is_ok() {
                                 removed = true;
                                 tracing::info!("Removed upload {}", s);
@@ -380,6 +468,7 @@ pub fn create_http_router(ctx: Arc<ServerContext>) -> Router {
     // Other authenticated HTTP routes (not WebSocket).
     let authed_http = Router::new()
         .route("/api/attach-file/{file_id}", delete(remove_file_handler))
+        .route("/api/attachment/{uid}", get(attachment_file_handler))
         .route("/api/mcp-servers", get(list_mcp_servers_handler))
         .route_layer(auth_layer.clone())
         .layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES));
@@ -419,10 +508,25 @@ mod tests {
     #[test]
     fn attachment_filename_exact_match() {
         let uid = "11111111-2222-3333-4444-555555555555";
-        assert!(attachment_filename_matches(&format!("{uid}.png"), uid));
-        assert!(!attachment_filename_matches(&format!("{uid}x.png"), uid));
-        assert!(!attachment_filename_matches(&format!("{uid}.tar.gz"), uid));
-        assert!(!attachment_filename_matches(uid, uid));
+        assert!(upload_policy::filename_matches(&format!("{uid}.png"), uid));
+        assert!(!upload_policy::filename_matches(&format!("{uid}x.png"), uid));
+        assert!(!upload_policy::filename_matches(&format!("{uid}.tar.gz"), uid));
+        assert!(!upload_policy::filename_matches(uid, uid));
+    }
+
+    #[tokio::test]
+    async fn finds_upload_by_uid_across_subdirs() {
+        let base = std::env::temp_dir().join(format!("luna_findupload_{}", Uuid::new_v4()));
+        let sub = base.join("conv");
+        tokio::fs::create_dir_all(&sub).await.unwrap();
+        let uid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        tokio::fs::write(sub.join(format!("{uid}.txt")), b"hi")
+            .await
+            .unwrap();
+
+        assert!(find_upload_by_uid(&base, uid).await.is_some());
+        assert!(find_upload_by_uid(&base, "no-such-uid").await.is_none());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

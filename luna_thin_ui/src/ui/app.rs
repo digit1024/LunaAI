@@ -537,6 +537,10 @@ pub struct LunaThinApp {
     /// Upload UUIDs waiting to be sent with the next message (`SendMessage.attachment_ids`).
     pub pending_attachment_ids: Vec<String>,
 
+    /// `@attach:<uid>` tokens for text/document uploads, appended to the sent
+    /// message so the server inlines them at a position rather than turn-level.
+    pub pending_text_attachment_tokens: Vec<String>,
+
     /// Remote image cache for markdown rendering.
     pub image_cache: std::collections::HashMap<String, ImageState>,
 
@@ -626,6 +630,7 @@ impl LunaThinApp {
             recalled_memories_popup: None,
             pending_recalled_memories: std::collections::HashMap::new(),
             pending_attachment_ids: Vec::new(),
+            pending_text_attachment_tokens: Vec::new(),
             image_cache: std::collections::HashMap::new(),
         }
     }

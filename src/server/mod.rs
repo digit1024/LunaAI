@@ -3,6 +3,7 @@ pub mod context_pipeline;
 pub mod dto;
 mod handlers;
 mod http;
+mod upload_policy;
 mod websocket;
 
 use crate::server::handlers::{run_scheduled_task, ServerContext};

@@ -106,7 +106,11 @@ pub fn handle_chat_messages(
             }
         }
         Message::UploadSuccess { uid, original_name, .. } => {
-            app.pending_attachment_ids.push(uid);
+            if is_text_attachment(&original_name) {
+                app.pending_text_attachment_tokens.push(format!("@attach:{uid}"));
+            } else {
+                app.pending_attachment_ids.push(uid);
+            }
             app.messages.push(ChatMessage::user(format!(
                 "📎 Attached: {} (send a message to include it)",
                 original_name
@@ -186,7 +190,8 @@ pub fn handle_chat_messages(
 
 /// Handle SendMessage - the main chat handler
 fn handle_send_message(app: &mut LunaThinApp) -> Option<app::Task<Message>> {
-    let has_pending = !app.pending_attachment_ids.is_empty();
+    let has_pending = !app.pending_attachment_ids.is_empty()
+        || !app.pending_text_attachment_tokens.is_empty();
     if app.connection_status != ConnectionStatus::Connected {
         return None;
     }
@@ -194,8 +199,14 @@ fn handle_send_message(app: &mut LunaThinApp) -> Option<app::Task<Message>> {
         return None;
     }
 
-    // Save content before clearing
-    let message_content = app.input_text.clone();
+    // Save content before clearing; append positional tokens for text uploads.
+    let mut message_content = app.input_text.clone();
+    for token in std::mem::take(&mut app.pending_text_attachment_tokens) {
+        if !message_content.trim().is_empty() {
+            message_content.push(' ');
+        }
+        message_content.push_str(&token);
+    }
     let attachment_ids = if app.pending_attachment_ids.is_empty() {
         None
     } else {
@@ -415,3 +426,21 @@ fn guess_image_extension(bytes: &[u8], is_svg: bool) -> &'static str {
     }
 }
 
+
+/// True when an uploaded file should be inlined as text at its token position
+/// (text/code/markdown and documents); images ride turn-level instead.
+fn is_text_attachment(name: &str) -> bool {
+    let ext = std::path::Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    matches!(
+        ext.as_str(),
+        "txt" | "md" | "json" | "xml" | "yaml" | "yml" | "toml" | "csv" | "log" | "html"
+            | "htm" | "css" | "js" | "ts" | "jsx" | "tsx" | "py" | "rs" | "sh" | "bash" | "zsh"
+            | "c" | "cc" | "cpp" | "h" | "hpp" | "java" | "go" | "php" | "rb" | "swift" | "kt"
+            | "scala" | "r" | "m" | "pl" | "lua" | "sql" | "ini" | "cfg" | "conf" | "pdf"
+            | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "odt" | "ods" | "odp"
+    )
+}

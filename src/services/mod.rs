@@ -6,6 +6,7 @@
 pub mod message_converter;
 pub mod conversation_tail;
 pub mod context_service;
+pub mod context_refs;
 pub mod schedule_service;
 pub mod memory_rag;
 pub mod attachment_rag;

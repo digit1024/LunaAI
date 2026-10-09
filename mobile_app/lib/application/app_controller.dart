@@ -439,15 +439,39 @@ class AppController extends Notifier<AppState> {
     // Clear staged files immediately so the chips disappear on send.
     state = state.copyWith(attachedFiles: []);
 
+    // Text/document uploads are sent as positional `@attach:` tokens so the
+    // server inlines them where they sit; images ride turn-level instead.
+    final textFiles = stagedFiles.where((f) => _isTextAttachment(f.fileName)).toList();
+    final mediaFiles = stagedFiles.where((f) => !_isTextAttachment(f.fileName)).toList();
+
+    var content = hasText ? trimmed : stagedFiles.map((f) => f.fileName).join(', ');
+    for (final f in textFiles) {
+      content = content.isEmpty ? '@attach:${f.fileId}' : '$content @attach:${f.fileId}';
+    }
+
     final conversationId = state.activeConversation?.id;
     await guard.ensureStarted('Streaming reply');
     _waitingForResponse = true;
     wsClient.send(ClientCommand.sendMessage(
       conversationId: conversationId,
-      content: hasText ? trimmed : stagedFiles.map((f) => f.fileName).join(', '),
-      attachmentIds: hasFiles ? stagedFiles.map((f) => f.fileId).toList() : null,
+      content: content,
+      attachmentIds: mediaFiles.isNotEmpty ? mediaFiles.map((f) => f.fileId).toList() : null,
       internal: conversationId == null && state.newChatInternal ? true : null,
     ));
+  }
+
+  /// True when an uploaded file should be inlined as text at its token position.
+  static bool _isTextAttachment(String name) {
+    final dot = name.lastIndexOf('.');
+    final ext = dot >= 0 ? name.substring(dot + 1).toLowerCase() : '';
+    const textExts = {
+      'txt', 'md', 'json', 'xml', 'yaml', 'yml', 'toml', 'csv', 'log', 'html', 'htm',
+      'css', 'js', 'ts', 'jsx', 'tsx', 'py', 'rs', 'sh', 'bash', 'zsh', 'c', 'cc',
+      'cpp', 'h', 'hpp', 'java', 'go', 'php', 'rb', 'swift', 'kt', 'scala', 'r', 'm',
+      'pl', 'lua', 'sql', 'ini', 'cfg', 'conf', 'pdf', 'doc', 'docx', 'xls', 'xlsx',
+      'ppt', 'pptx', 'odt', 'ods', 'odp',
+    };
+    return textExts.contains(ext);
   }
 
   void startDialogMode() {

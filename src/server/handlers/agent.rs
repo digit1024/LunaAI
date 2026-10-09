@@ -7,8 +7,8 @@ use super::{
     RunAgentOptions, ServerHandler,
 };
 use crate::{
-    llm::Message as LlmMessage,
-    services::{conversation_tail, ContextService, MessageConverter},
+    llm::{Message as LlmMessage, Role},
+    services::{context_refs, conversation_tail, ContextService, MessageConverter},
     server::dto::ServerEvent,
     storage::sqlite_storage_simple::{Message as StorageMessage, MessageMetadata},
 };
@@ -389,7 +389,48 @@ impl ServerHandler {
             .into_iter()
             .cloned()
             .collect();
-        Ok(MessageConverter::db_to_llm(&context, true))
+        let mut messages = MessageConverter::db_to_llm(&context, true);
+        drop(storage);
+
+        // Expand `@file:` / `@folder:` references transiently for user turns.
+        // Never persisted: the transcript keeps the token the user typed.
+        let policy = context_refs::RefPolicy::new(
+            self.ctx.config.files_root(),
+            self.ctx.config.files.max_refs,
+            self.ctx.config.files.max_bytes,
+        );
+        for message in messages.iter_mut() {
+            if message.role == Role::User
+                && (message.content.contains("@file:") || message.content.contains("@folder:"))
+            {
+                message.content = context_refs::expand(&message.content, &policy);
+            }
+        }
+
+        // Expand `@attach:<uid>` positional tokens: text is inlined at the token;
+        // image tokens are dropped (the image is attached turn-level).
+        let uploads_base = self.ctx.config.uploads_dir();
+        let max_inline = self.ctx.config.attachment_rag.inline_max_chars;
+        let mut expansions: Vec<(usize, String)> = Vec::new();
+        for (index, message) in messages.iter().enumerate() {
+            if message.role == Role::User && message.content.contains("@attach:") {
+                expansions.push((
+                    index,
+                    super::helpers::expand_attach_tokens(
+                        &message.content,
+                        &uploads_base,
+                        &conversation_id,
+                        max_inline,
+                    )
+                    .await,
+                ));
+            }
+        }
+        for (index, content) in expansions {
+            messages[index].content = content;
+        }
+
+        Ok(messages)
     }
 }
 

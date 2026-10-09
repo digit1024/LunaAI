@@ -10,7 +10,70 @@ use crate::{
 use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::OnceLock;
 use uuid::Uuid;
+
+/// Truncate to at most `max_chars` characters (char-boundary safe).
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max_chars).collect();
+    format!("{kept}\n[... truncated ...]")
+}
+
+fn attach_ref_regex() -> &'static regex::Regex {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"@attach:([0-9a-zA-Z-]{1,64})").expect("attach ref regex"))
+}
+
+/// Expand `@attach:<uid>` tokens in a user message at prompt-build time.
+///
+/// Text/document attachments are inlined at the token position; image tokens are
+/// dropped (the image rides turn-level via message metadata). Unresolved tokens
+/// stay verbatim. Never persisted — the transcript keeps the token.
+pub(super) async fn expand_attach_tokens(
+    content: &str,
+    uploads_base: &Path,
+    conversation_id: &Uuid,
+    max_inline_chars: usize,
+) -> String {
+    if !content.contains("@attach:") {
+        return content.to_string();
+    }
+
+    let mut out = String::with_capacity(content.len());
+    let mut last = 0usize;
+    for caps in attach_ref_regex().captures_iter(content) {
+        let whole = caps.get(0).expect("whole match");
+        out.push_str(&content[last..whole.start()]);
+        last = whole.end();
+        let uid = &caps[1];
+
+        match resolve_attachment_upload_path(uploads_base, conversation_id, uid).await {
+            Ok(path) => {
+                let path_str = path.to_string_lossy().to_string();
+                match crate::llm::file_utils::create_attachment(&path_str) {
+                    Ok(att) if att.mime_type.starts_with("image/") => {
+                        // Images cannot be position-placed; drop the token.
+                    }
+                    Ok(att) => {
+                        let body = att
+                            .content
+                            .unwrap_or_else(|| format!("[attachment: {}]", att.file_name));
+                        out.push_str("\n```\n");
+                        out.push_str(&truncate_chars(&body, max_inline_chars));
+                        out.push_str("\n```\n");
+                    }
+                    Err(_) => out.push_str(whole.as_str()),
+                }
+            }
+            Err(_) => out.push_str(whole.as_str()),
+        }
+    }
+    out.push_str(&content[last..]);
+    out
+}
 
 /// Locate an uploaded file by exact `{attachment_uid}.{ext}` under
 /// `uploads/{conversation_id}/`, or `uploads/_no_conversation/` when the client
@@ -32,10 +95,7 @@ pub(super) async fn resolve_attachment_upload_path(
         while let Some(entry) = entries.next_entry().await.context("read upload directory")? {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            let Some((stem, ext)) = name.split_once('.') else {
-                continue;
-            };
-            if ext.is_empty() || ext.contains('.') || stem != attachment_uid {
+            if !crate::server::upload_policy::filename_matches(&name, attachment_uid) {
                 continue;
             }
             let p = entry.path();
@@ -170,5 +230,40 @@ mod tests {
         let out = truncate_preview(&long);
         assert!(out.ends_with("..."));
         assert!(out.chars().count() <= 60);
+    }
+
+    #[tokio::test]
+    async fn attach_token_inlines_text_and_drops_image() {
+        let base = std::env::temp_dir().join(format!("luna_attach_tok_{}", std::process::id()));
+        let conv = Uuid::new_v4();
+        let dir = base.join(conv.to_string());
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+
+        let text_uid = "11111111-1111-1111-1111-111111111111";
+        let img_uid = "22222222-2222-2222-2222-222222222222";
+        tokio::fs::write(dir.join(format!("{text_uid}.txt")), b"hello inline")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.join(format!("{img_uid}.png")), b"\x89PNG\r\n\x1a\n\x00")
+            .await
+            .unwrap();
+
+        let content = format!("before @attach:{text_uid} middle @attach:{img_uid} after");
+        let out = expand_attach_tokens(&content, &base, &conv, 100_000).await;
+
+        assert!(out.contains("hello inline"), "{out}");
+        assert!(!out.contains(&format!("@attach:{text_uid}")), "{out}");
+        assert!(!out.contains(&format!("@attach:{img_uid}")), "{out}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn unresolved_attach_token_is_literal() {
+        let base = std::env::temp_dir().join(format!("luna_attach_tok2_{}", std::process::id()));
+        let conv = Uuid::new_v4();
+        let content = "keep @attach:deadbeefdeadbeefdeadbeefdeadbeef here";
+        let out = expand_attach_tokens(content, &base, &conv, 100_000).await;
+        assert_eq!(out, content);
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
