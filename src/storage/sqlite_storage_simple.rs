@@ -521,6 +521,16 @@ impl SqliteStorage {
             )",
             [],
         )?;
+        // Cache of auxiliary-vision descriptions, keyed by image content hash,
+        // so an image is described at most once.
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS image_descriptions (
+                content_hash TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_llm_calls_started_at ON llm_calls(started_at)",
             [],
@@ -604,6 +614,35 @@ impl SqliteStorage {
             }
         }
         Ok(None)
+    }
+
+    /// Cached auxiliary-vision description for an image content hash.
+    pub fn get_image_description(&self, content_hash: &str) -> SqliteResult<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT description FROM image_descriptions WHERE content_hash = ?1")?;
+        let mut rows = stmt.query(rusqlite::params![content_hash])?;
+        if let Some(row) = rows.next()? {
+            return Ok(Some(row.get(0)?));
+        }
+        Ok(None)
+    }
+
+    /// Store (or refresh) an image's cached description.
+    pub fn upsert_image_description(
+        &self,
+        content_hash: &str,
+        description: &str,
+        created_at: i64,
+    ) -> SqliteResult<()> {
+        self.conn.execute(
+            "INSERT INTO image_descriptions (content_hash, description, created_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(content_hash) DO UPDATE SET description = excluded.description,
+                                                       created_at = excluded.created_at",
+            rusqlite::params![content_hash, description, created_at],
+        )?;
+        Ok(())
     }
 
     /// Insert a new conversation with profile.
@@ -2091,8 +2130,7 @@ mod tests {
     }
 
     #[test]
-    fn latest_usage_anchor_returns_newest_real_usage() -> SqliteResult<()> {
-        let temp_dir = std::env::temp_dir();
+    fn latest_usage_anchor_returns_newest_real_usage() -> SqliteResult<()> {        let temp_dir = std::env::temp_dir();
         let db_path = temp_dir.join("test_usage_anchor.db");
         let _ = fs::remove_file(&db_path);
         let storage = SqliteStorage::new(&db_path)?;
@@ -2133,6 +2171,30 @@ mod tests {
         storage.insert_llm_call(&rec(300, Some(9999), None))?;
 
         assert_eq!(storage.latest_usage_anchor(&conv_str)?, Some((1800, 2000)));
+
+        let _ = fs::remove_file(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn image_description_cache_roundtrip() -> SqliteResult<()> {
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join("test_image_desc_cache.db");
+        let _ = fs::remove_file(&db_path);
+        let storage = SqliteStorage::new(&db_path)?;
+
+        assert_eq!(storage.get_image_description("hash-1")?, None);
+        storage.upsert_image_description("hash-1", "a red square", 1)?;
+        assert_eq!(
+            storage.get_image_description("hash-1")?,
+            Some("a red square".to_string())
+        );
+        // Upsert refreshes the cached description.
+        storage.upsert_image_description("hash-1", "a blue circle", 2)?;
+        assert_eq!(
+            storage.get_image_description("hash-1")?,
+            Some("a blue circle".to_string())
+        );
 
         let _ = fs::remove_file(&db_path);
         Ok(())

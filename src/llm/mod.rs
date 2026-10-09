@@ -95,6 +95,10 @@ pub struct Attachment {
     pub mime_type: String,
     pub file_size: u64,
     pub content: Option<String>, // For text files, store content directly
+    /// Text description produced by the auxiliary vision model. When set, the
+    /// image bytes are not sent to the main model; this text is used instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 impl Message {
@@ -292,6 +296,7 @@ pub trait LlmClient: Send + Sync {
 }
 
 pub mod anthropic;
+pub mod capabilities;
 pub mod compaction;
 pub mod context_manager;
 pub mod file_utils;

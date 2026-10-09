@@ -126,7 +126,11 @@ impl LlmClient for OllamaClient {
                     for attachment in attachments {
                         match attachment.mime_type.as_str() {
                             mime if mime.starts_with("image/") => {
-                                content.push_str(&format!("\n[Image: {} - {} bytes]", attachment.file_name, attachment.file_size));
+                                if let Some(description) = &attachment.description {
+                                    content.push_str(&format!("\n[Image: {}]\n{}", attachment.file_name, description));
+                                } else {
+                                    content.push_str(&format!("\n[Image: {} - {} bytes]", attachment.file_name, attachment.file_size));
+                                }
                             }
                             mime if mime.starts_with("text/") => {
                                 if let Some(file_content) = &attachment.content {

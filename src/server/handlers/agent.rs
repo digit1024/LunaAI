@@ -256,10 +256,15 @@ impl ServerHandler {
             })?;
             conv_id
         };
+        // Release the storage guard: attachment materialization, vision
+        // describing and RAG indexing below take their own locks / do I/O.
+        drop(storage);
 
         let uploads_base = self.ctx.config.uploads_dir();
         let rag_cfg = self.ctx.config.attachment_rag.clone();
         let emb = self.ctx.embedding_provider.as_deref();
+        let main_preset = self.session.active_resolved(&self.ctx.config)?.preset().clone();
+        let vision_client = self.ctx.config.vision_client();
 
         let mut resolved_attachments: Vec<crate::llm::Attachment> = Vec::new();
         let mut resolved_uids: Vec<String> = Vec::new();
@@ -284,6 +289,37 @@ impl ServerHandler {
                 let mut att =
                     crate::llm::file_utils::create_attachment(&path_str).context("create_attachment")?;
                 crate::llm::file_utils::validate_file_for_llm(&att)?;
+
+                // Route images to the auxiliary vision model (describe-once) so
+                // base64 bytes never reach the main model.
+                if let Some(client) = &vision_client {
+                    if crate::services::vision::should_describe(
+                        &self.ctx.config,
+                        &main_preset,
+                        &att.mime_type,
+                    ) {
+                        match crate::services::vision::describe_cached(
+                            &self.ctx.storage,
+                            client,
+                            &self.ctx.config,
+                            &att,
+                            None,
+                        )
+                        .await
+                        {
+                            Ok(description) => {
+                                att.description = Some(description);
+                                att.content = None;
+                            }
+                            Err(e) => tracing::warn!(
+                                error = %e,
+                                uid = %stem_uid,
+                                "Vision describe failed; embedding image instead"
+                            ),
+                        }
+                    }
+                }
+
                 if att.mime_type.starts_with("text/") || att.mime_type == "text/markdown" {
                     att.content = crate::services::attachment_rag::trim_extracted_text_for_inline(
                         att.content.take(),
@@ -322,16 +358,18 @@ impl ServerHandler {
             ..MessageMetadata::default()
         };
 
-        let message_id = storage
-            .add_message_with_metadata(
-                &conversation_uuid,
-                "user".to_string(),
-                content.clone(),
-                None,
-                metadata,
-            )
-            .context("failed to persist user message")?;
-        drop(storage);
+        let message_id = {
+            let storage = self.ctx.storage.lock().await;
+            storage
+                .add_message_with_metadata(
+                    &conversation_uuid,
+                    "user".to_string(),
+                    content.clone(),
+                    None,
+                    metadata,
+                )
+                .context("failed to persist user message")?
+        };
 
         self.send_event(ServerEvent::MessageAccepted {
             conversation_id: conversation_uuid.to_string(),

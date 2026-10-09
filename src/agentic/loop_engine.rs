@@ -197,8 +197,85 @@ fn search_attachment_chunks_tool_definition() -> ToolDefinition {
     }
 }
 
-fn delete_memory_tool_definition() -> ToolDefinition {
+fn vision_analyze_tool_definition() -> ToolDefinition {
     ToolDefinition {
+        name: "vision_analyze".to_string(),
+        description: "Analyze an image on demand with the auxiliary vision model. Provide an \
+uploaded attachment id or a workspace file path, and an optional instruction describing what \
+to look for (e.g. 'How many fingers are shown?', 'What color is the button?'). Use when you \
+need details from an image beyond the description already provided. Requires [vision] to be \
+enabled with a profile."
+            .to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "attachment_id": {
+                    "type": "string",
+                    "description": "Uploaded attachment id (uid) from the current conversation"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Workspace image path (within the configured [files].root)"
+                },
+                "instruction": {
+                    "type": "string",
+                    "description": "Optional specific question or instruction for the vision model (default: a general description)"
+                }
+            },
+            "required": []
+        }),
+    }
+}
+
+fn vision_err(message: &str) -> ToolResult {
+    ToolResult {
+        content: message.to_string(),
+        is_error: true,
+    }
+}
+
+/// Find an uploaded attachment `{uid}.{ext}` in the conversation dir (or the
+/// pre-conversation fallback dir).
+fn resolve_uploaded_attachment(
+    uploads_base: &std::path::Path,
+    conversation: Option<uuid::Uuid>,
+    uid: &str,
+) -> Option<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(conv) = conversation {
+        dirs.push(uploads_base.join(conv.to_string()));
+    }
+    dirs.push(uploads_base.join("_no_conversation"));
+    for dir in dirs {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    if let Some((stem, ext)) = name.split_once('.') {
+                        if !ext.is_empty() && !ext.contains('.') && stem == uid {
+                            return Some(entry.path());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Resolve a workspace path and require it to stay within `root`.
+fn resolve_workspace_path(root: &std::path::Path, raw: &str) -> Option<std::path::PathBuf> {
+    let root = root.canonicalize().ok()?;
+    let candidate = std::path::Path::new(raw);
+    let joined = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        root.join(candidate)
+    };
+    let canon = joined.canonicalize().ok()?;
+    canon.starts_with(&root).then_some(canon)
+}
+
+fn delete_memory_tool_definition() -> ToolDefinition {    ToolDefinition {
         name: "delete_memory".to_string(),
         description: "Delete a memory entry by its ID. Use this to remove outdated or incorrect information from long-term memory.".to_string(),
         parameters: serde_json::json!({
@@ -532,6 +609,9 @@ impl AgenticLoop {
             }
             if allow("search_attachment_chunks") {
                 upsert_tool_definition(&mut defs, search_attachment_chunks_tool_definition());
+            }
+            if self.app_config.is_some() && allow("vision_analyze") {
+                upsert_tool_definition(&mut defs, vision_analyze_tool_definition());
             }
             if allow("search_history") {
                 upsert_tool_definition(&mut defs, search_history_tool_definition());
@@ -956,6 +1036,9 @@ impl AgenticLoop {
                     self.execute_memory_tool(&tool_call, run_context_clone.as_ref()).await
                 } else if tool_call.name == "search_attachment_chunks" {
                     self.execute_attachment_search_tool(&tool_call, run_context_clone.as_ref())
+                        .await
+                } else if tool_call.name == "vision_analyze" {
+                    self.execute_vision_analyze_tool(&tool_call, run_context_clone.as_ref())
                         .await
                 } else if tool_call.name == "search_history" {
                     self.execute_search_history_tool(&tool_call).await
@@ -1953,6 +2036,9 @@ impl AgenticLoop {
                 } else if tool_call.name == "search_attachment_chunks" {
                     self.execute_attachment_search_tool(&tool_call, run_context.as_ref())
                         .await
+                } else if tool_call.name == "vision_analyze" {
+                    self.execute_vision_analyze_tool(&tool_call, run_context.as_ref())
+                        .await
                 } else if tool_call.name == "search_history" {
                     self.execute_search_history_tool(&tool_call).await
                 } else if tool_call.name == "publish_image" {
@@ -1978,6 +2064,87 @@ impl AgenticLoop {
                     result.is_error,
                 ));
             }
+        }
+    }
+
+    async fn execute_vision_analyze_tool(
+        &self,
+        tool_call: &ToolCall,
+        run_context: Option<&RunContext>,
+    ) -> ToolResult {
+        let Some(config) = self.app_config.as_deref() else {
+            return vision_err("vision_analyze requires app configuration");
+        };
+        let Some(storage) = &self.storage else {
+            return vision_err("vision_analyze requires storage");
+        };
+        let Some(client) = config.vision_client() else {
+            return vision_err("vision_analyze requires [vision] enabled with a profile");
+        };
+
+        let attachment_id = tool_call
+            .parameters
+            .get("attachment_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let path_param = tool_call
+            .parameters
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let instruction = tool_call
+            .parameters
+            .get("instruction")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+
+        let path = if let Some(uid) = attachment_id {
+            let conv = run_context.and_then(|c| c.conversation_id);
+            match resolve_uploaded_attachment(&config.uploads_dir(), conv, uid) {
+                Some(p) => p,
+                None => return vision_err(&format!("no uploaded attachment found for id '{uid}'")),
+            }
+        } else if let Some(raw) = path_param {
+            match resolve_workspace_path(&config.files_root(), raw) {
+                Some(p) => p,
+                None => return vision_err("path is outside the allowed root or not found"),
+            }
+        } else {
+            return vision_err("vision_analyze requires 'attachment_id' or 'path'");
+        };
+
+        let Some(path_str) = path.to_str().map(str::to_string) else {
+            return vision_err("path is not valid UTF-8");
+        };
+        let attachment = match crate::llm::file_utils::create_attachment(&path_str) {
+            Ok(a) => a,
+            Err(e) => return vision_err(&format!("failed to read attachment: {e}")),
+        };
+        if !attachment.mime_type.starts_with("image/") {
+            return vision_err("vision_analyze only supports image files");
+        }
+
+        match crate::services::vision::describe_cached(
+            storage,
+            &client,
+            config,
+            &attachment,
+            instruction,
+        )
+        .await
+        {
+            Ok(description) => ToolResult {
+                content: serde_json::json!({
+                    "file_name": attachment.file_name,
+                    "description": description,
+                })
+                .to_string(),
+                is_error: false,
+            },
+            Err(e) => vision_err(&format!("vision_analyze failed: {e}")),
         }
     }
 
@@ -2067,5 +2234,35 @@ impl AgenticLoop {
                 is_error: true,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod vision_tool_tests {
+    use super::*;
+
+    #[test]
+    fn resolves_uploaded_attachment_by_uid() {
+        let base = std::env::temp_dir().join(format!("luna_vt_{}", std::process::id()));
+        let conv = uuid::Uuid::new_v4();
+        let dir = base.join(conv.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let uid = "11111111-2222-3333-4444-555555555555";
+        std::fs::write(dir.join(format!("{uid}.png")), b"x").unwrap();
+
+        assert!(resolve_uploaded_attachment(&base, Some(conv), uid).is_some());
+        assert!(resolve_uploaded_attachment(&base, Some(conv), "nope").is_none());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn workspace_path_must_stay_in_root() {
+        let root = std::env::temp_dir().join(format!("luna_wp_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.png"), b"x").unwrap();
+
+        assert!(resolve_workspace_path(&root, "a.png").is_some());
+        assert!(resolve_workspace_path(&root, "../etc/passwd").is_none());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

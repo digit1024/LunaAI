@@ -172,7 +172,12 @@ impl AnthropicClient {
         for attachment in attachments {
             match attachment.mime_type.as_str() {
                 mime if mime.starts_with("image/") => {
-                    if let Some(data) = attachment.content {
+                    if let Some(description) = &attachment.description {
+                        blocks.push(AnthropicContentBlock::Text {
+                            text: format!("[Image: {}]\n{}", attachment.file_name, description),
+                            cache_control: None,
+                        });
+                    } else if let Some(data) = attachment.content {
                         blocks.push(AnthropicContentBlock::Image {
                             source: AnthropicImageSource {
                                 source_type: "base64".to_string(),
@@ -575,5 +580,26 @@ mod tests {
         assert_eq!(v[0]["type"], "text");
         assert_eq!(v[0]["text"], "system text");
         assert_eq!(v[0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn image_with_description_renders_as_text_not_image() {
+        let attachment = Attachment {
+            file_path: "/tmp/x.png".to_string(),
+            file_name: "x.png".to_string(),
+            mime_type: "image/png".to_string(),
+            file_size: 10,
+            content: Some("QkFTRTY0".to_string()),
+            description: Some("A red square with the word STOP".to_string()),
+        };
+        let mut blocks = Vec::new();
+        AnthropicClient::push_user_attachments(&mut blocks, vec![attachment]);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            AnthropicContentBlock::Text { text, .. } => {
+                assert!(text.contains("A red square"), "{text}");
+            }
+            other => panic!("expected a text block, got {other:?}"),
+        }
     }
 }

@@ -338,7 +338,12 @@ impl OpenAIClient {
                         for attachment in attachments {
                             match attachment.mime_type.as_str() {
                                 mime if mime.starts_with("image/") => {
-                                    if let Some(content) = &attachment.content {
+                                    if let Some(description) = &attachment.description {
+                                        content_parts.push(serde_json::json!({
+                                            "type": "text",
+                                            "text": format!("[Image: {}]\n{}", attachment.file_name, description)
+                                        }));
+                                    } else if let Some(content) = &attachment.content {
                                         content_parts.push(serde_json::json!({
                                             "type": "image_url",
                                             "image_url": {

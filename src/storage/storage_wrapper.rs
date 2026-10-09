@@ -648,6 +648,22 @@ impl Storage {
         self.sqlite.latest_usage_anchor(conversation_id)
     }
 
+    /// Cached auxiliary-vision description for an image content hash.
+    pub fn get_image_description(&self, content_hash: &str) -> SqliteResult<Option<String>> {
+        self.sqlite.get_image_description(content_hash)
+    }
+
+    /// Store (or refresh) an image's cached description.
+    pub fn upsert_image_description(
+        &self,
+        content_hash: &str,
+        description: &str,
+        created_at: i64,
+    ) -> SqliteResult<()> {
+        self.sqlite
+            .upsert_image_description(content_hash, description, created_at)
+    }
+
     /// Get due scheduled jobs
     pub fn get_due_scheduled_jobs(
         &self,

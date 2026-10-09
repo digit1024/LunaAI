@@ -667,6 +667,63 @@ impl Default for FilesConfig {
     }
 }
 
+// ── Auxiliary vision model ──
+
+/// How images are handled when `[vision]` is enabled.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum VisionMode {
+    /// Always describe via the auxiliary model (never embed image bytes).
+    #[default]
+    Always,
+    /// Describe unless the main model is vision-capable.
+    Auto,
+    /// Never describe; embed natively (pre-vision behavior).
+    Native,
+}
+
+fn default_vision_enabled() -> bool {
+    false
+}
+
+fn default_vision_max_tokens() -> u32 {
+    512
+}
+
+fn default_vision_system_prompt() -> String {
+    "You describe images for a text-only assistant. Be specific and factual: transcribe \
+visible text, identify UI elements and layout, note colors and any errors. Output only the \
+description."
+        .to_string()
+}
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct VisionConfig {
+    #[serde(default = "default_vision_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub mode: VisionMode,
+    /// Profile (→ model preset) used to describe images. Required when enabled.
+    #[serde(default)]
+    pub profile: Option<String>,
+    #[serde(default = "default_vision_max_tokens")]
+    pub max_tokens: u32,
+    #[serde(default = "default_vision_system_prompt")]
+    pub system_prompt: String,
+}
+
+impl Default for VisionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_vision_enabled(),
+            mode: VisionMode::default(),
+            profile: None,
+            max_tokens: default_vision_max_tokens(),
+            system_prompt: default_vision_system_prompt(),
+        }
+    }
+}
+
 // ── Time awareness: ephemeral "time since last message" system context ──
 
 fn default_time_awareness_enabled() -> bool {
@@ -849,6 +906,8 @@ pub struct AppConfig {
     pub attachment_rag: AttachmentRagConfig,
     #[serde(default)]
     pub files: FilesConfig,
+    #[serde(default)]
+    pub vision: VisionConfig,
 }
 
 impl Default for AppConfig {
@@ -895,6 +954,7 @@ impl Default for AppConfig {
             embedding: EmbeddingConfig::default(),
             attachment_rag: AttachmentRagConfig::default(),
             files: FilesConfig::default(),
+            vision: VisionConfig::default(),
         }
     }
 }
@@ -928,6 +988,17 @@ impl AppConfig {
             .map(PathBuf::from)
             .or_else(dirs::home_dir)
             .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// Build the auxiliary vision client when `[vision]` is enabled and a
+    /// resolvable profile is configured. `None` means "no auxiliary vision".
+    pub fn vision_client(&self) -> Option<std::sync::Arc<dyn crate::llm::LlmClient>> {
+        if !self.vision.enabled {
+            return None;
+        }
+        let name = self.vision.profile.as_ref()?;
+        let resolved = self.resolve_profile(name)?;
+        Some(crate::llm::build_llm_client(resolved.preset()))
     }
 
     pub fn load() -> Result<Self, ConfigError> {

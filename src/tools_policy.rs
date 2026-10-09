@@ -25,6 +25,7 @@ pub const INTERNAL_TOOL_NAMES: &[&str] = &[
     "search_memory_by_category",
     "delete_memory",
     "search_attachment_chunks",
+    "vision_analyze",
     "search_history",
     "list_conversations",
     "get_conversation_messages",

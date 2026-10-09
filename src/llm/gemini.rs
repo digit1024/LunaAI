@@ -260,7 +260,12 @@ impl GeminiClient {
                 if let Some(attachments) = msg.attachments {
                     for attachment in attachments {
                         if attachment.mime_type.starts_with("image/") {
-                            if let Some(data) = attachment.content {
+                            if let Some(description) = &attachment.description {
+                                text_content.push_str(&format!(
+                                    "\n[Image: {}]\n{}",
+                                    attachment.file_name, description
+                                ));
+                            } else if let Some(data) = attachment.content {
                                 image_parts.push(GeminiPart::InlineData {
                                     inline_data: GeminiInlineBlob {
                                         mime_type: attachment.mime_type.clone(),

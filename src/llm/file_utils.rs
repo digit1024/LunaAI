@@ -158,6 +158,7 @@ pub fn create_attachment(file_path: &str) -> Result<Attachment> {
         mime_type: final_mime_type,
         file_size,
         content,
+        description: None,
     })
 }
 
@@ -284,6 +285,11 @@ pub fn hydrate_attachments_for_llm(attachments: &mut [Attachment]) -> Result<()>
         if a.content.is_some() {
             continue;
         }
+        // Already described by the auxiliary vision model: no need to rebuild
+        // base64 the providers won't use.
+        if a.description.is_some() {
+            continue;
+        }
         let path = Path::new(&a.file_path);
         if !path.exists() {
             tracing::warn!(path = %a.file_path, "Attachment file missing for rehydration");
@@ -336,5 +342,23 @@ mod tests {
         let path = temp_file("big.txt", big.as_bytes());
         let attachment = create_attachment(path.to_str().unwrap()).unwrap();
         assert_eq!(attachment.content.as_ref().unwrap().chars().count(), 600_000);
+    }
+
+    #[test]
+    fn hydrate_skips_described_images() {
+        let path = temp_file("pic.png", b"\x89PNG\r\n\x1a\n\x00\x00");
+        let mut attachment = Attachment {
+            file_path: path.to_str().unwrap().to_string(),
+            file_name: "pic.png".to_string(),
+            mime_type: "image/png".to_string(),
+            file_size: 8,
+            content: None,
+            description: Some("a blue square".to_string()),
+        };
+        hydrate_attachments_for_llm(std::slice::from_mut(&mut attachment)).unwrap();
+        assert!(
+            attachment.content.is_none(),
+            "described images must not be rehydrated to base64"
+        );
     }
 }

@@ -166,6 +166,26 @@ title_generation_system_prompt = "Your task is to generate a conversation title 
 # system_prompt = "..."      # compaction system prompt (built-in default if omitted)
 # max_tokens = 4000          # max output tokens for compaction summary
 
+# ── Workspace file references (@file: / @folder:) ──
+# Expand typed references like `@file:src/main.rs:1-40` or `@folder:docs` inline.
+# Resolved within `root` (default: HOME); symlink escapes are rejected and
+# credential paths denied. References outside the root are left literal.
+[files]
+# root = "/home/you/projects"  # default: HOME
+# max_refs = 16                # references expanded per message
+# max_bytes = 131072           # bytes inlined per file reference
+
+# ── Auxiliary vision model ──
+# Describe image attachments with a separate model so base64 image bytes are not
+# sent to the main chat model (saves tokens; enables images on text-only models).
+# Requires a vision-capable profile. Disabled by default.
+[vision]
+enabled = false
+mode = "always"                # always | auto | native
+# profile = "vision"           # profile (-> model_preset) used to describe images
+# max_tokens = 512
+# system_prompt = "Describe the image for a text-only assistant. Be specific and factual..."
+
 # Time awareness: inject an ephemeral system message when time has passed between messages.
 # Never stored in conversation history. On the first message only the current time is injected.
 [time_awareness]
