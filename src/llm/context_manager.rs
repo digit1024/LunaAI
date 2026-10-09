@@ -1,275 +1,24 @@
-//! Context management for handling context overflow
-//! 
-//! This module provides smart context selection that:
-//! - Scores messages by importance
-//! - Preserves tool call chains
-//! - Selects messages to fit within token budget
-//! - Handles summarization triggers
+//! Conversation summarization for context overflow.
+//!
+//! Message *selection* on overflow is now contiguous boundary compaction in
+//! [`crate::llm::compaction::engine`]; this module owns the LLM summarizer that
+//! produces the durable compaction handoff.
 
 use crate::config::ModelPreset;
-use crate::llm::{Message, Role, LlmClient, LlmError};
-use crate::llm::tokenizer::TokenCounter;
+use crate::llm::{LlmClient, LlmError, Message, Role};
 
-/// Message with calculated importance score and metadata
-#[derive(Debug, Clone)]
-pub struct MessageWithImportance {
-    pub message: Message,
-    pub importance_score: f32,
-    pub token_count: usize,
-    pub index: usize,
-    pub is_system: bool,
-    pub has_tool_calls: bool,
-    pub has_tool_result: bool,
-    pub tool_call_id: Option<String>,
-}
-
-impl MessageWithImportance {
-    /// Calculate importance score for a message
-    fn calculate_importance(
-        msg: &Message,
-        index: usize,
-        total_messages: usize,
-    ) -> f32 {
-        let mut score = match msg.role {
-            Role::System => 100.0,  // Always keep
-            Role::User => 80.0,
-            Role::Assistant => 40.0,
-            Role::Tool => 60.0,
-        };
-
-        // Recency bonus
-        let distance_from_end = total_messages - index - 1;
-        score += (50.0 - (distance_from_end as f32 * 0.5)).max(0.0);
-
-        // Tool chain bonus
-        if let Some(tool_calls) = &msg.tool_calls {
-            if !tool_calls.is_empty() {
-                score += 30.0; // This message triggers tool calls
-            }
-        }
-        
-        if msg.tool_call_id.is_some() {
-            score += 30.0; // This is a tool result
-        }
-
-        // User question bonus
-        if msg.role == Role::User {
-            let content_lower = msg.content.to_lowercase();
-            if msg.content.ends_with('?') || 
-               content_lower.contains("what") || 
-               content_lower.contains("how") ||
-               content_lower.contains("why") ||
-               content_lower.contains("when") ||
-               content_lower.contains("where") {
-                score += 20.0;
-            }
-        }
-
-        // Content length penalty (but not for user messages - those are important)
-        if msg.role != Role::User && msg.content.len() > 1000 {
-            score -= 10.0;
-        }
-
-        // Attachment bonus
-        if let Some(attachments) = msg.attachments.as_ref() {
-            if !attachments.is_empty() {
-            score += 15.0;
-            }
-        }
-
-        // Reasoning content bonus
-        if msg.reasoning_content.is_some() {
-            score += 10.0;
-        }
-
-        score
-    }
-
-    /// Create a MessageWithImportance from a Message
-    pub fn new(
-        msg: Message,
-        index: usize,
-        total_messages: usize,
-        token_counter: &TokenCounter,
-    ) -> Self {
-        let is_system = msg.role == Role::System;
-        let has_tool_calls = msg.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty());
-        let has_tool_result = msg.tool_call_id.is_some();
-        let _tool_call_id = msg.tool_call_id.clone();
-
-        let importance_score = Self::calculate_importance(&msg, index, total_messages);
-        let token_count = token_counter.count_message_tokens(&msg);
-
-        Self {
-            message: msg,
-            importance_score,
-            token_count,
-            index,
-            is_system,
-            has_tool_calls,
-            has_tool_result,
-            tool_call_id: _tool_call_id,
-        }
-    }
-}
-
-/// Smart context manager that selects messages based on importance
+/// Owning type for the compaction summarizer.
 pub struct SmartContextManager;
 
 impl SmartContextManager {
-    /// Select messages to fit within token budget, preserving important messages and tool chains
-    pub fn select_context(
-        messages: Vec<Message>,
-        token_counter: &TokenCounter,
-        preset: &ModelPreset,
-    ) -> Vec<Message> {
-        if messages.is_empty() {
-            return messages;
-        }
-
-        // Calculate importance and token counts for all messages
-        let total_messages = messages.len();
-        let scored_messages: Vec<MessageWithImportance> = messages
-            .into_iter()
-            .enumerate()
-            .map(|(idx, msg)| {
-                MessageWithImportance::new(msg, idx, total_messages, token_counter)
-            })
-            .collect();
-
-        // Get context limit (with headroom)
-        let context_limit = token_counter.get_safe_context_limit(preset);
-
-        // Separate system messages (always keep) and regular messages
-        let mut system_messages: Vec<MessageWithImportance> = Vec::new();
-        let mut regular_messages: Vec<MessageWithImportance> = Vec::new();
-
-        for scored in scored_messages {
-            if scored.is_system {
-                system_messages.push(scored);
-            } else {
-                regular_messages.push(scored);
-            }
-        }
-
-        // Count system message tokens
-        let system_tokens: usize = system_messages.iter().map(|m| m.token_count).sum();
-        let available_tokens = context_limit.saturating_sub(system_tokens);
-
-        if available_tokens == 0 {
-            // Only system messages fit - return them
-            return system_messages.into_iter().map(|m| m.message).collect();
-        }
-
-        // Sort regular messages by importance (highest first)
-        regular_messages.sort_by(|a, b| {
-            b.importance_score
-                .partial_cmp(&a.importance_score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        // Select messages to fit within token budget
-        let mut selected: Vec<MessageWithImportance> = Vec::new();
-        let mut selected_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        let mut used_tokens = 0;
-
-        // First pass: Select by importance
-        for scored in &regular_messages {
-            if used_tokens + scored.token_count <= available_tokens {
-                selected.push(scored.clone());
-                selected_indices.insert(scored.index);
-                used_tokens += scored.token_count;
-            }
-        }
-
-        // Second pass: Ensure tool chains are preserved
-        // If we selected a tool call, ensure its result is included
-        // If we selected a tool result, ensure its call is included
-        let mut additional_messages: Vec<MessageWithImportance> = Vec::new();
-        let mut additional_tokens = 0;
-
-        for scored in &regular_messages {
-            if selected_indices.contains(&scored.index) {
-                continue; // Already selected
-            }
-
-            // Check if this message is linked to a selected message
-            let mut should_include = false;
-
-            if scored.has_tool_calls {
-                // This is a tool call - check if any of its results are selected
-                if let Some(tool_calls) = &scored.message.tool_calls {
-                    for tool_call in tool_calls {
-                        // Find the tool result message for this tool_call_id
-                        for selected_msg in &selected {
-                            if selected_msg.tool_call_id.as_ref() == Some(&tool_call.id) {
-                                should_include = true;
-                                break;
-                            }
-                        }
-                        if should_include {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if scored.has_tool_result {
-                // This is a tool result - check if its call is selected
-                if let Some(tool_call_id) = &scored.tool_call_id {
-                    for selected_msg in &selected {
-                        if let Some(selected_tool_calls) = &selected_msg.message.tool_calls {
-                            for tool_call in selected_tool_calls {
-                                if &tool_call.id == tool_call_id {
-                                    should_include = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if should_include {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if should_include && used_tokens + additional_tokens + scored.token_count <= available_tokens {
-                additional_messages.push(scored.clone());
-                additional_tokens += scored.token_count;
-            }
-        }
-
-        // Combine selected messages
-        selected.extend(additional_messages);
-
-        // Third pass: Remove orphaned tool results (tool result whose assistant wasn't added due to budget).
-        // Otherwise we'd send a tool result with tool_call_id that has no preceding assistant tool_call -> API "tool_call_id not found".
-        let selected_tool_call_ids: std::collections::HashSet<String> = selected
-            .iter()
-            .flat_map(|m| m.message.tool_calls.as_deref().unwrap_or(&[]).iter())
-            .map(|tc| tc.id.clone())
-            .collect();
-        selected.retain(|m| {
-            if let Some(ref tid) = m.tool_call_id {
-                if !selected_tool_call_ids.contains(tid) {
-                    return false; // drop orphaned tool result
-                }
-            }
-            true
-        });
-
-        // Sort selected messages back to original order
-        selected.sort_by_key(|m| m.index);
-
-        // Combine with system messages (system messages first)
-        let mut result: Vec<Message> = system_messages.into_iter().map(|m| m.message).collect();
-        result.extend(selected.into_iter().map(|m| m.message));
-
-        result
-    }
-
-    /// Summarize a list of messages using the LLM
-    /// Returns a summary message that can replace the original messages
+    /// Summarize a list of messages using the LLM, producing a structured,
+    /// update-in-place compaction summary as an `assistant` message.
+    ///
+    /// When a prior summary is present (identified by
+    /// [`crate::llm::compaction::SUMMARY_MARKER`]) it is passed back to the model
+    /// with instructions to *update* it rather than re-summarize from scratch,
+    /// which prevents lossy drift across cycles. On LLM failure a deterministic
+    /// fallback summary is committed unless `abort_on_summary_failure` is set.
     pub async fn summarize_messages(
         messages_to_summarize: Vec<Message>,
         _preset: &ModelPreset,
@@ -283,9 +32,24 @@ impl SmartContextManager {
         // Max length for tool result content in the summarization input (save tokens)
         const TOOL_CONTENT_MAX_CHARS: usize = 800;
 
-        // Build a formatted representation of messages for summarization (include tool calls/results)
-        let mut conversation_text = String::new();
+        // Split off a prior summary so it can be *updated*, not re-summarized.
+        let mut prior_summary: Option<String> = None;
+        let mut convo: Vec<&Message> = Vec::new();
         for msg in &messages_to_summarize {
+            if crate::llm::compaction::is_summary_content(&msg.content) {
+                prior_summary = Some(strip_summary_marker(&msg.content));
+            } else {
+                convo.push(msg);
+            }
+        }
+
+        let structured = compact_config.structured_summary;
+
+        // Build transcript; collect anchors and verbatim user turns.
+        let mut transcript = String::new();
+        let mut anchors: Vec<String> = Vec::new();
+        let mut user_turns: Vec<String> = Vec::new();
+        for msg in &convo {
             let role_str = match msg.role {
                 Role::User => "User",
                 Role::Assistant => "Assistant",
@@ -298,40 +62,111 @@ impl SmartContextManager {
             } else {
                 msg.content.clone()
             };
-            conversation_text.push_str(&format!("[{}]: {}\n\n", role_str, content));
+            transcript.push_str(&format!("[{}]: {}\n\n", role_str, content));
 
             // Include tool calls if present (assistant requested tools)
             if let Some(tool_calls) = &msg.tool_calls {
                 for tool_call in tool_calls {
-                    conversation_text.push_str(&format!(
+                    transcript.push_str(&format!(
                         "  [Tool Call: {}] {}\n",
                         tool_call.name,
                         serde_json::to_string(&tool_call.parameters).unwrap_or_default()
                     ));
                 }
             }
+
+            if structured {
+                if msg.role == Role::User && !content.trim().is_empty() {
+                    user_turns.push(content.clone());
+                }
+                collect_anchors(&content, &mut anchors);
+            }
         }
 
-        // Build summarization prompt: system prompt is configurable in [conversation_compact].
-        let prompt = format!(
-            "{}\n\nConversation:\n{}",
-            compact_config.system_prompt, conversation_text
-        );
+        // Newest-first, so the most relevant user turn is first under budget.
+        user_turns.reverse();
+
+        // Assemble the summarizer prompt: system prompt is configurable in [conversation_compact].
+        let prompt = if structured {
+            let mut p = compact_config.system_prompt.clone();
+            if let Some(prior) = &prior_summary {
+                p.push_str(
+                    "\n\n[Prior summary] Update the summary below with the new turns: move \
+finished items to Done, add new progress, and remove obsolete details. Keep it a single summary.\n",
+                );
+                p.push_str(prior);
+                p.push('\n');
+            }
+            p.push_str("\n\nConversation:\n");
+            p.push_str(&transcript);
+
+            if !user_turns.is_empty() {
+                p.push_str("\n[Real user messages, newest first — quote verbatim when relevant]\n");
+                push_within_budget(&mut p, &user_turns, compact_config.verbatim_user_budget_tokens, true);
+            }
+            if !anchors.is_empty() {
+                p.push_str("\n[Anchor index — reproduce these verbatim under Critical Context]\n");
+                push_within_budget(&mut p, &anchors, compact_config.anchor_budget_tokens, false);
+            }
+            p
+        } else {
+            format!("{}\n\nConversation:\n{}", compact_config.system_prompt, transcript)
+        };
 
         // Use the same model for summarization (could be optimized to use cheaper model)
-        let summary_response = llm_client
+        let summary_response = match llm_client
             .send_message_with_tools(
                 vec![Message::new(Role::User, prompt)],
                 vec![], // No tools for summarization
                 Some(0.3), // Lower temperature for more focused summaries
                 Some(compact_config.max_tokens),
             )
-            .await?;
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                if compact_config.abort_on_summary_failure {
+                    return Err(e);
+                }
+                tracing::warn!(
+                    error = %e,
+                    "Summarization failed; committing deterministic fallback summary"
+                );
+                return Ok(deterministic_summary(
+                    prior_summary.as_deref(),
+                    &user_turns,
+                    &anchors,
+                    convo.len(),
+                ));
+            }
+        };
 
-        // Return summary as a system message
+        let mut body = summary_response.content;
+        if structured {
+            // Keep the mechanically-extracted anchors even if the model omitted
+            // them, then point at the recovery surface.
+            let missing: Vec<&String> = anchors
+                .iter()
+                .filter(|anchor| !body.contains(anchor.as_str()))
+                .collect();
+            if !missing.is_empty() {
+                body.push_str("\n\n### Critical Context (anchors)\n");
+                for anchor in missing {
+                    body.push_str(&format!("- {anchor}\n"));
+                }
+            }
+            body.push_str(
+                "\n\n---\n_Recovery: earlier turns are archived and remain searchable. \
+Use the search_history tool to retrieve specifics._",
+            );
+        }
+
+        // Return summary as an assistant turn carrying the compaction marker.
+        // Not `system`: Anthropic keeps only the first system message, so a
+        // system summary is silently dropped; selection would also hoist it.
         Ok(Message {
-            role: Role::System,
-            content: format!("[Previous conversation summary]: {}", summary_response.content),
+            role: Role::Assistant,
+            content: format!("{}\n\n{}", crate::llm::compaction::SUMMARY_MARKER, body),
             timestamp: None,
             is_prompt: false,
             tool_call_id: None,
@@ -342,22 +177,286 @@ impl SmartContextManager {
     }
 }
 
+/// Strip the compaction marker (and the blank line after it) from stored text.
+fn strip_summary_marker(content: &str) -> String {
+    content
+        .trim_start()
+        .strip_prefix(crate::llm::compaction::SUMMARY_MARKER)
+        .map(|rest| rest.trim_start().to_string())
+        .unwrap_or_else(|| content.to_string())
+}
+
+/// Append `items` to `out` until `budget_tokens` worth of characters is used.
+/// `numbered` renders `1. item`; otherwise `- item`.
+fn push_within_budget(out: &mut String, items: &[String], budget_tokens: u32, numbered: bool) {
+    let budget_chars = (budget_tokens as usize).saturating_mul(4);
+    let mut used = 0usize;
+    for (idx, item) in items.iter().enumerate() {
+        if used >= budget_chars {
+            break;
+        }
+        if numbered {
+            out.push_str(&format!("{}. {}\n", idx + 1, item));
+        } else {
+            out.push_str(&format!("- {}\n", item));
+        }
+        used += item.chars().count();
+    }
+}
+
+/// Mechanically extract high-signal identifiers (paths, SHAs, ticket IDs, error
+/// strings) that must survive compaction verbatim rather than being paraphrased.
+fn collect_anchors(text: &str, out: &mut Vec<String>) {
+    if text.is_empty() {
+        return;
+    }
+    static ANCHOR_RES: std::sync::OnceLock<Vec<regex::Regex>> = std::sync::OnceLock::new();
+    let res = ANCHOR_RES.get_or_init(|| {
+        [
+            r"\b[\w./-]+\.(?:rs|py|ts|tsx|js|jsx|json|toml|yaml|yml|md|sh|sql|html|css|go|java|c|cc|cpp|h|hpp)\b",
+            r"\b[0-9a-fA-F]{7,40}\b",
+            r"\b[A-Z][A-Z0-9]+-\d+\b",
+            r#"(?i)\berror(?:\[[^\]]*\])?[: ][^\n]{0,120}"#,
+        ]
+        .iter()
+        .filter_map(|pattern| regex::Regex::new(pattern).ok())
+        .collect()
+    });
+    for re in res {
+        for m in re.find_iter(text) {
+            let found = m.as_str().trim().to_string();
+            // Hex-ish matches must contain a digit to avoid matching words like
+            // "defaced"; dedupe keeps the index compact.
+            if found.len() < 4 {
+                continue;
+            }
+            if re.as_str().contains("0-9a-fA-F") && !found.chars().any(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            if !out.iter().any(|existing| existing == &found) {
+                out.push(found);
+            }
+        }
+    }
+}
+
+/// Last-resort summary used when the summarizer LLM fails and abort is off.
+/// Carries forward the prior summary, anchors, and the newest user message so
+/// no information is silently dropped.
+fn deterministic_summary(
+    prior_summary: Option<&str>,
+    user_turns_newest_first: &[String],
+    anchors: &[String],
+    summarized_count: usize,
+) -> Message {
+    let mut body = String::new();
+    body.push_str("## Progress\n### Done\n");
+    body.push_str(&format!(
+        "- {summarized_count} earlier turn(s) were compacted without an LLM summary.\n"
+    ));
+    if let Some(prior) = prior_summary {
+        body.push_str("\n## Prior summary (retained)\n");
+        body.push_str(prior);
+        body.push('\n');
+    }
+    if let Some(last_user) = user_turns_newest_first.first() {
+        body.push_str("\n## Last user message (verbatim)\n");
+        body.push_str(last_user);
+        body.push('\n');
+    }
+    if !anchors.is_empty() {
+        body.push_str("\n## Critical Context\n");
+        for anchor in anchors.iter().take(50) {
+            body.push_str(&format!("- {anchor}\n"));
+        }
+    }
+    body.push_str(
+        "\n---\n_Recovery: earlier turns are archived and remain searchable. \
+Use the search_history tool to retrieve specifics._",
+    );
+    Message {
+        role: Role::Assistant,
+        content: format!("{}\n\n{}", crate::llm::compaction::SUMMARY_MARKER, body),
+        timestamp: None,
+        is_prompt: false,
+        tool_call_id: None,
+        tool_calls: None,
+        attachments: None,
+        reasoning_content: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::Message;
+    use crate::config::ConversationCompactConfig;
+    use crate::llm::{ChatResponse, LlmError, Message, ToolDefinition};
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+
+    struct CapturingClient {
+        last_prompt: Mutex<String>,
+        reply: String,
+    }
+
+    impl CapturingClient {
+        fn new(reply: &str) -> Self {
+            Self { last_prompt: Mutex::new(String::new()), reply: reply.to_string() }
+        }
+        fn prompt(&self) -> String {
+            self.last_prompt.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl LlmClient for CapturingClient {
+        async fn send_message_with_tools(
+            &self,
+            messages: Vec<Message>,
+            _available_tools: Vec<ToolDefinition>,
+            _temperature: Option<f32>,
+            _max_tokens: Option<u32>,
+        ) -> Result<ChatResponse, LlmError> {
+            *self.last_prompt.lock().unwrap() =
+                messages.last().map(|m| m.content.clone()).unwrap_or_default();
+            Ok(ChatResponse {
+                content: self.reply.clone(),
+                tool_calls: vec![],
+                reasoning_content: None,
+            })
+        }
+    }
+
+    struct FailingClient;
+
+    #[async_trait]
+    impl LlmClient for FailingClient {
+        async fn send_message_with_tools(
+            &self,
+            _messages: Vec<Message>,
+            _available_tools: Vec<ToolDefinition>,
+            _temperature: Option<f32>,
+            _max_tokens: Option<u32>,
+        ) -> Result<ChatResponse, LlmError> {
+            Err(LlmError::Api("summary backend down".into()))
+        }
+    }
 
     #[test]
-    fn test_message_importance_scoring() {
-        // System message should have high score (base 100 + recency bonus when index 0 of 10)
-        let system_msg = Message::new(Role::System, "System prompt".to_string());
-        let score = MessageWithImportance::calculate_importance(&system_msg, 0, 10);
-        assert!(score >= 100.0);
+    fn collect_anchors_keeps_paths_ids_and_errors() {
+        let mut anchors = Vec::new();
+        collect_anchors(
+            "edited src/server/handler.rs and commit deadbeef12; ticket PROJ-4821; error: disk full at /var/log/app.log",
+            &mut anchors,
+        );
+        assert!(anchors.iter().any(|a| a == "src/server/handler.rs"), "{anchors:?}");
+        assert!(anchors.iter().any(|a| a.contains("deadbeef12")), "{anchors:?}");
+        assert!(anchors.iter().any(|a| a == "PROJ-4821"), "{anchors:?}");
+        assert!(anchors.iter().any(|a| a.to_lowercase().contains("error")), "{anchors:?}");
+    }
 
-        // User message should have good score
-        let user_msg = Message::new(Role::User, "Hello".to_string());
-        let score = MessageWithImportance::calculate_importance(&user_msg, 9, 10);
-        assert!(score > 80.0); // Base 80 + recency bonus
+    #[test]
+    fn collect_anchors_skips_hex_without_digits() {
+        let mut anchors = Vec::new();
+        collect_anchors("the defaced facade was added", &mut anchors);
+        assert!(!anchors.iter().any(|a| a == "defaced"), "{anchors:?}");
+    }
+
+    #[test]
+    fn strip_summary_marker_removes_header() {
+        let raw = format!("{}\n\n## Goal\nship it", crate::llm::compaction::SUMMARY_MARKER);
+        assert_eq!(strip_summary_marker(&raw), "## Goal\nship it");
+        assert_eq!(strip_summary_marker("plain"), "plain");
+    }
+
+    #[test]
+    fn deterministic_summary_carries_prior_anchor_and_user() {
+        let msg = deterministic_summary(
+            Some("## Goal\nprior goal"),
+            &["latest question".to_string()],
+            &["src/main.rs".to_string()],
+            7,
+        );
+        assert_eq!(msg.role, Role::Assistant);
+        assert!(crate::llm::compaction::is_summary_content(&msg.content));
+        assert!(msg.content.contains("prior goal"));
+        assert!(msg.content.contains("latest question"));
+        assert!(msg.content.contains("src/main.rs"));
+        assert!(msg.content.contains("7 earlier turn(s)"));
+        assert!(msg.content.contains("search_history"));
+    }
+
+    #[tokio::test]
+    async fn structured_summary_updates_prior_and_marks_assistant() {
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: format!("{}\n\n## Goal\nold goal", crate::llm::compaction::SUMMARY_MARKER),
+                timestamp: None,
+                is_prompt: false,
+                tool_call_id: None,
+                tool_calls: None,
+                attachments: None,
+                reasoning_content: None,
+            },
+            Message::new(Role::User, "now do the next thing".to_string()),
+            Message::new(Role::Assistant, "working on it, touched src/lib.rs".to_string()),
+        ];
+        let client = CapturingClient::new("## Goal\nupdated goal");
+        let config = ConversationCompactConfig::default();
+
+        let summary = SmartContextManager::summarize_messages(
+            messages,
+            &ModelPreset::default(),
+            &config,
+            &client,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(summary.role, Role::Assistant);
+        assert!(crate::llm::compaction::is_summary_content(&summary.content));
+        assert!(summary.content.contains("updated goal"));
+        assert!(summary.content.contains("search_history"));
+
+        let prompt = client.prompt();
+        assert!(prompt.contains("[Prior summary]"), "{prompt}");
+        assert!(prompt.contains("old goal"), "{prompt}");
+        assert!(prompt.contains("now do the next thing"), "{prompt}");
+        assert!(prompt.contains("Conversation:"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn failed_summary_commits_deterministic_fallback() {
+        let messages = vec![Message::new(Role::User, "keep this question".to_string())];
+        let config = ConversationCompactConfig::default();
+
+        let summary = SmartContextManager::summarize_messages(
+            messages.clone(),
+            &ModelPreset::default(),
+            &config,
+            &FailingClient,
+        )
+        .await
+        .unwrap();
+
+        assert!(crate::llm::compaction::is_summary_content(&summary.content));
+        assert!(summary.content.contains("without an LLM summary"));
+        assert!(summary.content.contains("keep this question"));
+
+        // With abort enabled the error propagates instead.
+        let aborting = ConversationCompactConfig {
+            abort_on_summary_failure: true,
+            ..Default::default()
+        };
+        let err = SmartContextManager::summarize_messages(
+            messages,
+            &ModelPreset::default(),
+            &aborting,
+            &FailingClient,
+        )
+        .await;
+        assert!(err.is_err());
     }
 }
 

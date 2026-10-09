@@ -643,6 +643,11 @@ impl Storage {
         self.sqlite.insert_llm_call(rec)
     }
 
+    /// Latest provider-reported usage anchor for a conversation.
+    pub fn latest_usage_anchor(&self, conversation_id: &str) -> SqliteResult<Option<(u32, u32)>> {
+        self.sqlite.latest_usage_anchor(conversation_id)
+    }
+
     /// Get due scheduled jobs
     pub fn get_due_scheduled_jobs(
         &self,

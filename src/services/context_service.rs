@@ -13,6 +13,48 @@ use crate::prompts::PromptManager;
 use crate::storage::sqlite_storage_simple::Message as StorageMessage;
 use anyhow::Result;
 
+// ── Summarization failure cooldown ──────────────────────────────────────────
+// A broken summary backend must not re-fire the (expensive) summarization on
+// every turn. Consecutive failures escalate the backoff; any success clears it.
+// Process-local: persisting across restarts is a follow-up.
+
+const SUMMARIZATION_COOLDOWN_STEPS: [u64; 3] = [60, 300, 900];
+
+fn summarization_cooldowns() -> &'static std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u32)>> {
+    static MAP: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u32)>>,
+    > = std::sync::OnceLock::new();
+    MAP.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Remaining cooldown for `conv_id`, if a recent failure armed one.
+fn summarization_cooldown_remaining(conv_id: &str) -> Option<std::time::Duration> {
+    let guard = summarization_cooldowns().lock().ok()?;
+    let (until, _) = guard.get(conv_id)?;
+    let now = std::time::Instant::now();
+    (now < *until).then(|| *until - now)
+}
+
+/// Arm (or escalate) the cooldown after a summary failure.
+fn arm_summarization_cooldown(conv_id: &str) {
+    let Ok(mut guard) = summarization_cooldowns().lock() else {
+        return;
+    };
+    let strike = guard.get(conv_id).map(|(_, s)| *s).unwrap_or(0);
+    let secs = SUMMARIZATION_COOLDOWN_STEPS[(strike as usize).min(SUMMARIZATION_COOLDOWN_STEPS.len() - 1)];
+    guard.insert(
+        conv_id.to_string(),
+        (std::time::Instant::now() + std::time::Duration::from_secs(secs), strike + 1),
+    );
+}
+
+/// Clear the cooldown after a successful summary.
+fn clear_summarization_cooldown(conv_id: &str) {
+    if let Ok(mut guard) = summarization_cooldowns().lock() {
+        guard.remove(conv_id);
+    }
+}
+
 /// Returns the range of `db_messages` (ordered by created_at ASC) to summarize.
 ///
 /// The trailing message is excluded **only when it is a `User` turn** (the
@@ -189,7 +231,7 @@ impl ContextService {
         let preset = resolved.preset();
         let profile = resolved.profile();
         let token_counter = TokenCounter::new(preset);
-        let total_tokens: usize = llm_messages
+        let raw_tokens: usize = llm_messages
             .iter()
             .map(|msg| token_counter.count_message_tokens(msg))
             .sum();
@@ -197,8 +239,33 @@ impl ContextService {
         let context_limit = token_counter.get_context_limit(preset);
         let summarize_threshold_tokens = token_counter.get_summarize_threshold_tokens(preset, profile);
 
+        // Anchor on the provider's real prompt-token count from the last call:
+        // scale the local estimate by (real / local) for the SAME request, which
+        // corrects tokenizer bias per model while preserving growth since then.
+        let anchor = {
+            let guard = storage.lock().await;
+            guard
+                .latest_usage_anchor(&conv_id.to_string())
+                .unwrap_or(None)
+        };
+        let total_tokens = match anchor {
+            Some((prompt, estimate)) if estimate > 0 => {
+                let scaled = ((raw_tokens as f64) * (prompt as f64 / estimate as f64)).round() as usize;
+                tracing::debug!(
+                    raw_tokens,
+                    anchor_prompt_tokens = prompt,
+                    anchor_estimate = estimate,
+                    scaled,
+                    "Token estimate anchored to provider usage"
+                );
+                scaled
+            }
+            _ => raw_tokens,
+        };
+
         tracing::debug!(
             total_tokens,
+            raw_tokens,
             usage_percent = (total_tokens as f32 / context_limit as f32 * 100.0),
             context_limit,
             summarize_threshold_tokens,
@@ -215,6 +282,18 @@ impl ContextService {
             summarize_threshold_tokens,
             "Summarization threshold exceeded, triggering automatic summarization"
         );
+
+        // Anti-thrash: after a summary failure, back off instead of re-firing
+        // every turn. Manual summarization bypasses this (separate path).
+        let cooldown_key = conv_id.to_string();
+        if let Some(remaining) = summarization_cooldown_remaining(&cooldown_key) {
+            tracing::warn!(
+                conversation_id = %conv_id,
+                remaining_secs = remaining.as_secs(),
+                "Summarization cooling down after a recent failure; deferring"
+            );
+            return Ok(());
+        }
 
         // Load messages from DB (ordered by created_at ASC)
         let db_messages = {
@@ -253,14 +332,23 @@ impl ContextService {
 
         // Generate summary
         tracing::debug!(conversation_id = %conv_id, "Generating summary");
-        let summary_msg = crate::llm::context_manager::SmartContextManager::summarize_messages(
+        let summary_msg = match crate::llm::context_manager::SmartContextManager::summarize_messages(
             llm_msgs_to_summarize,
             preset,
             compact_config,
             llm_client.as_ref(),
         )
         .await
-        .context("failed to generate summary")?;
+        {
+            Ok(msg) => {
+                clear_summarization_cooldown(&cooldown_key);
+                msg
+            }
+            Err(e) => {
+                arm_summarization_cooldown(&cooldown_key);
+                return Err(anyhow::Error::new(e).context("failed to generate summary"));
+            }
+        };
 
         tracing::info!(
             conversation_id = %conv_id,
@@ -408,6 +496,25 @@ mod tests {
         ];
         let range = 0..1;
         assert_eq!(summary_created_at(&db, &range), 1);
+    }
+
+    #[test]
+    fn cooldown_arms_escalates_and_clears() {
+        let key = "cooldown-test-conv";
+
+        assert!(summarization_cooldown_remaining(key).is_none());
+
+        arm_summarization_cooldown(key);
+        let first = summarization_cooldown_remaining(key).expect("armed").as_secs();
+        assert!(first > 0 && first <= SUMMARIZATION_COOLDOWN_STEPS[0]);
+
+        // Second consecutive failure escalates to the next rung.
+        arm_summarization_cooldown(key);
+        let second = summarization_cooldown_remaining(key).expect("armed").as_secs();
+        assert!(second > first && second <= SUMMARIZATION_COOLDOWN_STEPS[1]);
+
+        clear_summarization_cooldown(key);
+        assert!(summarization_cooldown_remaining(key).is_none());
     }
 }
 

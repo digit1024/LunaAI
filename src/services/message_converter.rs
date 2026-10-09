@@ -77,24 +77,33 @@ impl MessageConverter {
                 continue;
             }
 
-            let role = match msg.role.as_str() {
-                "user" => Role::User,
-                "assistant" => Role::Assistant,
-                "system" => Role::System,
-                "tool" => {
-                    // Check if this tool result has a matching tool_call
-                    if let Some(ref tool_call_id) = msg.tool_call_id {
-                        if !valid_tool_call_ids.contains(tool_call_id) {
+            // A compaction summary rides as an `assistant` turn regardless of the
+            // stored role: providers expose a single system slot (Anthropic drops
+            // every system message after the first), and `system` summaries get
+            // hoisted by context selection. Keying on `is_summary` also repairs
+            // legacy rows persisted with role="system".
+            let role = if msg.is_summary {
+                Role::Assistant
+            } else {
+                match msg.role.as_str() {
+                    "user" => Role::User,
+                    "assistant" => Role::Assistant,
+                    "system" => Role::System,
+                    "tool" => {
+                        // Check if this tool result has a matching tool_call
+                        if let Some(ref tool_call_id) = msg.tool_call_id {
+                            if !valid_tool_call_ids.contains(tool_call_id) {
+                                skipped_orphans += 1;
+                                continue; // Skip orphaned tool result
+                            }
+                        } else {
                             skipped_orphans += 1;
-                            continue; // Skip orphaned tool result
+                            continue; // No tool_call_id, skip
                         }
-                    } else {
-                        skipped_orphans += 1;
-                        continue; // No tool_call_id, skip
+                        Role::Tool
                     }
-                    Role::Tool
+                    _ => continue,
                 }
-                _ => continue,
             };
 
             // For tool messages, combine content with tool_result_json
@@ -109,6 +118,14 @@ impl MessageConverter {
                 combined
             } else {
                 msg.content.clone()
+            };
+
+            // Ensure a summary carries its marker so it stays identifiable in the
+            // payload even when the row predates the marker.
+            let content = if msg.is_summary && !crate::llm::compaction::is_summary_content(&content) {
+                format!("{}\n\n{}", crate::llm::compaction::SUMMARY_MARKER, content)
+            } else {
+                content
             };
 
             let mut llm_msg = if role == Role::User {
@@ -404,6 +421,40 @@ mod tests {
         assert!(llm_messages[0].content.contains("summary"));
         assert_eq!(llm_messages[1].role, Role::User);
         assert_eq!(llm_messages[1].content, "latest question");
+    }
+
+    #[test]
+    fn legacy_system_summary_becomes_marked_assistant() {
+        // A summary persisted by an older build with role="system" must be
+        // converted to an assistant turn and gain the compaction marker, so it
+        // is neither dropped by Anthropic nor hoisted by context selection.
+        let db_messages = vec![StorageMessage {
+            id: 1,
+            conversation_id: "test".to_string(),
+            role: "system".to_string(),
+            content: "old summary body".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_status: None,
+            tool_params_json: None,
+            tool_result_json: None,
+            embedding: None,
+            created_at: 0,
+            reasoning_content: None,
+            is_summary: true,
+            is_summarized: false,
+            summarized_message_ids: None,
+            summarized_count: Some(3),
+            attachments: None,
+        }];
+
+        let llm_messages = MessageConverter::db_to_llm(&db_messages, true);
+
+        assert_eq!(llm_messages.len(), 1);
+        assert_eq!(llm_messages[0].role, Role::Assistant);
+        assert!(crate::llm::compaction::is_summary_content(&llm_messages[0].content));
+        assert!(llm_messages[0].content.contains("old summary body"));
     }
 }
 

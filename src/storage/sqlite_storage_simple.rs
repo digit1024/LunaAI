@@ -581,6 +581,31 @@ impl SqliteStorage {
         Ok(())
     }
 
+    /// Latest provider-reported usage anchor for a conversation:
+    /// `(prompt_tokens, context_tokens_estimate)` from the same call, used to
+    /// correct the tokenizer estimate toward the provider's real count.
+    pub fn latest_usage_anchor(&self, conversation_id: &str) -> SqliteResult<Option<(u32, u32)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT prompt_tokens, context_tokens_estimate
+             FROM llm_calls
+             WHERE conversation_id = ?1
+               AND prompt_tokens IS NOT NULL
+               AND context_tokens_estimate IS NOT NULL
+               AND context_tokens_estimate > 0
+             ORDER BY started_at DESC, finished_at DESC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![conversation_id])?;
+        if let Some(row) = rows.next()? {
+            let prompt: i64 = row.get(0)?;
+            let estimate: i64 = row.get(1)?;
+            if prompt > 0 && estimate > 0 {
+                return Ok(Some((prompt as u32, estimate as u32)));
+            }
+        }
+        Ok(None)
+    }
+
     /// Insert a new conversation with profile.
     pub fn insert_conversation_with_profile(
         &self,
@@ -964,7 +989,7 @@ impl SqliteStorage {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 conversation_id,
-                "system",
+                "assistant",
                 summary_content,
                 summary_created_at,
                 1, // is_summary = true
@@ -2015,6 +2040,101 @@ mod tests {
         // Clean up
         let _ = fs::remove_file(&db_path);
 
+        Ok(())
+    }
+
+    #[test]
+    fn summarized_turns_remain_searchable_for_recovery() -> SqliteResult<()> {
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join("test_recovery_search.db");
+        let _ = fs::remove_file(&db_path);
+
+        let storage = SqliteStorage::new(&db_path)?;
+        let conv_id = storage.insert_conversation_with_profile("Recovery", None, false)?;
+
+        storage.insert_message_with_metadata(
+            &conv_id,
+            "user",
+            "the deploy token is anthraxword",
+            None,
+            &MessageMetadata::default(),
+        )?;
+        storage.insert_message_with_metadata(
+            &conv_id,
+            "assistant",
+            "noted",
+            None,
+            &MessageMetadata::default(),
+        )?;
+
+        let msgs = storage.load_conversation(&conv_id)?;
+        let summary_at = msgs.last().unwrap().created_at + 1;
+        storage.perform_summarization(&conv_id, &msgs, "compacted summary", summary_at)?;
+
+        // The LLM payload view folds the summarized turns away...
+        let payload = storage.load_conversation_messages_limited(&conv_id, 1000)?;
+        assert!(
+            payload.iter().all(|m| !m.content.contains("anthraxword")),
+            "summarized turns must leave the payload"
+        );
+
+        // ...but FTS recovery still finds them, which the compaction recovery
+        // pointer relies on (`search_history`).
+        let hits = storage.search_history("anthraxword", 10, false)?;
+        assert!(
+            hits.iter().any(|s| s.content.contains("anthraxword")),
+            "summarized turns must stay searchable for recovery"
+        );
+
+        let _ = fs::remove_file(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn latest_usage_anchor_returns_newest_real_usage() -> SqliteResult<()> {
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join("test_usage_anchor.db");
+        let _ = fs::remove_file(&db_path);
+        let storage = SqliteStorage::new(&db_path)?;
+        let conv = uuid::Uuid::new_v4();
+        let conv_str = conv.to_string();
+
+        let rec = |started: i64, prompt: Option<u32>, estimate: Option<usize>| {
+            crate::llm::LlmCallRecord {
+                call_id: uuid::Uuid::new_v4(),
+                conversation_id: Some(conv),
+                provider: "anthropic".to_string(),
+                model: "claude".to_string(),
+                streaming: false,
+                started_at: started,
+                finished_at: started,
+                duration_ms: 1,
+                ttfb_ms: None,
+                http_status: Some(200),
+                request_id: None,
+                messages_in: 1,
+                tool_count: 0,
+                context_tokens_estimate: estimate,
+                prompt_tokens: prompt,
+                completion_tokens: Some(1),
+                total_tokens: prompt.map(|p| p + 1),
+                finish_reason: Some("stop".to_string()),
+                tool_calls_emitted: 0,
+                bytes_in: 0,
+                outcome: crate::llm::observability::CallOutcome::Success,
+                error_kind: None,
+                error_message: None,
+            }
+        };
+
+        storage.insert_llm_call(&rec(100, Some(900), Some(1000)))?;
+        storage.insert_llm_call(&rec(200, Some(1800), Some(2000)))?;
+        // Newest has no estimate -> must be skipped for the anchor.
+        storage.insert_llm_call(&rec(300, Some(9999), None))?;
+
+        assert_eq!(storage.latest_usage_anchor(&conv_str)?, Some((1800, 2000)));
+
+        let _ = fs::remove_file(&db_path);
         Ok(())
     }
 

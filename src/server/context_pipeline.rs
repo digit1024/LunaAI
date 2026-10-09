@@ -1,6 +1,6 @@
 use crate::{
     config::ResolvedProfile,
-    llm::context_manager::SmartContextManager,
+    llm::compaction::engine::BoundaryCompactor,
     llm::tokenizer::TokenCounter,
     llm::{Message as LlmMessage, Role},
     services::ContextService,
@@ -239,84 +239,43 @@ impl<'a> ContextPipeline<'a> {
             usage_percent
         );
 
+        // Contiguous boundary compaction: keep a head and a token-budgeted tail,
+        // never an importance-sorted subset. Replaces the old select_context.
         let mut agent_messages = if total_tokens > safe_limit {
             tracing::info!(
                 total_tokens,
                 safe_limit,
-                "Context exceeds safe limit, applying smart truncation"
+                "Context exceeds safe limit, applying boundary compaction"
             );
-            SmartContextManager::select_context(llm_messages, &token_counter, preset)
+            let before = total_tokens;
+            let selected = BoundaryCompactor::select(
+                llm_messages,
+                &token_counter,
+                &self.ctx.config.conversation_compact,
+                context_limit,
+            );
+            let after = count_tokens(&selected, &token_counter);
+            let _ = self.outbound.send(ServerEvent::Info {
+                message: format!(
+                    "Context compacted: {} -> {} tokens ({} messages)",
+                    before,
+                    after,
+                    selected.len()
+                ),
+            });
+            selected
         } else {
             llm_messages
         };
 
-        let total_tokens = count_tokens(&agent_messages, &token_counter);
-
-        if total_tokens > hard_limit {
-            tracing::warn!(
-                total_tokens,
-                hard_limit,
-                "CRITICAL: Context exceeds hard limit, forcing truncation"
-            );
-            let original_count = agent_messages.len();
-            agent_messages =
-                SmartContextManager::select_context(agent_messages, &token_counter, preset);
-            let selected_count = agent_messages.len();
-            let selected_tokens = count_tokens(&agent_messages, &token_counter);
-
-            tracing::warn!(
-                original_count,
-                selected_count,
-                total_tokens,
-                selected_tokens,
-                "Emergency truncation: messages and tokens reduced"
-            );
-
-            let _ = self.outbound.send(ServerEvent::Info {
-                message: format!(
-                    "Context exceeded limit! Truncated: {} messages -> {} messages ({} tokens)",
-                    original_count,
-                    selected_count,
-                    selected_tokens
-                ),
-            });
-        } else if total_tokens > safe_limit {
-            tracing::info!(
-                "Context overflow detected: {} tokens > {} safe limit. Applying smart context selection.",
-                total_tokens,
-                safe_limit
-            );
-            let original_count = agent_messages.len();
-            agent_messages =
-                SmartContextManager::select_context(agent_messages, &token_counter, preset);
-            let selected_count = agent_messages.len();
-            let selected_tokens = count_tokens(&agent_messages, &token_counter);
-
-            tracing::info!(
-                "Context selection: {} messages -> {} messages ({} tokens -> {} tokens)",
-                original_count,
-                selected_count,
-                total_tokens,
-                selected_tokens
-            );
-
-            let _ = self.outbound.send(ServerEvent::Info {
-                message: format!(
-                    "Context truncated: {} messages selected from {} ({} tokens used)",
-                    selected_count,
-                    original_count,
-                    selected_tokens
-                ),
-            });
-        }
-
+        // Last-resort emergency fallback: if still over the hard limit, keep the
+        // system block plus the newest messages that fit.
         let final_tokens = count_tokens(&agent_messages, &token_counter);
-
         if final_tokens > hard_limit {
             tracing::error!(
                 total_tokens = final_tokens,
                 context_limit = hard_limit,
-                "FATAL: After truncation, still over limit (this should not happen)"
+                "FATAL: After compaction, still over limit (this should not happen)"
             );
             let system_count = agent_messages
                 .iter()
