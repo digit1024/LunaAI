@@ -25,8 +25,8 @@ pluginManagement {
 
 plugins {
     id "dev.flutter.flutter-plugin-loader" version "1.0.0"
-    id "com.android.application" version "8.11.1" apply false
-    id "org.jetbrains.kotlin.android" version "2.3.20" apply false
+    id "com.android.application" version "9.1.0" apply false
+    id "org.jetbrains.kotlin.android" version "2.4.0" apply false
 }
 
 def localProperties = new Properties()
@@ -63,13 +63,16 @@ rootProject.name = "luna_mobile"
 include(":app")
 include(":wear")
 
-// Fix for wear package missing namespace
+// Fixes for the third-party `wear` package (from the pub cache):
+//  - it pins compileSdk 31, which AGP 9 rejects against modern androidx deps;
+//  - older templates relied on a namespace patch.
 gradle.beforeProject { project ->
-    if (project.name == "wear" && project.path.contains("pub.dev")) {
+    if (project.name == "wear") {
         project.afterEvaluate {
             if (it.hasProperty("android")) {
                 it.android {
                     namespace = "com.mjohnsullivan.flutterwear.wear"
+                    compileSdkVersion 36
                 }
             }
         }
