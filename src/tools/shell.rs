@@ -25,11 +25,15 @@ pub struct ShellTool {
 
 impl ShellTool {
     pub fn new(config: ShellToolConfig) -> Self {
-        let validator = CommandValidator::with_default_deny(
-            &config.allow_commands,
-            &config.allow_patterns,
-            !config.allow_unsafe_commands,
-        );
+        let validator = if config.allow_unsafe_commands {
+            CommandValidator::with_default_deny(
+                &config.allow_commands,
+                &config.allow_patterns,
+                false,
+            )
+        } else {
+            CommandValidator::new(&config.allow_commands, &config.allow_patterns)
+        };
         Self { config, validator }
     }
 
@@ -142,6 +146,13 @@ impl ShellTool {
         Ok(dir)
     }
 
+    /// Apply configured environment variables to a spawned command.
+    fn apply_env(&self, cmd: &mut Command) {
+        for (key, value) in &self.config.env {
+            cmd.env(key, expand_env_vars(value));
+        }
+    }
+
     fn effective_timeout(&self, requested: Option<u64>) -> Result<Duration, String> {
         let max = self.config.max_timeout_secs;
         let secs = match requested {
@@ -190,6 +201,7 @@ impl ShellTool {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        self.apply_env(&mut cmd);
 
         let mut child = cmd
             .spawn()
@@ -239,6 +251,7 @@ impl ShellTool {
                 .kill_on_drop(true)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+            self.apply_env(&mut c);
             c.stdin(if i == 0 {
                 if stdin.is_some() {
                     Stdio::piped()
@@ -338,6 +351,21 @@ impl super::EmbeddedTool for ShellTool {
             },
         }
     }
+}
+
+/// Expand `${env:VAR_NAME}` references from the server process environment.
+fn expand_env_vars(value: &str) -> String {
+    let mut result = value.to_string();
+    while let Some(start) = result.find("${env:") {
+        if let Some(end_rel) = result[start..].find('}') {
+            let var_name = result[start + 6..start + end_rel].to_string();
+            let env_value = std::env::var(&var_name).unwrap_or_default();
+            result.replace_range(start..start + end_rel + 1, &env_value);
+        } else {
+            break;
+        }
+    }
+    result
 }
 
 /// Expand tokens that embed pipe characters, mirroring upstream preprocessing.
@@ -522,6 +550,35 @@ mod tests {
             .await;
         assert!(r.is_error);
         assert!(r.content.contains("absolute path"));
+    }
+
+    #[tokio::test]
+    async fn injects_configured_env() {
+        let mut cfg = ShellToolConfig {
+            enabled: true,
+            allow_commands: vec!["printenv".to_string()],
+            ..ShellToolConfig::default()
+        };
+        cfg.env.insert("LUNA_TEST_ENV".to_string(), "hello-env".to_string());
+        let t = ShellTool::new(cfg);
+        let r = t
+            .execute(&call(
+                SHELL_TOOL_NAME,
+                serde_json::json!({"command": ["printenv", "LUNA_TEST_ENV"]}),
+            ))
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("hello-env"), "{}", r.content);
+    }
+
+    #[test]
+    fn expands_env_references() {
+        std::env::set_var("LUNA_ENV_EXPAND_TEST", "expanded-value");
+        assert_eq!(
+            expand_env_vars("prefix-${env:LUNA_ENV_EXPAND_TEST}"),
+            "prefix-expanded-value"
+        );
+        assert_eq!(expand_env_vars("${env:LUNA_MISSING_VAR}!"), "!");
     }
 
     #[tokio::test]

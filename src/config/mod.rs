@@ -127,6 +127,10 @@ pub struct ShellToolConfig {
     /// match `allow_commands`/`allow_patterns`. Shell operators are still rejected.
     #[serde(default)]
     pub allow_unsafe_commands: bool,
+    /// Extra environment variables injected into every `shell_execute` process.
+    /// Values support `${env:VAR}` expansion from the server's environment.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
     /// Working directory used when the tool call omits `directory`.
     #[serde(default)]
     pub default_directory: Option<String>,
@@ -147,6 +151,7 @@ impl Default for ShellToolConfig {
             allow_patterns: Vec::new(),
             allowed_directories: Vec::new(),
             allow_unsafe_commands: false,
+            env: HashMap::new(),
             default_directory: None,
             default_timeout_secs: default_shell_default_timeout_secs(),
             max_timeout_secs: default_shell_max_timeout_secs(),
@@ -687,7 +692,7 @@ fn default_vision_enabled() -> bool {
 }
 
 fn default_vision_max_tokens() -> u32 {
-    512
+    1024
 }
 
 fn default_vision_system_prompt() -> String {

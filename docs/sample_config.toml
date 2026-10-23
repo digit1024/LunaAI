@@ -80,6 +80,9 @@ allow_commands = ["ls", "cat", "pwd", "grep", "wc", "touch", "find", "echo", "mk
 # allowed_directories = ["/home/you"]  # optional confinement; [] = any existing abs dir
 # allow_unsafe_commands = false    # true = also allow interpreters/dangerous options if whitelisted
 # default_directory = "/home/you"  # used when a call omits `directory`
+# [embedded_tools.shell.env]       # extra env vars for every shell_execute process
+# MY_VAR = "literal-value"
+# API_TOKEN = "${env:MY_SERVER_ENV_TOKEN}"  # ${env:VAR} expands from the server env
 # default_timeout_secs = 30
 # max_timeout_secs = 300
 # output_limit_bytes = 1048576
