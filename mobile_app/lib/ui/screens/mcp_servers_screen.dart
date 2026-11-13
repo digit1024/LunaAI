@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../application/app_controller.dart';
 import '../../application/app_state.dart';
+import '../../core/theme/app_theme.dart';
 import '../../data/http/mcp_dto.dart';
 
 class McpServersScreen extends ConsumerStatefulWidget {
@@ -126,7 +127,8 @@ class _McpServerTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isConnected = server.status == MCPServerStatusEnum.connected;
-    final statusColor = isConnected ? Colors.green : Colors.red;
+    final colorScheme = Theme.of(context).colorScheme;
+    final statusColor = isConnected ? colorScheme.success : colorScheme.error;
     final statusLabel = isConnected ? 'Connected' : 'Failed';
     final subtitle = isConnected
         ? '${server.toolCount} tools available'

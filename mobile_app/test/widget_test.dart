@@ -1,27 +1,23 @@
-import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:luna_mobile/application/app_controller.dart';
 import 'package:luna_mobile/main.dart';
-import 'package:luna_mobile/ui/screens/setup_screen.dart';
+import 'package:luna_mobile/services/foreground_guard.dart';
+import 'package:luna_mobile/services/notification_service.dart';
+import 'package:luna_mobile/ui/screens/connecting_screen.dart';
 
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
 void main() {
-  testWidgets('Shows setup screen initially', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(ProviderScope(
-      overrides: [
-        // Mock the providers that would normally be overridden in main()
-        // For simplicity in testing, we'll just test the basic routing
-      ],
-      child: const LunaApp(),
-    ));
+  testWidgets('Shows connecting screen initially', (WidgetTester tester) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          notificationServiceProvider.overrideWithValue(NotificationService()),
+          foregroundGuardProvider.overrideWithValue(ForegroundGuard()),
+        ],
+        child: const LunaApp(),
+      ),
+    );
 
-    // Verify that the setup screen is shown.
-    expect(find.byType(SetupScreen), findsOneWidget);
+    expect(find.byType(ConnectingScreen), findsOneWidget);
   });
 }

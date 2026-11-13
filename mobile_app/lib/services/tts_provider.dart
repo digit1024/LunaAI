@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
 
-/// Abstract interface for TTS providers (Built-in or Qween).
+/// Abstract interface for TTS providers (device, OpenAI-compatible or DashScope).
 /// All TTS usage in the app goes through this interface.
 abstract class TtsProvider {
   /// Speak the given text. Calls [onComplete] when done (or immediately on error).

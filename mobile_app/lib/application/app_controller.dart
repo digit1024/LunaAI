@@ -473,20 +473,20 @@ class AppController extends Notifier<AppState> {
     return textExts.contains(ext);
   }
 
-  void startDialogMode() {
-    // Voice mode only available on mobile platforms
+  void startVoiceMode() {
     if (!isMobile) {
-      debugPrint('Dialog mode not available on desktop/web platform');
+      debugPrint('Voice mode not available on desktop/web platform');
       state = state.copyWith(
         error: 'Voice mode is only available on mobile devices',
       );
       return;
     }
-    
-    if (state.isDialogModeActive) return;
+
+    if (state.isVoiceModeActive) return;
     state = state.copyWith(
-      isDialogModeActive: true,
-      dialogModeState: DialogModeState.listening,
+      isVoiceModeActive: true,
+      voiceModeState: VoiceModeState.idle,
+      voiceModeError: null,
     );
   }
 
@@ -560,17 +560,26 @@ class AppController extends Notifier<AppState> {
     }
   }
 
-  void stopDialogMode() {
-    if (!state.isDialogModeActive) return;
+  void stopVoiceMode() {
+    if (!state.isVoiceModeActive) return;
     state = state.copyWith(
-      isDialogModeActive: false,
-      dialogModeState: DialogModeState.listening,
+      isVoiceModeActive: false,
+      voiceModeState: VoiceModeState.idle,
+      voiceModeError: null,
     );
   }
 
-  void setDialogModeState(DialogModeState newState) {
-    if (!state.isDialogModeActive) return;
-    state = state.copyWith(dialogModeState: newState);
+  void setVoiceModeState(VoiceModeState newState) {
+    if (!state.isVoiceModeActive) return;
+    state = state.copyWith(voiceModeState: newState, voiceModeError: null);
+  }
+
+  void setVoiceModeError(String message) {
+    if (!state.isVoiceModeActive) return;
+    state = state.copyWith(
+      voiceModeState: VoiceModeState.error,
+      voiceModeError: message,
+    );
   }
 
   /// Retry a user message - truncates conversation at that message and puts content back in input

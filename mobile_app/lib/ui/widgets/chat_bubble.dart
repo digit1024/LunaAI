@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../application/app_controller.dart';
 import '../../application/app_state.dart';
 import '../../core/config/server_config.dart';
+import '../../core/theme/app_theme.dart';
 import '../../data/ws/ws_dto.dart';
 import '../../services/tts_provider_resolver.dart';
 import '../../tts/message_speech.dart';
@@ -677,7 +678,7 @@ class _ToolResultBubbleState extends State<_ToolResultBubble> {
                     Icon(
                       isError ? Icons.error : Icons.check_circle,
                       size: 16,
-                      color: isError ? colorScheme.error : Colors.green,
+                      color: isError ? colorScheme.error : colorScheme.success,
                     ),
                     const SizedBox(width: 6),
                     Expanded(

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../application/app_controller.dart';
+import '../../core/theme/app_theme.dart';
 
 class ConnectingScreen extends ConsumerWidget {
   const ConnectingScreen({super.key});
@@ -20,10 +21,10 @@ class ConnectingScreen extends ConsumerWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(
+              Icon(
                 Icons.cloud_sync,
                 size: 48,
-                color: Colors.indigo,
+                color: Theme.of(context).colorScheme.primary,
               ),
               const SizedBox(height: 16),
               const Text(
@@ -41,23 +42,28 @@ class ConnectingScreen extends ConsumerWidget {
               const LinearProgressIndicator(),
               const SizedBox(height: 16),
               if (attempt > 1) ...[
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.orange.shade50,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.refresh, size: 16, color: Colors.orange.shade700),
-                      const SizedBox(width: 8),
-                      Text(
-                        'Retrying connection…',
-                        style: TextStyle(color: Colors.orange.shade700),
+                Builder(
+                  builder: (context) {
+                    final warning = Theme.of(context).colorScheme.warning;
+                    return Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: warning.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
                       ),
-                    ],
-                  ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.refresh, size: 16, color: warning),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Retrying connection…',
+                            style: TextStyle(color: warning),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
                 const SizedBox(height: 16),
               ],

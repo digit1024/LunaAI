@@ -1,11 +1,11 @@
-/// Default max chars per Qween TTS API request.
-const int kQweenTtsMaxInputLength = 600;
+/// Default max chars per remote TTS API request.
+const int kDefaultTtsMaxInputLength = 600;
 
 /// Safe max chars per built-in (flutter_tts) utterance on Android.
 const int kBuiltInTtsMaxInputLength = 3500;
 
 /// Splits text into chunks ≤ [maxLen] chars. Prefers sentence, then word boundaries.
-List<String> chunkTextForTts(String text, {int maxLen = kQweenTtsMaxInputLength}) {
+List<String> chunkTextForTts(String text, {int maxLen = kDefaultTtsMaxInputLength}) {
   final trimmed = text.trim();
   if (trimmed.isEmpty) return [];
 

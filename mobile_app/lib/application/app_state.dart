@@ -8,7 +8,13 @@ enum ConnectionStatus { connecting, online, error }
 
 enum ActivePane { setup, connecting, conversations, chat, memories, settings, mcp }
 
+enum VoiceModeState { idle, listening, transcribing, thinking, speaking, error }
+
+/// Legacy enum kept for the Wear UI.
+@Deprecated('Use VoiceModeState')
 enum DialogModeState { listening, processing, speaking }
+
+const Object _voiceErrorUnset = Object();
 
 /// Bubble types for simplified display logic
 enum BubbleType {
@@ -178,8 +184,9 @@ class AppState extends Equatable {
   final String staticToken; // Ephemeral token for static file URLs (from HealthOk)
   final int
       connectionAttempt; // Current attempt (1, 2, 3) or 0 if not connecting
-  final bool isDialogModeActive;
-  final DialogModeState dialogModeState;
+  final bool isVoiceModeActive;
+  final VoiceModeState voiceModeState;
+  final String? voiceModeError;
   final List<FileAttachment> attachedFiles;
   final List<MemoryView> memories;
   final String memoriesSearch;
@@ -208,8 +215,9 @@ class AppState extends Equatable {
     required this.currentProfile,
     required this.staticToken,
     required this.connectionAttempt,
-    required this.isDialogModeActive,
-    required this.dialogModeState,
+    required this.isVoiceModeActive,
+    required this.voiceModeState,
+    this.voiceModeError,
     required this.attachedFiles,
     required this.memories,
     required this.memoriesSearch,
@@ -237,8 +245,9 @@ class AppState extends Equatable {
         currentProfile: '',
         staticToken: '',
         connectionAttempt: 0,
-        isDialogModeActive: false,
-        dialogModeState: DialogModeState.listening,
+        isVoiceModeActive: false,
+        voiceModeState: VoiceModeState.idle,
+        voiceModeError: null,
         attachedFiles: [],
         memories: [],
         memoriesSearch: '',
@@ -266,8 +275,9 @@ class AppState extends Equatable {
     String? currentProfile,
     String? staticToken,
     int? connectionAttempt,
-    bool? isDialogModeActive,
-    DialogModeState? dialogModeState,
+    bool? isVoiceModeActive,
+    VoiceModeState? voiceModeState,
+    Object? voiceModeError = _voiceErrorUnset,
     List<FileAttachment>? attachedFiles,
     List<MemoryView>? memories,
     String? memoriesSearch,
@@ -296,8 +306,11 @@ class AppState extends Equatable {
       currentProfile: currentProfile ?? this.currentProfile,
       staticToken: staticToken ?? this.staticToken,
       connectionAttempt: connectionAttempt ?? this.connectionAttempt,
-      isDialogModeActive: isDialogModeActive ?? this.isDialogModeActive,
-      dialogModeState: dialogModeState ?? this.dialogModeState,
+      isVoiceModeActive: isVoiceModeActive ?? this.isVoiceModeActive,
+      voiceModeState: voiceModeState ?? this.voiceModeState,
+      voiceModeError: identical(voiceModeError, _voiceErrorUnset)
+          ? this.voiceModeError
+          : voiceModeError as String?,
       attachedFiles: attachedFiles ?? this.attachedFiles,
       memories: memories ?? this.memories,
       memoriesSearch: memoriesSearch ?? this.memoriesSearch,
@@ -329,8 +342,9 @@ class AppState extends Equatable {
         currentProfile,
         staticToken,
         connectionAttempt,
-        isDialogModeActive,
-        dialogModeState,
+        isVoiceModeActive,
+        voiceModeState,
+        voiceModeError,
         attachedFiles,
         memories,
         memoriesSearch,

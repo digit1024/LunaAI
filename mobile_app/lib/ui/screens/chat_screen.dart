@@ -12,24 +12,24 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../application/app_controller.dart';
 import '../../application/app_state.dart';
 import '../../core/config/server_config.dart';
+import '../../core/theme/app_theme.dart';
 import '../../data/http/file_client.dart'
     show
         FileAttachment,
         kImageExtensions,
         kImageDownscaleThresholdBytes,
         kMaxFileSizeBytes;
-import '../../core/config/tts_preferences.dart';
-import '../../core/config/tts_provider_type.dart';
-import '../../core/config/stt_preferences.dart';
-import '../../ui/screens/qween_tts_settings_screen.dart';
-import '../../services/speech_service.dart';
 import '../../services/tts_provider_resolver.dart';
-import '../../services/tts_service.dart';
 import '../../tts/message_speech.dart';
 import '../../utils/platform_utils.dart';
+import '../../voice/stt_service.dart';
+import '../../voice/voice_catalog.dart';
+import '../../voice/voice_preferences.dart';
+import '../../voice/voice_recorder.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/typing_bubble.dart';
 import '../widgets/voice_mode_overlay.dart';
+import 'settings_screen.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -51,9 +51,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   late final ProviderSubscription<bool> _streamingSubscription;
   late final ProviderSubscription<List<ChatMessage>> _toolCompletionSubscription;
   late final ProviderSubscription<List<ChatMessage>> _ttsSubscription;
-  late final ProviderSubscription<bool> _dialogModeSubscription;
+  late final ProviderSubscription<bool> _voiceModeSubscription;
   final Set<String> _completedToolIds = {}; // Track completed tools to avoid replaying
   final Set<String> _processedMessageIds = {}; // Track messages that have been processed for sound/TTS
+  Set<String>? _messageIdsAtStreamingStart;
+  String? _streamingConversationId;
   /// IDs of messages that arrived as part of a bulk conversation load. These
   /// must not play the slide-in animation (we don't want to animate dozens
   /// of historical bubbles every time the user opens a long chat).
@@ -68,9 +70,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// when the list actually grows (a new bubble/streaming delta), not on
   /// every rebuild.
   int _lastObservedMessageCount = 0;
-  SpeechService? _speechService;
-  String? _currentTranscribedText;
-  Timer? _sttErrorRetryTimer; // Debounce STT error retries to avoid double start (error_busy)
+  late final VoiceRecorderService _recorder;
+  Timer? _voiceTimer;
+  DateTime? _listeningStartedAt;
+  int _elapsedSeconds = 0;
+  bool _voiceStarting = false;
 
   @override
   void initState() {
@@ -96,45 +100,38 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     final streamingProvider =
         appControllerProvider.select((state) => state.streaming);
-    if (ref.read(streamingProvider)) _startTypingFeedback();
+    if (ref.read(streamingProvider)) {
+      _startTypingFeedback();
+      _beginStreamingTurn(ref.read(appControllerProvider));
+    }
 
     _streamingSubscription = ref.listenManual<bool>(
       streamingProvider,
       (previous, next) {
         if (next) {
-          if (previous != true) _startTypingFeedback();
+          if (previous != true) {
+            _startTypingFeedback();
+            _beginStreamingTurn(ref.read(appControllerProvider));
+          }
         } else if (previous == true) {
           _stopTypingFeedback(playCompletion: true);
-          // Turn complete: resume STT in dialog mode ONLY if no TTS will play (empty last message)
-          // If TTS will play, resume listening will happen in TTS onComplete callback
           final state = ref.read(appControllerProvider);
-          if (state.isDialogModeActive) {
-            // Check if last assistant message has content (TTS will play)
-            final lastAssistant = state.chatMessages.isEmpty
-                ? null
-                : state.chatMessages.lastWhere(
-                    (m) => m.bubbleType == BubbleType.assistant && !m.isStreaming,
-                    orElse: () => ChatMessage(
-                      id: '',
-                      role: 'assistant',
-                      content: '',
-                      timestamp: DateTime.now(),
-                      bubbleType: BubbleType.assistant,
-                    ),
-                  );
-            final cleanText = lastAssistant != null
-                ? prepareMessageForTts(lastAssistant.content)
-                : '';
-            
-            // Only resume if last message is empty (no TTS will play)
-            if (lastAssistant == null || 
-                lastAssistant.content.isEmpty || 
-                cleanText.trim().isEmpty) {
-              debugPrint('ChatScreen: Streaming ended, no TTS (empty message), resuming listening');
-              // We woudl never hit this code. empty messgae is unacceptable
-            } else {
-              debugPrint('ChatScreen: Streaming ended, TTS will play, waiting for TTS completion');
-            }
+          _finishStreamingTurn(state);
+          if (state.isVoiceModeActive &&
+              state.voiceModeState == VoiceModeState.thinking) {
+            // TTS (if configured) starts synchronously when the assistant
+            // message completes. If we are still thinking shortly after,
+            // no speech is going to play.
+            Future<void>.delayed(const Duration(milliseconds: 700), () {
+              if (!mounted) return;
+              final current = ref.read(appControllerProvider);
+              if (current.isVoiceModeActive &&
+                  current.voiceModeState == VoiceModeState.thinking) {
+                ref
+                    .read(appControllerProvider.notifier)
+                    .setVoiceModeState(VoiceModeState.idle);
+              }
+            });
           }
         }
       },
@@ -183,14 +180,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       },
     );
 
-    // Listen for dialog mode changes
-    _dialogModeSubscription = ref.listenManual<bool>(
-      appControllerProvider.select((state) => state.isDialogModeActive),
+    _recorder = VoiceRecorderService();
+
+    // Listen for voice mode changes
+    _voiceModeSubscription = ref.listenManual<bool>(
+      appControllerProvider.select((state) => state.isVoiceModeActive),
       (previous, next) {
         if (next && (previous == null || !previous)) {
-          _startDialogMode();
+          _enterVoiceMode();
         } else if (!next && (previous != null && previous)) {
-          _stopDialogMode();
+          _exitVoiceMode();
         }
       },
     );
@@ -209,18 +208,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   @override
   void dispose() {
-    _sttErrorRetryTimer?.cancel();
-    _sttErrorRetryTimer = null;
+    _voiceTimer?.cancel();
+    _voiceTimer = null;
+    _voiceModeSubscription.close();
+    ref.read(appControllerProvider.notifier).stopVoiceMode();
     _streamingSubscription.close();
     _toolCompletionSubscription.close();
     _ttsSubscription.close();
-    _dialogModeSubscription.close();
     _typingPlayer.dispose();
     _donePlayer.dispose();
     _sentPlayer.dispose();
     _toolPlayer.dispose();
     _bublePlayer.dispose();
-    _speechService?.dispose();
+    _recorder.dispose();
     _controller.dispose();
     _scrollController.dispose();
     _focusNode.dispose();
@@ -268,8 +268,74 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (playCompletion) {
       _donePlayer.stop();
       _donePlayer.play(AssetSource('audio/done.mp3'));
-      // TTS is triggered only from _handleNewAssistantMessages (completed-messages path)
+      // TTS starts from _finishStreamingTurn at the same turn-complete moment.
     }
+  }
+
+  void _beginStreamingTurn(AppState state) {
+    _streamingConversationId = state.activeConversation?.id;
+    _messageIdsAtStreamingStart =
+        state.chatMessages.map((message) => message.id).toSet();
+  }
+
+  /// Reads the final assistant message once the whole turn has completed —
+  /// the same lifecycle moment that plays done.mp3.
+  void _finishStreamingTurn(AppState state) {
+    final snapshot = _messageIdsAtStreamingStart;
+    final conversationId = _streamingConversationId;
+    _messageIdsAtStreamingStart = null;
+    _streamingConversationId = null;
+
+    if (snapshot == null) return;
+    if (conversationId != state.activeConversation?.id) {
+      // A conversation switch/load cleared streaming; this is not a live turn.
+      if (state.isVoiceModeActive &&
+          state.voiceModeState == VoiceModeState.thinking) {
+        ref
+            .read(appControllerProvider.notifier)
+            .setVoiceModeState(VoiceModeState.idle);
+      }
+      return;
+    }
+
+    final lastAssistant = state.chatMessages.isEmpty
+        ? null
+        : state.chatMessages.cast<ChatMessage?>().lastWhere(
+              (m) =>
+                  m != null &&
+                  m.bubbleType == BubbleType.assistant &&
+                  !m.isStreaming,
+              orElse: () => null,
+            );
+
+    if (lastAssistant == null || snapshot.contains(lastAssistant.id)) {
+      if (state.isVoiceModeActive &&
+          state.voiceModeState == VoiceModeState.thinking) {
+        ref
+            .read(appControllerProvider.notifier)
+            .setVoiceModeState(VoiceModeState.idle);
+      }
+      return;
+    }
+
+    final cleanText = prepareMessageForTts(lastAssistant.content);
+    final voicePrefs = ref.read(voicePreferencesProvider);
+    if (!voicePrefs.ttsEnabled ||
+        lastAssistant.content.isEmpty ||
+        cleanText.trim().isEmpty) {
+      if (state.isVoiceModeActive &&
+          state.voiceModeState == VoiceModeState.thinking) {
+        ref
+            .read(appControllerProvider.notifier)
+            .setVoiceModeState(VoiceModeState.idle);
+      }
+      return;
+    }
+
+    final key = '${lastAssistant.id}_tts';
+    if (_processedMessageIds.contains(key)) return;
+    _processedMessageIds.add(key);
+    _playTtsForMessage(lastAssistant);
   }
 
   void _handleNewAssistantMessages(
@@ -277,7 +343,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     List<ChatMessage> next,
   ) {
     final state = ref.read(appControllerProvider);
-    final ttsPrefs = ref.read(ttsPreferencesProvider);
+    final voicePrefs = ref.read(voicePreferencesProvider);
     
     // Get previous message IDs for comparison
     final previousIds = previous?.map((m) => m.id).toSet() ?? <String>{};
@@ -290,7 +356,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     ).toList();
     
     // Play bubble sound when message bubble begins (if TTS is disabled)
-    if (newStreamingMessages.isNotEmpty && !ttsPrefs.enabled && !state.isDialogModeActive) {
+    if (newStreamingMessages.isNotEmpty &&
+        !voicePrefs.ttsEnabled &&
+        !state.isVoiceModeActive) {
       // Find all assistant messages
       final allAssistantMessages = next.where(
         (m) => m.bubbleType == BubbleType.assistant,
@@ -325,274 +393,184 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       }
     }
     
-    // Handle TTS for completed messages (single path: only the last assistant message)
-    // Last = last assistant (not streaming) in the full conversation
-    final lastAssistant = next.isEmpty
-        ? null
-        : next.lastWhere(
-            (m) => m.bubbleType == BubbleType.assistant && !m.isStreaming,
-            orElse: () => ChatMessage(
-              id: '',
-              role: 'assistant',
-              content: '',
-              timestamp: DateTime.now(),
-              bubbleType: BubbleType.assistant,
-            ),
-          );
-    final lastAssistantId = lastAssistant?.id ?? '';
-    if (lastAssistantId.isEmpty) return;
-
-    // Only run TTS when that last message just completed in this update
-    final completedMessages = next
-        .where(
-            (m) => m.bubbleType == BubbleType.assistant && !m.isStreaming)
-        .where((m) {
-      final wasStreaming =
-          previous?.any((p) => p.id == m.id && p.isStreaming) ?? false;
-      return wasStreaming || !previousIds.contains(m.id);
-    }).toList();
-    final lastJustCompleted =
-        completedMessages.any((m) => m.id == lastAssistantId);
-
-    if (!lastJustCompleted ||
-        (!ttsPrefs.enabled && !state.isDialogModeActive)) {
-      return;
-    }
-
-    if (_processedMessageIds.contains('${lastAssistantId}_tts')) {
-      return;
-    }
-    _processedMessageIds.add('${lastAssistantId}_tts');
-
-    // Empty: don't start TTS; STT will resume when streaming goes false (handled in streaming listener)
-    final cleanText = prepareMessageForTts(lastAssistant!.content);
-    if (lastAssistant.content.isEmpty || cleanText.trim().isEmpty) {
-      return;
-    }
-
-    _playTtsForMessage(lastAssistant);
   }
 
   Future<void> _playTtsForMessage(ChatMessage message) async {
-    if (message.content.isEmpty) return;
-    
-    final state = ref.read(appControllerProvider);
-    
-    // Strip emojis and markdown
     final cleanText = prepareMessageForTts(message.content);
-    if (cleanText.trim().isEmpty) return;
-
-    // Get active TTS provider (Built-in or Qween) and stop any ongoing TTS
-    final ttsProvider = ref.read(ttsProviderResolver);
-    await ttsProvider.stop();
-    
-    if (state.isDialogModeActive) {
-      // In dialog mode, set state to speaking. Resume listening after TTS completes.
-      final controller = ref.read(appControllerProvider.notifier);
-      controller.setDialogModeState(DialogModeState.speaking);
-      final messageIdForResume = message.id;
-
-      // Resume listening only when (1) TTS completed, (2) not streaming, (3) this message is still the last assistant.
-      // Prevents resuming when we stopped an earlier message to play the next (onComplete fires for stopped playback).
-      await ttsProvider.speak(cleanText, onComplete: () {
-        final currentState = ref.read(appControllerProvider);
-        if (!currentState.isDialogModeActive || currentState.streaming) return;
-        final lastAssistant = currentState.chatMessages.isEmpty
-            ? null
-            : currentState.chatMessages.lastWhere(
-                (m) => m.bubbleType == BubbleType.assistant && !m.isStreaming,
-                orElse: () => ChatMessage(
-                  id: '',
-                  role: 'assistant',
-                  content: '',
-                  timestamp: DateTime.now(),
-                  bubbleType: BubbleType.assistant,
-                ),
-              );
-        if (lastAssistant?.id != messageIdForResume) {
-          debugPrint('ChatScreen: TTS completed for earlier message, not resuming (last=${lastAssistant?.id})');
-          return;
-        }
-        debugPrint('ChatScreen: TTS completed for last message, resuming listening');
-        if(!currentState.streaming)        _resumeListening();
-      });
-    } else {
-      await ttsProvider.speak(cleanText);
-    }
-  }
-
-  Future<void> _startDialogMode() async {
-    debugPrint('ChatScreen: _startDialogMode called');
-    final speechService = ref.read(speechServiceProvider);
-    _speechService = speechService;
-    final sttPrefs = ref.read(sttPreferencesProvider);
-    final controller = ref.read(appControllerProvider.notifier);
-    
-    // Enable wakelock to keep screen on (mobile only)
-    if (isMobile) {
-      await WakelockPlus.enable();
-      debugPrint('ChatScreen: Wakelock enabled');
-    }
-    
-    // Initialize speech service
-    final available = await speechService.isAvailable();
-    debugPrint('ChatScreen: Speech service available=$available');
-    if (!available) {
-      // Speech recognition not available, exit dialog mode
-      debugPrint('ChatScreen: Speech not available, exiting dialog mode');
-      controller.stopDialogMode();
+    final state = ref.read(appControllerProvider);
+    if (cleanText.trim().isEmpty) {
+      if (state.isVoiceModeActive) {
+        ref
+            .read(appControllerProvider.notifier)
+            .setVoiceModeState(VoiceModeState.idle);
+      }
       return;
     }
-    
-    // Set up callbacks BEFORE starting to listen
-    debugPrint('ChatScreen: Setting up speech callbacks');
-    
-    speechService.onResult = (text) {
-      debugPrint('ChatScreen: onResult callback - text="$text"');
-      setState(() {
-        _currentTranscribedText = text;
-      });
-      
-      // If user starts speaking during TTS, stop TTS and resume listening
-      // final currentState = ref.read(appControllerProvider);
-      // if (currentState.dialogModeState == DialogModeState.speaking && text.trim().isNotEmpty) {
-      //   debugPrint('ChatScreen: User speaking during TTS, stopping TTS');
-      //   final ttsProvider = ref.read(ttsProviderResolver);
-      //   ttsProvider.stop();
-      //   controller.setDialogModeState(DialogModeState.listening);
-      // }
-    };
-    
-    speechService.onPauseDetected = () {
-      debugPrint('ChatScreen: onPauseDetected callback triggered!');
-      // User paused, send message
-      // Get the current text from speech service (most up-to-date)
-      final textToSend = _speechService?.currentText ?? _currentTranscribedText ?? '';
-      debugPrint('ChatScreen: Text to send: "$textToSend"');
-      if (textToSend.trim().isNotEmpty) {
-        debugPrint('ChatScreen: Calling _sendVoiceMessage');
-        _sendVoiceMessage(textToSend.trim());
-        _currentTranscribedText = null;
-        
-      } else {
-        debugPrint('ChatScreen: No text to send');
+
+    final ttsProvider = ref.read(ttsProviderResolver);
+    await ttsProvider.stop();
+
+    if (!state.isVoiceModeActive) {
+      await ttsProvider.speak(cleanText);
+      return;
+    }
+
+    final controller = ref.read(appControllerProvider.notifier);
+    controller.setVoiceModeState(VoiceModeState.speaking);
+    await ttsProvider.speak(cleanText, onComplete: () {
+      final current = ref.read(appControllerProvider);
+      if (!current.isVoiceModeActive) return;
+      if (current.voiceModeState == VoiceModeState.speaking) {
+        controller.setVoiceModeState(VoiceModeState.idle);
       }
-    };
-    
-    speechService.onError = (error) {
-      debugPrint('ChatScreen: Speech error: $error');
-      _sttErrorRetryTimer?.cancel();
-      _sttErrorRetryTimer = null;
-      if (!ref.read(appControllerProvider).isDialogModeActive) return;
-      debugPrint('ChatScreen: Scheduling single restart after error (500ms)');
-      _sttErrorRetryTimer = Timer(const Duration(milliseconds: 500), () {
-        _sttErrorRetryTimer = null;
-        if (!ref.read(appControllerProvider).isDialogModeActive) return;
-        final currentSttPrefs = ref.read(sttPreferencesProvider);
-        speechService.startListening(
-          currentSttPrefs.language,
-          pauseDuration: currentSttPrefs.pauseDuration,
-        );
-      });
-    };
-    
-    speechService.onUnexpectedStop = () {
-      debugPrint('ChatScreen: STT stopped unexpectedly');
-      // Restart listening if still in dialog mode and in listening state
-      final currentState = ref.read(appControllerProvider);
-      if (currentState.isDialogModeActive && 
-          currentState.dialogModeState == DialogModeState.listening) {
-        debugPrint('ChatScreen: Restarting listening after unexpected stop');
-        Future.delayed(const Duration(milliseconds: 300), () {
-          if (ref.read(appControllerProvider).isDialogModeActive) {
-            final currentSttPrefs = ref.read(sttPreferencesProvider);
-            speechService.startListening(
-              currentSttPrefs.language,
-              pauseDuration: currentSttPrefs.pauseDuration,
-            );
-          }
-        });
-      }
-    };
-    
-    // Start listening
-    debugPrint('ChatScreen: Starting to listen with language=${sttPrefs.language}');
-    controller.setDialogModeState(DialogModeState.listening);
-    final started = await speechService.startListening(
-      sttPrefs.language,
-      pauseDuration: sttPrefs.pauseDuration,
-    );
-    debugPrint('ChatScreen: startListening returned $started');
+    });
   }
 
-  Future<void> _stopDialogMode() async {
-    debugPrint('ChatScreen: _stopDialogMode called');
-    _sttErrorRetryTimer?.cancel();
-    _sttErrorRetryTimer = null;
+  Future<void> _enterVoiceMode() async {
+    await ref.read(voicePreferencesProvider.notifier).ensureLoaded();
+    final prefs = ref.read(voicePreferencesProvider);
+    final provider = VoiceCatalog.provider(prefs.stt.providerId);
+    final endpoint = prefs.stt.endpointOverride.isNotEmpty
+        ? prefs.stt.endpointOverride
+        : (provider.sttEndpoint ?? '');
+    final model = prefs.stt.modelOverride.isNotEmpty
+        ? prefs.stt.modelOverride
+        : VoiceCatalog.sttModel(prefs.stt.providerId, prefs.stt.modelId).model;
 
-    // Disable wakelock (mobile only)
+    if (endpoint.isEmpty || model.isEmpty) {
+      ref.read(appControllerProvider.notifier).setVoiceModeError(
+            'Configure an STT provider endpoint and model in Voice settings.',
+          );
+      return;
+    }
+
+    if (provider.requiresApiKey) {
+      final key = await ref
+          .read(voicePreferencesProvider.notifier)
+          .getApiKey(prefs.stt.providerId);
+      if (key == null || key.trim().isEmpty) {
+        ref.read(appControllerProvider.notifier).setVoiceModeError(
+              'Add a ${provider.label} API key in Voice settings.',
+            );
+        return;
+      }
+    }
+
+    if (!ref.read(appControllerProvider).isVoiceModeActive) return;
+    if (isMobile) {
+      await WakelockPlus.enable();
+    }
+    ref
+        .read(appControllerProvider.notifier)
+        .setVoiceModeState(VoiceModeState.idle);
+  }
+
+  Future<void> _exitVoiceMode() async {
+    _voiceTimer?.cancel();
+    _voiceTimer = null;
+    _listeningStartedAt = null;
+    if (mounted) setState(() => _elapsedSeconds = 0);
+    await _recorder.cancel();
+    await ref.read(ttsProviderResolver).stop();
     if (isMobile) {
       await WakelockPlus.disable();
     }
-
-    // Stop speech recognition and clear callbacks
-    await _speechService?.cancel();
-    _speechService?.clearCallbacks();
-    _speechService = null;
-    _currentTranscribedText = null;
-    
-    debugPrint('ChatScreen: Dialog mode stopped');
   }
 
-  Future<void> _sendVoiceMessage(String text) async {
-    debugPrint('ChatScreen: _sendVoiceMessage called with text="$text"');
+  Future<void> _beginListening() async {
+    final current = ref.read(appControllerProvider);
+    if (!current.isVoiceModeActive || _voiceStarting) return;
+    if (current.voiceModeState == VoiceModeState.listening) return;
+
+    _voiceStarting = true;
     final controller = ref.read(appControllerProvider.notifier);
-    
-    // Switch to processing state
-    debugPrint('ChatScreen: Setting state to processing');
-    controller.setDialogModeState(DialogModeState.processing);
-    
-    // Stop listening temporarily
-    debugPrint('ChatScreen: Stopping listening');
-    await _speechService?.stopListening();
-    
-    // Send message
-    debugPrint('ChatScreen: Sending prompt');
-    controller.sendPrompt(text);
-    
-    // State will switch to speaking when TTS starts (handled in _handleNewAssistantMessages)
-    debugPrint('ChatScreen: _sendVoiceMessage completed');
+    try {
+      await ref.read(ttsProviderResolver).stop();
+      await _recorder.start();
+      _listeningStartedAt = DateTime.now();
+      if (mounted) setState(() => _elapsedSeconds = 0);
+      controller.setVoiceModeState(VoiceModeState.listening);
+      _voiceTimer?.cancel();
+      _voiceTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        if (!mounted) return;
+        final started = _listeningStartedAt;
+        if (started == null) return;
+        final seconds = DateTime.now().difference(started).inSeconds;
+        setState(() => _elapsedSeconds = seconds);
+        if (seconds >= 180) {
+          timer.cancel();
+          unawaited(_finishListening());
+        }
+      });
+    } on VoiceRecorderException catch (e) {
+      controller.setVoiceModeError(e.message);
+    } catch (e) {
+      controller.setVoiceModeError('Could not start listening: $e');
+    } finally {
+      _voiceStarting = false;
+    }
   }
 
-  Future<void> _resumeListening() async {
-    final appState = ref.read(appControllerProvider);
-    if (!appState.isDialogModeActive) return;
-    
+  Future<void> _finishListening() async {
+    final current = ref.read(appControllerProvider);
+    if (!current.isVoiceModeActive ||
+        current.voiceModeState != VoiceModeState.listening) {
+      return;
+    }
+
+    _voiceTimer?.cancel();
+    _voiceTimer = null;
+    final started = _listeningStartedAt;
+    final duration = started == null
+        ? Duration.zero
+        : DateTime.now().difference(started);
+    _listeningStartedAt = null;
+    if (mounted) setState(() => _elapsedSeconds = 0);
+
+    final path = await _recorder.stop();
     final controller = ref.read(appControllerProvider.notifier);
-    final sttPrefs = ref.read(sttPreferencesProvider);
-    
-    // Switch back to listening state
-    controller.setDialogModeState(DialogModeState.listening);
-    
-    // Resume listening
-    await _speechService?.startListening(
-      sttPrefs.language,
-      pauseDuration: sttPrefs.pauseDuration,
+
+    if (path == null || duration < const Duration(milliseconds: 400)) {
+      if (path != null) {
+        try {
+          await File(path).delete();
+        } catch (_) {}
+      }
+      controller.setVoiceModeState(VoiceModeState.idle);
+      return;
+    }
+
+    controller.setVoiceModeState(VoiceModeState.transcribing);
+    try {
+      final text = await ref.read(sttServiceProvider).transcribeFile(path);
+      if (!ref.read(appControllerProvider).isVoiceModeActive) return;
+      final trimmed = text.trim();
+      if (trimmed.isEmpty) {
+        controller.setVoiceModeError('No speech detected. Try again.');
+        return;
+      }
+      controller.setVoiceModeState(VoiceModeState.thinking);
+      controller.sendPrompt(trimmed);
+    } on SttException catch (e) {
+      controller.setVoiceModeError(e.message);
+    } catch (e) {
+      controller.setVoiceModeError('Transcription failed: $e');
+    }
+  }
+
+  void _retryVoiceMode() {
+    ref
+        .read(appControllerProvider.notifier)
+        .setVoiceModeState(VoiceModeState.idle);
+  }
+
+  void _openSettings() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
     );
   }
 
-  Future<void> _stopTtsAndResumeListing() async {
-    debugPrint('ChatScreen: _stopTtsAndResumeListing called');
-    final appState = ref.read(appControllerProvider);
-    if (!appState.isDialogModeActive) return;
-    
-    // Stop TTS (works for both Built-in and Qween)
-    final ttsProvider = ref.read(ttsProviderResolver);
-    await ttsProvider.stop();
-    
-    // Resume listening
-    await _resumeListening();
-  }
+  void _openVoiceSettings() => _openSettings();
 
   /// Full attach flow: pick file → size check → optional downscale → stage.
   Future<void> _pickAndAttachFile() async {
@@ -752,7 +730,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           onHistory: controller.openConversations,
           onMemories: controller.openMemories,
           onMcpServers: controller.openMcpServers,
-          onSetup: controller.openSetup,
+          onSettings: _openSettings,
         ),
         body: Column(
           children: [
@@ -760,7 +738,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               title: heading,
               connection: state.connection,
               streaming: state.streaming,
-              onSettings: controller.openSetup,
+              onSettings: _openSettings,
               onRequestCompact: controller.requestCompactConversation,
               onRequestResumeAgent: controller.requestResumeAgent,
               isConversationInternal: state.activeConversation?.internal ?? false,
@@ -816,15 +794,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               if (state.chatMessages.isEmpty && !state.streaming)
                 const IgnorePointer(child: _EmptyChat()),
               // Voice mode overlay
-              if (state.isDialogModeActive)
+              if (state.isVoiceModeActive)
                 VoiceModeOverlay(
-                  state: state.dialogModeState,
-                  onClose: () {
-                    controller.stopDialogMode();
-                  },
-                  onStopTts: () {
-                    _stopTtsAndResumeListing();
-                  },
+                  state: state.voiceModeState,
+                  inputMode: ref.watch(voicePreferencesProvider).inputMode,
+                  elapsedSeconds: _elapsedSeconds,
+                  errorMessage: state.voiceModeError,
+                  onStartListening: _beginListening,
+                  onStopListening: _finishListening,
+                  onClose: controller.stopVoiceMode,
+                  onRetry: _retryVoiceMode,
+                  onOpenSettings: _openVoiceSettings,
                 ),
             ],
           ),
@@ -845,7 +825,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             }
           },
           onVoiceMode: () {
-            controller.startDialogMode();
+            controller.startVoiceMode();
           },
           onAttachFile: _pickAndAttachFile,
           onRemoveFile: (fileId) {
@@ -894,9 +874,9 @@ class _TopBar extends ConsumerWidget {
       ConnectionStatus.error => Icons.error,
     };
     final connectionColor = switch (connection) {
-      ConnectionStatus.connecting => Colors.orange,
-      ConnectionStatus.online => Colors.green,
-      ConnectionStatus.error => Colors.red,
+      ConnectionStatus.connecting => Theme.of(context).colorScheme.warning,
+      ConnectionStatus.online => Theme.of(context).colorScheme.success,
+      ConnectionStatus.error => Theme.of(context).colorScheme.error,
     };
 
     return Container(
@@ -1082,7 +1062,7 @@ class _StatusMenuAnchor extends StatelessWidget {
   }
 }
 
-class _ChatDrawer extends ConsumerStatefulWidget {
+class _ChatDrawer extends ConsumerWidget {
   const _ChatDrawer({
     required this.profile,
     required this.availableProfiles,
@@ -1091,7 +1071,7 @@ class _ChatDrawer extends ConsumerStatefulWidget {
     required this.onHistory,
     required this.onMemories,
     required this.onMcpServers,
-    required this.onSetup,
+    required this.onSettings,
   });
 
   final String profile;
@@ -1101,92 +1081,12 @@ class _ChatDrawer extends ConsumerStatefulWidget {
   final VoidCallback onHistory;
   final VoidCallback onMemories;
   final VoidCallback onMcpServers;
-  final VoidCallback onSetup;
+  final VoidCallback onSettings;
 
   @override
-  ConsumerState<_ChatDrawer> createState() => _ChatDrawerState();
-}
-
-class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
-  List<dynamic>? _availableLanguages;
-  bool _loadingLanguages = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadLanguages();
-  }
-
-  Future<void> _loadLanguages() async {
-    setState(() {
-      _loadingLanguages = true;
-    });
-    try {
-      final ttsService = ref.read(ttsServiceProvider);
-      final languages = await ttsService.getLanguages();
-      if (mounted) {
-        setState(() {
-          _availableLanguages = languages;
-          _loadingLanguages = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _loadingLanguages = false;
-        });
-      }
-    }
-  }
-
-  String _getLanguageDisplayName(String languageCode) {
-    final parts = languageCode.split('-');
-    final lang = parts[0];
-    final country = parts.length > 1 ? parts[1] : null;
-
-    final languageNames = {
-      'en': 'English',
-      'es': 'Spanish',
-      'fr': 'French',
-      'de': 'German',
-      'it': 'Italian',
-      'pt': 'Portuguese',
-      'ru': 'Russian',
-      'ja': 'Japanese',
-      'ko': 'Korean',
-      'zh': 'Chinese',
-      'ar': 'Arabic',
-      'hi': 'Hindi',
-      'nl': 'Dutch',
-      'pl': 'Polish',
-      'tr': 'Turkish',
-      'sv': 'Swedish',
-      'da': 'Danish',
-      'fi': 'Finnish',
-      'no': 'Norwegian',
-      'cs': 'Czech',
-      'hu': 'Hungarian',
-      'ro': 'Romanian',
-      'el': 'Greek',
-      'he': 'Hebrew',
-      'th': 'Thai',
-      'vi': 'Vietnamese',
-    };
-
-    final langName = languageNames[lang] ?? lang.toUpperCase();
-    if (country != null) {
-      return '$langName ($country)';
-    }
-    return langName;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final sttPrefs = ref.watch(sttPreferencesProvider);
-    final sttPrefsNotifier = ref.read(sttPreferencesProvider.notifier);
-    final ttsPrefs = ref.watch(ttsPreferencesProvider);
-    final ttsPrefsNotifier = ref.read(ttsPreferencesProvider.notifier);
-
+  Widget build(BuildContext context, WidgetRef ref) {
+    final voicePrefs = ref.watch(voicePreferencesProvider);
+    final voiceNotifier = ref.read(voicePreferencesProvider.notifier);
     return Drawer(
       child: ListView(
         padding: EdgeInsets.zero,
@@ -1202,187 +1102,78 @@ class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
                 Text(
                   'Luna AI',
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onPrimaryContainer,
-                  ),
+                        color:
+                            Theme.of(context).colorScheme.onPrimaryContainer,
+                      ),
                 ),
               ],
             ),
           ),
-          // New Chat
           ListTile(
             leading: const Icon(Icons.add),
             title: const Text('New Chat'),
             onTap: () {
-              widget.onStartNew();
               Navigator.pop(context);
+              onStartNew();
+            },
+          ),
+          SwitchListTile(
+            secondary: const Icon(Icons.volume_up),
+            title: const Text('Text-to-Speech'),
+            subtitle: const Text('Read assistant replies aloud'),
+            value: voicePrefs.ttsEnabled,
+            onChanged: (value) {
+              voiceNotifier.setTtsEnabled(value);
             },
           ),
           const Divider(),
-          // Profile Selection
-          if (widget.availableProfiles.isNotEmpty)
+          if (availableProfiles.isNotEmpty)
             ExpansionTile(
               leading: const Icon(Icons.person),
               title: const Text('Profile'),
-              subtitle: Text(widget.profile),
-              children: widget.availableProfiles.map((profile) {
+              subtitle: Text(profile),
+              children: availableProfiles.map((p) {
                 return ListTile(
-                  title: Text(profile),
-                  selected: profile == widget.profile,
+                  title: Text(p),
+                  selected: p == profile,
                   onTap: () {
-                    widget.onProfileChanged(profile);
                     Navigator.pop(context);
+                    onProfileChanged(p);
                   },
                 );
               }).toList(),
             ),
-          // TTS Toggle
-          SwitchListTile(
-            secondary: const Icon(Icons.volume_up),
-            title: const Text('Text-to-Speech'),
-            value: ttsPrefs.enabled,
-            onChanged: (value) {
-              ttsPrefsNotifier.setEnabled(value);
-            },
-          ),
-          // TTS Provider: Built-in vs Qween
-          ListTile(
-            leading: const Icon(Icons.record_voice_over),
-            title: const Text('TTS Provider'),
-            subtitle: Text(ttsPrefs.providerType.label),
-            onTap: () {
-              showModalBottomSheet<void>(
-                context: context,
-                builder: (ctx) => SafeArea(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: TtsProviderType.values
-                        .map((t) => ListTile(
-                              title: Text(t.label),
-                              onTap: () {
-                                ttsPrefsNotifier.setProviderType(t);
-                                Navigator.pop(ctx);
-                              },
-                            ))
-                        .toList(),
-                  ),
-                ),
-              );
-            },
-          ),
-          // Qween TTS settings - show when Qween selected
-          if (ttsPrefs.providerType == TtsProviderType.qween)
-            ListTile(
-              leading: const Icon(Icons.settings_voice),
-              title: const Text('Qween TTS Settings'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const QweenTtsSettingsScreen(),
-                  ),
-                );
-              },
-            ),
-          const Divider(),
-          // Language Selection (applies to STT and Built-in TTS only)
-          // Hide when Qween TTS - Qween uses English fixed
-          if (ttsPrefs.providerType != TtsProviderType.qween)
-            ListTile(
-              leading: const Icon(Icons.language),
-              title: const Text('Voice Language'),
-              subtitle: _loadingLanguages
-                  ? const Text('Loading...')
-                  : (_availableLanguages != null && _availableLanguages!.isNotEmpty)
-                      ? Builder(
-                          builder: (context) {
-                            // Filter to only show favorite languages
-                            final favoriteLanguages = sttPrefs.favoriteLanguages;
-                            final favoriteLangItems = _availableLanguages!
-                                .where((lang) {
-                                  final langCode = lang.toString();
-                                  return favoriteLanguages.contains(langCode);
-                                })
-                                .toList();
-                            
-                            // If current language is not in favorites, add it temporarily
-                            final currentLangCode = ttsPrefs.language;
-                            if (!favoriteLanguages.contains(currentLangCode)) {
-                              favoriteLangItems.insert(0, currentLangCode);
-                            }
-                            
-                            if (favoriteLangItems.isEmpty) {
-                              return TextButton.icon(
-                                onPressed: _loadLanguages,
-                                icon: const Icon(Icons.refresh, size: 18),
-                                label: const Text('Load Languages'),
-                              );
-                            }
-                            
-                            return DropdownButton<String>(
-                              value: ttsPrefs.language,
-                              isExpanded: true,
-                              underline: Container(),
-                              items: favoriteLangItems
-                                  .map<DropdownMenuItem<String>>((lang) {
-                                final langCode = lang.toString();
-                                final displayName = _getLanguageDisplayName(langCode);
-                                return DropdownMenuItem<String>(
-                                  value: langCode,
-                                  child: Text(displayName),
-                                );
-                              }).toList(),
-                              onChanged: (value) {
-                                if (value != null) {
-                                  // Set both TTS and STT language
-                                  ttsPrefsNotifier.setLanguage(value);
-                                  sttPrefsNotifier.setLanguage(value);
-                                  ref.read(ttsServiceProvider).setLanguage(value);
-                                }
-                              },
-                            );
-                          },
-                        )
-                      : TextButton.icon(
-                          onPressed: _loadLanguages,
-                          icon: const Icon(Icons.refresh, size: 18),
-                          label: const Text('Load Languages'),
-                        ),
-            ),
-          const Divider(),
-          // History
           ListTile(
             leading: const Icon(Icons.history),
             title: const Text('History'),
             onTap: () {
-              widget.onHistory();
               Navigator.pop(context);
+              onHistory();
             },
           ),
-          // Memories
           ListTile(
             leading: const Icon(Icons.psychology_outlined),
             title: const Text('Memories'),
             onTap: () {
-              widget.onMemories();
               Navigator.pop(context);
+              onMemories();
             },
           ),
-          // MCP Servers
           ListTile(
             leading: const Icon(Icons.hub_outlined),
             title: const Text('MCP Servers'),
             onTap: () {
-              widget.onMcpServers();
               Navigator.pop(context);
+              onMcpServers();
             },
           ),
-          // Setup
+          const Divider(),
           ListTile(
             leading: const Icon(Icons.settings),
-            title: const Text('Setup'),
+            title: const Text('Settings'),
             onTap: () {
-              widget.onSetup();
               Navigator.pop(context);
+              onSettings();
             },
           ),
         ],
@@ -1535,14 +1326,14 @@ class _ComposerState extends ConsumerState<_Composer> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   // Attach file button (+ icon)
-                  if (!isStreaming && !state.isDialogModeActive)
+                  if (!isStreaming && !state.isVoiceModeActive)
                     IconButton(
                       onPressed: widget.onAttachFile,
                       icon: const Icon(Icons.add),
                       tooltip: 'Attach file',
                     ),
                   // Voice mode button (mobile only)
-                  if (isMobile && !isStreaming && !state.isDialogModeActive)
+                  if (isMobile && !isStreaming && !state.isVoiceModeActive)
                     IconButton(
                       onPressed: widget.onVoiceMode,
                       icon: const Icon(Icons.mic),

@@ -5,11 +5,10 @@ import 'package:flutter_slidable/flutter_slidable.dart';
 import '../../application/app_controller.dart';
 import '../../application/app_state.dart';
 import '../../core/config/server_config.dart';
-import '../../core/config/tts_preferences.dart';
-import '../../core/config/stt_preferences.dart';
-import '../../services/tts_service.dart';
 import '../../data/ws/ws_dto.dart';
+import '../../voice/voice_preferences.dart';
 import '../widgets/conversation_card.dart';
+import 'settings_screen.dart';
 import '../widgets/rename_conversation_dialog.dart';
 
 class ConversationsScreen extends ConsumerStatefulWidget {
@@ -142,7 +141,13 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
         onHistory: controller.openConversations,
         onMemories: controller.openMemories,
         onMcpServers: controller.openMcpServers,
-        onSetup: controller.openSetup,
+        onSettings: () {
+          Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) => const SettingsScreen(),
+            ),
+          );
+        },
       ),
       body: Column(
         children: [
@@ -454,7 +459,7 @@ class _SearchItem extends _ConversationItem {
       searchResult(result);
 }
 
-class _ChatDrawer extends ConsumerStatefulWidget {
+class _ChatDrawer extends ConsumerWidget {
   const _ChatDrawer({
     required this.profile,
     required this.availableProfiles,
@@ -465,7 +470,7 @@ class _ChatDrawer extends ConsumerStatefulWidget {
     required this.onHistory,
     required this.onMemories,
     required this.onMcpServers,
-    required this.onSetup,
+    required this.onSettings,
   });
 
   final String profile;
@@ -477,92 +482,12 @@ class _ChatDrawer extends ConsumerStatefulWidget {
   final VoidCallback onHistory;
   final VoidCallback onMemories;
   final VoidCallback onMcpServers;
-  final VoidCallback onSetup;
+  final VoidCallback onSettings;
 
   @override
-  ConsumerState<_ChatDrawer> createState() => _ChatDrawerState();
-}
-
-class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
-  List<dynamic>? _availableLanguages;
-  bool _loadingLanguages = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadLanguages();
-  }
-
-  Future<void> _loadLanguages() async {
-    setState(() {
-      _loadingLanguages = true;
-    });
-    try {
-      final ttsService = ref.read(ttsServiceProvider);
-      final languages = await ttsService.getLanguages();
-      if (mounted) {
-        setState(() {
-          _availableLanguages = languages;
-          _loadingLanguages = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _loadingLanguages = false;
-        });
-      }
-    }
-  }
-
-  String _getLanguageDisplayName(String languageCode) {
-    final parts = languageCode.split('-');
-    final lang = parts[0];
-    final country = parts.length > 1 ? parts[1] : null;
-
-    final languageNames = {
-      'en': 'English',
-      'es': 'Spanish',
-      'fr': 'French',
-      'de': 'German',
-      'it': 'Italian',
-      'pt': 'Portuguese',
-      'ru': 'Russian',
-      'ja': 'Japanese',
-      'ko': 'Korean',
-      'zh': 'Chinese',
-      'ar': 'Arabic',
-      'hi': 'Hindi',
-      'nl': 'Dutch',
-      'pl': 'Polish',
-      'tr': 'Turkish',
-      'sv': 'Swedish',
-      'da': 'Danish',
-      'fi': 'Finnish',
-      'no': 'Norwegian',
-      'cs': 'Czech',
-      'hu': 'Hungarian',
-      'ro': 'Romanian',
-      'el': 'Greek',
-      'he': 'Hebrew',
-      'th': 'Thai',
-      'vi': 'Vietnamese',
-    };
-
-    final langName = languageNames[lang] ?? lang.toUpperCase();
-    if (country != null) {
-      return '$langName ($country)';
-    }
-    return langName;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final sttPrefs = ref.watch(sttPreferencesProvider);
-    final sttPrefsNotifier = ref.read(sttPreferencesProvider.notifier);
-    final ttsPrefs = ref.watch(ttsPreferencesProvider);
-    final ttsPrefsNotifier = ref.read(ttsPreferencesProvider.notifier);
-
+  Widget build(BuildContext context, WidgetRef ref) {
+    final voicePrefs = ref.watch(voicePreferencesProvider);
+    final voiceNotifier = ref.read(voicePreferencesProvider.notifier);
     return Drawer(
       child: ListView(
         padding: EdgeInsets.zero,
@@ -578,152 +503,88 @@ class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
                 Text(
                   'Luna AI',
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onPrimaryContainer,
-                  ),
+                        color:
+                            Theme.of(context).colorScheme.onPrimaryContainer,
+                      ),
                 ),
               ],
             ),
           ),
-          // New Chat
           ListTile(
             leading: const Icon(Icons.add),
             title: const Text('New Chat'),
             onTap: () {
-              widget.onStartNew();
               Navigator.pop(context);
+              onStartNew();
+            },
+          ),
+          SwitchListTile(
+            secondary: const Icon(Icons.volume_up),
+            title: const Text('Text-to-Speech'),
+            subtitle: const Text('Read assistant replies aloud'),
+            value: voicePrefs.ttsEnabled,
+            onChanged: (value) {
+              voiceNotifier.setTtsEnabled(value);
             },
           ),
           const Divider(),
-          // Profile Selection
-          if (widget.availableProfiles.isNotEmpty)
+          if (availableProfiles.isNotEmpty)
             ExpansionTile(
               leading: const Icon(Icons.person),
               title: const Text('Profile'),
-              subtitle: Text(widget.profile),
-              children: widget.availableProfiles.map((profile) {
+              subtitle: Text(profile),
+              children: availableProfiles.map((p) {
                 return ListTile(
-                  title: Text(profile),
-                  selected: profile == widget.profile,
+                  title: Text(p),
+                  selected: p == profile,
                   onTap: () {
-                    widget.onProfileChanged(profile);
                     Navigator.pop(context);
+                    onProfileChanged(p);
                   },
                 );
               }).toList(),
             ),
-          // TTS Toggle
-          SwitchListTile(
-            secondary: const Icon(Icons.volume_up),
-            title: const Text('Text-to-Speech'),
-            value: ttsPrefs.enabled,
-            onChanged: (value) {
-              ttsPrefsNotifier.setEnabled(value);
-            },
-          ),
-          // Voice Language
-          ListTile(
-            leading: const Icon(Icons.language),
-            title: const Text('Voice Language'),
-            subtitle: _loadingLanguages
-                ? const Text('Loading...')
-                : (_availableLanguages != null && _availableLanguages!.isNotEmpty)
-                    ? Builder(
-                        builder: (context) {
-                          // Filter to only show favorite languages
-                          final favoriteLanguages = sttPrefs.favoriteLanguages;
-                          final favoriteLangItems = _availableLanguages!
-                              .where((lang) {
-                                final langCode = lang.toString();
-                                return favoriteLanguages.contains(langCode);
-                              })
-                              .toList();
-                          
-                          // If current language is not in favorites, add it temporarily
-                          final currentLangCode = ttsPrefs.language;
-                          if (!favoriteLanguages.contains(currentLangCode)) {
-                            favoriteLangItems.insert(0, currentLangCode);
-                          }
-                          
-                          if (favoriteLangItems.isEmpty) {
-                            return TextButton.icon(
-                              onPressed: _loadLanguages,
-                              icon: const Icon(Icons.refresh, size: 18),
-                              label: const Text('Load Languages'),
-                            );
-                          }
-                          
-                          return DropdownButton<String>(
-                            value: ttsPrefs.language,
-                            isExpanded: true,
-                            underline: Container(),
-                            items: favoriteLangItems
-                                .map<DropdownMenuItem<String>>((lang) {
-                              final langCode = lang.toString();
-                              final displayName = _getLanguageDisplayName(langCode);
-                              return DropdownMenuItem<String>(
-                                value: langCode,
-                                child: Text(displayName),
-                              );
-                            }).toList(),
-                            onChanged: (value) {
-                              if (value != null) {
-                                // Set both TTS and STT language
-                                ttsPrefsNotifier.setLanguage(value);
-                                sttPrefsNotifier.setLanguage(value);
-                                ref.read(ttsServiceProvider).setLanguage(value);
-                              }
-                            },
-                          );
-                        },
-                      )
-                    : TextButton.icon(
-                        onPressed: _loadLanguages,
-                        icon: const Icon(Icons.refresh, size: 18),
-                        label: const Text('Load Languages'),
-                      ),
-          ),
-          const Divider(),
-          // History
           ListTile(
             leading: const Icon(Icons.history),
             title: const Text('History'),
             onTap: () {
-              widget.onHistory();
               Navigator.pop(context);
+              onHistory();
             },
           ),
           SwitchListTile(
             secondary: const Icon(Icons.visibility_off_outlined),
             title: const Text('Show internal'),
             subtitle: const Text('Include internal conversations in history'),
-            value: widget.showInternal,
-            onChanged: (_) => widget.onToggleShowInternal(),
+            value: showInternal,
+            onChanged: (_) {
+              Navigator.pop(context);
+              onToggleShowInternal();
+            },
           ),
-          // Memories
           ListTile(
             leading: const Icon(Icons.psychology_outlined),
             title: const Text('Memories'),
             onTap: () {
-              widget.onMemories();
               Navigator.pop(context);
+              onMemories();
             },
           ),
-          // MCP Servers
           ListTile(
             leading: const Icon(Icons.hub_outlined),
             title: const Text('MCP Servers'),
             onTap: () {
-              widget.onMcpServers();
               Navigator.pop(context);
+              onMcpServers();
             },
           ),
-          // Setup
+          const Divider(),
           ListTile(
             leading: const Icon(Icons.settings),
-            title: const Text('Setup'),
+            title: const Text('Settings'),
             onTap: () {
-              widget.onSetup();
               Navigator.pop(context);
+              onSettings();
             },
           ),
         ],
@@ -731,4 +592,3 @@ class _ChatDrawerState extends ConsumerState<_ChatDrawer> {
     );
   }
 }
-

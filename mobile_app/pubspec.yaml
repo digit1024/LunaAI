@@ -23,8 +23,9 @@ dependencies:
   collection: ^1.18.0
   shared_preferences: ^2.2.3
   flutter_secure_storage: ^9.2.2
+  path_provider: ^2.1.5
+  permission_handler: ^11.3.1
   flutter_tts: ^4.2.0
-  speech_to_text: ^7.0.0
   wakelock_plus: ^1.2.1
   http: ^1.2.0
   file_picker: ^10.3.7

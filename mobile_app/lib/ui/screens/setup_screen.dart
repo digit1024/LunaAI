@@ -6,12 +6,6 @@ import '../../application/app_controller.dart';
 import '../../application/app_state.dart';
 import '../../core/config/server_config.dart';
 import '../../core/config/theme_config.dart';
-import '../../core/config/tts_preferences.dart';
-import '../../core/config/tts_provider_type.dart';
-import '../../core/config/stt_preferences.dart';
-import '../../services/tts_service.dart';
-import '../widgets/language_favorites_dialog.dart';
-import 'qween_tts_settings_screen.dart';
 
 class SetupScreen extends ConsumerStatefulWidget {
   const SetupScreen({super.key});
@@ -26,8 +20,6 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
   late final TextEditingController _hostController;
   late final TextEditingController _portController;
   late final TextEditingController _apiKeyController;
-  List<dynamic>? _availableLanguages;
-  bool _loadingLanguages = false;
   bool _sendingToWatch = false;
 
   @override
@@ -37,74 +29,6 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
     _hostController = TextEditingController(text: config.host);
     _portController = TextEditingController(text: config.port.toString());
     _apiKeyController = TextEditingController(text: config.apiKey);
-    _loadLanguages();
-  }
-
-  Future<void> _loadLanguages() async {
-    setState(() {
-      _loadingLanguages = true;
-    });
-    try {
-      final ttsService = ref.read(ttsServiceProvider);
-      final languages = await ttsService.getLanguages();
-      // Sort languages alphabetically
-      languages.sort((a, b) => a.toString().compareTo(b.toString()));
-      if (mounted) {
-        setState(() {
-          _availableLanguages = languages;
-          _loadingLanguages = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _loadingLanguages = false;
-        });
-      }
-    }
-  }
-
-  String _getLanguageDisplayName(String languageCode) {
-    // Extract language name from code (e.g., "en-US" -> "English (US)")
-    final parts = languageCode.split('-');
-    final lang = parts[0];
-    final country = parts.length > 1 ? parts[1] : null;
-
-    // Common language names
-    final languageNames = {
-      'en': 'English',
-      'es': 'Spanish',
-      'fr': 'French',
-      'de': 'German',
-      'it': 'Italian',
-      'pt': 'Portuguese',
-      'ru': 'Russian',
-      'ja': 'Japanese',
-      'ko': 'Korean',
-      'zh': 'Chinese',
-      'ar': 'Arabic',
-      'hi': 'Hindi',
-      'nl': 'Dutch',
-      'pl': 'Polish',
-      'tr': 'Turkish',
-      'sv': 'Swedish',
-      'da': 'Danish',
-      'fi': 'Finnish',
-      'no': 'Norwegian',
-      'cs': 'Czech',
-      'hu': 'Hungarian',
-      'ro': 'Romanian',
-      'el': 'Greek',
-      'he': 'Hebrew',
-      'th': 'Thai',
-      'vi': 'Vietnamese',
-    };
-
-    final langName = languageNames[lang] ?? lang.toUpperCase();
-    if (country != null) {
-      return '$langName ($country)';
-    }
-    return langName;
   }
 
   Future<void> _sendConfigToWatch() async {
@@ -182,10 +106,6 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
     final serverConfigNotifier = ref.read(serverConfigProvider.notifier);
     final themeNotifier = ref.read(themeConfigProvider.notifier);
     final appController = ref.read(appControllerProvider.notifier);
-    final ttsPrefs = ref.watch(ttsPreferencesProvider);
-    final ttsPrefsNotifier = ref.read(ttsPreferencesProvider.notifier);
-    final sttPrefs = ref.watch(sttPreferencesProvider);
-    final sttPrefsNotifier = ref.read(sttPreferencesProvider.notifier);
 
     return Center(
       child: SingleChildScrollView(
@@ -285,164 +205,6 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
                     },
                   ),
                   const SizedBox(height: 24),
-                  // Voice Settings Section
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.record_voice_over_outlined,
-                        color: Theme.of(context).colorScheme.primary,
-                      ),
-                      const SizedBox(width: 12),
-                      Text(
-                        'Voice Settings',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // TTS Enable/Disable Toggle
-                          SwitchListTile(
-                            contentPadding: EdgeInsets.zero,
-                            title: const Text('Enable TTS'),
-                            subtitle: const Text(
-                              'Read the last assistant message aloud',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                            value: ttsPrefs.enabled,
-                            onChanged: (value) {
-                              ttsPrefsNotifier.setEnabled(value);
-                            },
-                          ),
-                          const Divider(),
-                          // TTS Provider switch: Built-in vs Qween
-                          Text(
-                            'TTS Provider',
-                            style: Theme.of(context).textTheme.titleSmall,
-                          ),
-                          const SizedBox(height: 4),
-                          DropdownButtonFormField<TtsProviderType>(
-                            value: ttsPrefs.providerType,
-                            decoration: const InputDecoration(
-                              border: OutlineInputBorder(),
-                              isDense: true,
-                            ),
-                            isExpanded: true,
-                            items: TtsProviderType.values
-                                .map((t) => DropdownMenuItem(
-                                      value: t,
-                                      child: Text(t.label),
-                                    ))
-                                .toList(),
-                            onChanged: (value) {
-                              if (value != null) {
-                                ttsPrefsNotifier.setProviderType(value);
-                              }
-                            },
-                          ),
-                          // Qween TTS settings - show when Qween selected
-                          if (ttsPrefs.providerType == TtsProviderType.qween)
-                            ListTile(
-                              contentPadding: EdgeInsets.zero,
-                              title: const Text('Qween TTS Settings'),
-                              trailing: const Icon(Icons.chevron_right),
-                              onTap: () {
-                                Navigator.of(context).push(
-                                  MaterialPageRoute<void>(
-                                    builder: (_) => const QweenTtsSettingsScreen(),
-                                  ),
-                                );
-                              },
-                            ),
-                          // Voice Language - only for Built-in TTS (Qween uses English)
-                          if (ttsPrefs.providerType != TtsProviderType.qween) ...[
-                          const SizedBox(height: 8),
-                          Text(
-                            'Voice Language',
-                            style: Theme.of(context).textTheme.titleSmall,
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Used for both STT and TTS',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                          const SizedBox(height: 8),
-                          if (_loadingLanguages)
-                            const Center(
-                              child: Padding(
-                                padding: EdgeInsets.all(16),
-                                child: CircularProgressIndicator(),
-                              ),
-                            )
-                          else if (_availableLanguages != null &&
-                              _availableLanguages!.isNotEmpty)
-                            DropdownButtonFormField<String>(
-                              value: ttsPrefs.language,
-                              decoration: const InputDecoration(
-                                border: OutlineInputBorder(),
-                                hintText: 'Select language',
-                                isDense: true,
-                              ),
-                              isExpanded: true,
-                              items: _availableLanguages!
-                                  .map<DropdownMenuItem<String>>((lang) {
-                                final langCode = lang.toString();
-                                final displayName = _getLanguageDisplayName(langCode);
-                                return DropdownMenuItem<String>(
-                                  value: langCode,
-                                  child: Text(displayName),
-                                );
-                              }).toList(),
-                              onChanged: (value) {
-                                if (value != null) {
-                                  // Set both TTS and STT language
-                                  ttsPrefsNotifier.setLanguage(value);
-                                  sttPrefsNotifier.setLanguage(value);
-                                  ref.read(ttsServiceProvider).setLanguage(value);
-                                }
-                              },
-                            )
-                          else
-                            TextButton.icon(
-                              onPressed: _loadLanguages,
-                              icon: const Icon(Icons.refresh, size: 18),
-                              label: const Text('Load Languages'),
-                            ),
-                          ],
-                          const SizedBox(height: 16),
-                          // Favorite Languages - Button to open dialog
-                          Row(
-                            children: [
-                              Expanded(
-                                child: OutlinedButton.icon(
-                                  onPressed: _availableLanguages != null && _availableLanguages!.isNotEmpty
-                                      ? () => LanguageFavoritesDialog.show(
-                                            context,
-                                            _availableLanguages!,
-                                          )
-                                      : null,
-                                  icon: const Icon(Icons.star),
-                                  label: Text(
-                                    'Favorite Languages (${sttPrefs.favoriteLanguages.length})',
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Languages shown in quick menu',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
                   const Divider(),
 
                 ],

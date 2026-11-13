@@ -5,7 +5,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'application/app_controller.dart';
 import 'application/app_state.dart';
-import 'core/config/server_config.dart';
 import 'core/config/theme_config.dart';
 import 'core/theme/app_theme.dart';
 import 'services/foreground_guard.dart';
@@ -15,6 +14,7 @@ import 'ui/screens/connecting_screen.dart';
 import 'ui/screens/conversations_screen.dart';
 import 'ui/screens/memories_screen.dart';
 import 'ui/screens/mcp_servers_screen.dart';
+import 'ui/screens/settings_screen.dart';
 import 'ui/screens/setup_screen.dart';
 
 void main() async {
@@ -101,7 +101,7 @@ class _HomeRouter extends ConsumerWidget {
       ActivePane.chat => const ChatScreen(),
       ActivePane.memories => const MemoriesScreen(),
       ActivePane.mcp => const McpServersScreen(),
-      ActivePane.settings => const SetupScreen(),
+      ActivePane.settings => const SettingsScreen(),
     };
 
     return Scaffold(
