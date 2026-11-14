@@ -1,5 +1,10 @@
 # Luna Server Remediation Plan
 
+> **Status (2026-11-13): Phases 1–4 complete.** All SEC/BUG/ARCH/SMELL findings
+> addressed except a few explicitly-deferred cosmetic items (see Phase 4).
+> Gate is green: clippy `--workspace -D warnings`, 261 tests, `cargo audit` exit 0.
+> Upstream markdownify PR: https://github.com/Skardyy/mcat/pull/115 (SEC-1d).
+
 Companion to [`server-code-review-2026-11.md`](server-code-review-2026-11.md).
 Phased plan covering every finding (SEC-1..10, BUG-1..10, ARCH-1..5, SMELL-1..8).
 
@@ -54,14 +59,17 @@ Phased plan covering every finding (SEC-1..10, BUG-1..10, ARCH-1..5, SMELL-1..8)
 
 **Verification snapshot (end of Phase 3):** clippy workspace `-D warnings` exit 0 · tests 118 lib + 140 bin + 2 agentic-loop passed (2 env-dependent ignored) · `cargo audit` exit 0 · `cargo check --workspace` ok.
 
-## Phase 4 — structural refactors — pending
+## Phase 4 — structural refactors — ✅ DONE (2026-11-13, two items deferred)
 
-- [ ] **ARCH-1** Storage: writer + reader-pool (or DB actor) replacing the single `Arc<Mutex<Storage>>`; migrate ~70 lock sites incrementally (readers first).
-- [ ] **ARCH-2** Scheduler: `JoinSet` with concurrency cap; RAII job finalization.
-- [ ] **ARCH-5 + SMELL-3** Split `loop_engine.rs` (definitions/dispatch/engine) and `sqlite_storage_simple.rs` (by aggregate); single dispatch table shared by streaming + non-streaming paths.
-- [ ] **SMELL-1** One `uploads` module (consolidate 3 lookup impls; symlink check everywhere).
-- [ ] **SMELL-2** Merge `PersistenceContext`/`WorkerPersistence`; `MessageId` newtype for rowid↔UUID.
-- [ ] **SEC-1d fallback** Vendor patched markdownify fork if upstream PR stalls; drop audit ignores.
+- [x] **ARCH-1** Storage concurrency, in two steps: (1) `SqliteStorage` internals — one dedicated writer connection (mutex) + 4 round-robin reader connections for 20 SELECT-only methods; WAL already on; poisoned-mutex-resilient guards. (2) The global `Arc<Mutex<Storage>>` is gone — all ~70 call sites now share a plain `Arc<Storage>`; reads run concurrently, writes serialize on the writer connection only. Trade-off documented in the commit: multi-call sequences that previously held the outer lock are no longer atomic across calls (per-statement consistency unaffected; single-user deployment).
+- [x] **ARCH-2** Scheduler: due jobs run in a `JoinSet` under a 2-permit semaphore (was strictly sequential); each task wraps `run_scheduled_task` in `catch_unwind` and always returns `(job_id, outcome)`, so panics mark the job failed instead of stranding the row.
+- [x] **ARCH-5 (partial) + SMELL-3 (partial)** Tool dispatch was unified in Phase 2 (`dispatch_internal_tool`); the 15 `*_tool_definition` constructors now live in `agentic/tool_definitions.rs` (loop_engine 2.6k → 2.3k lines). *Deferred:* splitting `sqlite_storage_simple.rs` by aggregate (mechanical, no behavior value on its own).
+- [x] **SMELL-1** New `crate::uploads` module: one async, symlink-rejecting implementation of `{uid}.{ext}` lookup (scoped + scan-all variants) replacing the three divergent copies — the loop_engine copy had no symlink check.
+- [x] **SMELL-2** `AgentPersistence` (agentic/persistence.rs) replaces the duplicated `PersistenceContext`/`WorkerPersistence`; canonical `rowid_to_message_uuid`/`message_uuid_to_rowid` in storage_wrapper replace four inline copies. *Deferred:* a full `MessageId` newtype (functions are now single-source; the newtype is churn without added safety).
+- [x] **SMELL-4** `uploads_index` table (uid, conversation_key, sha256, ext, size, created_at): attach-file dedupe is an O(1) hash lookup instead of byte-comparing every file in the dir; remove-file and conversation-delete drop index rows. Pre-index files still resolve via directory scan (they just don't dedupe).
+- [x] **SEC-5 remainder** `AgentUpdate` channels bounded (256) with awaited sends at all 35 sites — a stalled persistence consumer now backpressures the agent loop.
+- [x] **SEC-1d** Upstream PR opened: https://github.com/Skardyy/mcat/pull/115 (calamine 0.36.1 → 0.38; zip 8→9 already merged upstream in #112, awaiting a published markdownify release). `.cargo/audit.toml` comments reference both. When markdownify ships the bump: update the dep, delete the 5 ignore entries.
+- [ ] **Deferred (documented):** `sqlite_storage_simple.rs` split; `conversation_storage.rs` facade fate (SMELL-7 rest); full async migration of `context_refs` (reads are bounded since Phase 2 — remaining blocking window is milliseconds); `MessageId` newtype.
 
 ## Cross-cutting
 
