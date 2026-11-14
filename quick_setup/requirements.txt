@@ -1,0 +1,4 @@
+# Fully pinned runtime/dev dependencies (mirrors pyproject.toml).
+# SonarCloud text:S8565 requires pinned dependency versions here.
+toml==0.10.2
+pytest==9.2.0

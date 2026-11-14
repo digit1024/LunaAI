@@ -99,7 +99,7 @@ impl MCPServerRegistry {
         
         //otherwise return only the tools in the tools_white_list
         let mut tools = Vec::new();
-        for (_, server_connection) in self.servers.iter() {
+        for server_connection in self.servers.values() {
             
                 let server_tools = server_connection.read().await.tools().iter().filter(|tool| self.tools_white_list.contains(&tool.name.clone())).cloned().collect::<Vec<rust_mcp_sdk::schema::Tool>>();
                 tools.extend(server_tools.clone());
@@ -109,7 +109,7 @@ impl MCPServerRegistry {
 
     pub async fn get_all_tools(&self) -> Result<Vec<rust_mcp_sdk::schema::Tool>> {
         let mut tools = Vec::new();
-        for (_, server_connection) in self.servers.iter() {
+        for server_connection in self.servers.values() {
             let server_tools = server_connection.read().await.tools().to_vec();
             tools.extend(server_tools.clone());
         }
@@ -153,7 +153,7 @@ impl MCPServerRegistry {
     //enables all tools
     pub async fn  enable_all_tools(&mut self) {
         let mut tools = Vec::new();
-        for (_, server_connection) in self.servers.iter() {
+        for server_connection in self.servers.values() {
             let server_tools = server_connection.read().await.tools().to_vec();
             tools.extend(server_tools.clone());
         }
@@ -201,7 +201,7 @@ impl MCPServerRegistry {
     //call tool 
     pub async fn call_tool(&mut self, tool_name: String, arguments: serde_json::Map<String, serde_json::Value>) -> Result<CallToolResult> {
         //find the server connection for the tool
-        for (_, server_connection) in self.servers.iter() {
+        for server_connection in self.servers.values() {
             let connection_guard = server_connection.read().await;
             if connection_guard.tools().iter().any(|tool| tool.name == tool_name) {
                 // Found the server with this tool, drop the guard and call the tool
