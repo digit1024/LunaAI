@@ -34,6 +34,11 @@ impl std::fmt::Debug for RunContext {
     }
 }
 
+/// Capacity of the bounded agent-update channel between the agentic loop and
+/// its persistence/broadcast consumer. Bounded so a stalled consumer applies
+/// backpressure to the loop instead of growing memory without limit.
+pub const AGENT_UPDATE_CHANNEL_CAP: usize = 256;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlannedTool {
     pub id: String,

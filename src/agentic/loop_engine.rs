@@ -704,7 +704,7 @@ impl AgenticLoop {
     pub async fn process_message(
         &mut self,
         messages: Vec<Message>,
-        agent_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+        agent_tx: Option<tokio::sync::mpsc::Sender<AgentUpdate>>,
         run_context: Option<RunContext>,
     ) -> Result<String> {
         // Propagate conversation_id into LLM clients via task-local so the
@@ -719,7 +719,7 @@ impl AgenticLoop {
     async fn process_message_inner(
         &mut self,
         mut messages: Vec<Message>,
-        agent_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+        agent_tx: Option<tokio::sync::mpsc::Sender<AgentUpdate>>,
         run_context: Option<RunContext>,
     ) -> Result<String> {
         // Fix 3: counter of consecutive empty-tool-calls completions for
@@ -742,7 +742,7 @@ impl AgenticLoop {
                 );
                 tracing::warn!(max_turns, "Agentic loop turn cap reached");
                 if let Some(tx) = agent_tx.as_ref() {
-                    let _ = tx.send(AgentUpdate::ModelError { error: msg.clone() });
+                    let _ = tx.send(AgentUpdate::ModelError { error: msg.clone() }).await;
                 }
                 return Ok(msg);
             }
@@ -789,7 +789,7 @@ impl AgenticLoop {
                             error: format!(
                                 "Provider closed the connection mid-stream ({reason}). Bytes received: {bytes_read}."
                             ),
-                        });
+                        }).await;
                     }
                     return Err(anyhow::anyhow!(
                         "stream truncated by provider after {bytes_read} bytes: {reason}"
@@ -806,7 +806,7 @@ impl AgenticLoop {
                                 "Model hit max_tokens before producing any usable output ({} partial tool call(s) dropped). Consider raising max_tokens.",
                                 partial_tool_calls
                             ),
-                        });
+                        }).await;
                     }
                     return Err(anyhow::anyhow!(
                         "model output truncated by length limit before any usable output"
@@ -828,7 +828,7 @@ impl AgenticLoop {
                                 "Provider rate-limited / overloaded and didn't recover after {} retries: {}",
                                 LLM_RETRY_MAX_ATTEMPTS, message
                             ),
-                        });
+                        }).await;
                     }
                     return Err(anyhow::anyhow!(
                         "LLM call exhausted retries on transient error: {}",
@@ -849,7 +849,7 @@ impl AgenticLoop {
                                 "Provider returned empty tool-calls completion ({} partial tool call(s) dropped) and didn't recover after retries.",
                                 partial_tool_calls
                             ),
-                        });
+                        }).await;
                     }
                     return Err(anyhow::anyhow!(
                         "empty tool-calls completion not recovered after retries"
@@ -860,14 +860,14 @@ impl AgenticLoop {
                     if let Some(tx) = agent_tx.as_ref() {
                         let _ = tx.send(AgentUpdate::ModelError {
                             error: format!("Model communication failed: {}", e),
-                        });
+                        }).await;
                     }
                     return Err(e).context("LLM call failed");
                 }
             };
 
             if let Some(tx) = agent_tx.as_ref() {
-                let _ = tx.send(AgentUpdate::AssistantStreamingStarted);
+                let _ = tx.send(AgentUpdate::AssistantStreamingStarted).await;
             }
 
             let run_context_clone = run_context.clone();
@@ -888,7 +888,7 @@ impl AgenticLoop {
                             let _ = tx.send(AgentUpdate::AssistantDelta {
                                 text_chunk: chunk,
                                 seq,
-                            });
+                            }).await;
                         }
                     }
                     Ok(ChatStreamEvent::Reasoning(chunk)) => {
@@ -898,7 +898,7 @@ impl AgenticLoop {
                             if let Some(tx) = agent_tx.as_ref() {
                                 let _ = tx.send(AgentUpdate::ReasoningContentDelta {
                                     chunk: chunk.clone(),
-                                });
+                                }).await;
                             }
                         }
                     }
@@ -912,7 +912,7 @@ impl AgenticLoop {
                             };
                             let _ = tx.send(AgentUpdate::ToolPlanned {
                                 plan_items: vec![planned],
-                            });
+                            }).await;
                         }
                         planned_tools.push(tool_call);
                     }
@@ -931,7 +931,7 @@ impl AgenticLoop {
                                     bytes_read,
                                     assistant_response.len()
                                 ),
-                            });
+                            }).await;
                         }
                         return Err(anyhow::anyhow!(
                             "stream truncated by provider after {bytes_read} bytes: {reason}"
@@ -953,7 +953,7 @@ impl AgenticLoop {
                                     "Model hit max_tokens before producing usable output ({} partial tool call(s) dropped). Consider raising max_tokens.",
                                     partial_tool_calls
                                 ),
-                            });
+                            }).await;
                         }
                         return Err(anyhow::anyhow!(
                             "model output truncated by length limit before any usable output"
@@ -996,7 +996,7 @@ impl AgenticLoop {
                                     "Provider returned empty tool-calls completion ({} partial tool call(s) dropped) and didn't recover after {} retries. Check llm_call logs with target=llm.body for the captured response body.",
                                     partial_tool_calls, empty_completion_retries
                                 ),
-                            });
+                            }).await;
                         }
                         return Err(anyhow::anyhow!(
                             "empty tool-calls completion not recovered after {} retries",
@@ -1008,7 +1008,7 @@ impl AgenticLoop {
                         if let Some(tx) = agent_tx.as_ref() {
                             let _ = tx.send(AgentUpdate::ModelError {
                                 error: format!("Streaming error: {}", e),
-                            });
+                            }).await;
                         }
                         return Err(e).context("Streaming error");
                     }
@@ -1024,7 +1024,7 @@ impl AgenticLoop {
                 let _ = tx.send(AgentUpdate::AssistantComplete {
                     full_text: assistant_response.clone(),
                     reasoning_content: if reasoning_content.is_empty() { None } else { Some(reasoning_content.clone()) },
-                });
+                }).await;
             }
 
             if planned_tools.is_empty() {
@@ -1051,7 +1051,7 @@ impl AgenticLoop {
                                 "Model produced no actionable output ({}). The conversation has been stopped.",
                                 reason
                             ),
-                        });
+                        }).await;
                     }
                     return Err(anyhow::anyhow!(
                         "model produced empty completion: {}",
@@ -1062,7 +1062,7 @@ impl AgenticLoop {
                 if let Some(tx) = agent_tx.as_ref() {
                     let _ = tx.send(AgentUpdate::ConversationComplete {
                         final_text: assistant_response.clone(),
-                    });
+                    }).await;
                 }
                 return Ok(assistant_response);
             }
@@ -1082,7 +1082,7 @@ impl AgenticLoop {
                         name: tool_call.name.clone(),
                         params_json: serde_json::to_string(&tool_call.parameters)
                             .unwrap_or_default(),
-                    });
+                    }).await;
                 }
 
                 let result = if !Self::is_tool_allowed(run_context_clone.as_ref(), &tool_call.name) {
@@ -1140,7 +1140,7 @@ impl AgenticLoop {
                         tool_call_id: tool_call.id.clone(),
                         name: tool_call.name.clone(),
                         result_json: result.content.clone(),
-                    });
+                    }).await;
                 }
 
                 messages.push(Message::new_tool_result(
@@ -1924,7 +1924,7 @@ impl AgenticLoop {
     async fn execute_tool_with_retry(
         &self,
         tool_call: ToolCall,
-        agent_tx: Option<&tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+        agent_tx: Option<&tokio::sync::mpsc::Sender<AgentUpdate>>,
     ) -> ToolResult {
         let mut attempt: u8 = 0;
         let max_retries: u8 = 2;
@@ -1949,7 +1949,7 @@ impl AgenticLoop {
                             name: tool_call.name.clone(),
                             error: e.to_string(),
                             retryable: attempt <= max_retries,
-                        });
+                        }).await;
                     }
                     if attempt > max_retries {
                         return ToolResult {
@@ -2003,7 +2003,7 @@ impl AgenticLoop {
                             name: tool_call.name.clone(),
                             error: err_msg.clone(),
                             retryable: attempt <= max_retries,
-                        });
+                        }).await;
                     }
                     if attempt > max_retries {
                         return ToolResult {
@@ -2019,7 +2019,7 @@ impl AgenticLoop {
     async fn process_non_streaming(
         &mut self,
         mut messages: Vec<Message>,
-        agent_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+        agent_tx: Option<tokio::sync::mpsc::Sender<AgentUpdate>>,
         run_context: Option<RunContext>,
     ) -> Result<String> {
         let max_turns = self
@@ -2036,7 +2036,7 @@ impl AgenticLoop {
                 );
                 tracing::warn!(max_turns, "Agentic loop turn cap reached (non-streaming)");
                 if let Some(tx) = agent_tx.as_ref() {
-                    let _ = tx.send(AgentUpdate::ModelError { error: msg.clone() });
+                    let _ = tx.send(AgentUpdate::ModelError { error: msg.clone() }).await;
                 }
                 return Ok(msg);
             }
@@ -2070,7 +2070,7 @@ impl AgenticLoop {
                     if let Some(tx) = agent_tx.as_ref() {
                         let _ = tx.send(AgentUpdate::ModelError {
                             error: format!("Provider truncated the response ({reason})."),
-                        });
+                        }).await;
                     }
                     return Err(anyhow::anyhow!(
                         "non-streaming call truncated: {reason}"
@@ -2084,7 +2084,7 @@ impl AgenticLoop {
                     if let Some(tx) = agent_tx.as_ref() {
                         let _ = tx.send(AgentUpdate::ModelError {
                             error: "Model hit max_tokens before producing any usable output. Consider raising max_tokens.".to_string(),
-                        });
+                        }).await;
                     }
                     return Err(anyhow::anyhow!(
                         "model output truncated by length limit before any usable output"
@@ -2103,7 +2103,7 @@ impl AgenticLoop {
                                 "Provider rate-limited / overloaded and didn't recover after {} retries: {}",
                                 LLM_RETRY_MAX_ATTEMPTS, message
                             ),
-                        });
+                        }).await;
                     }
                     return Err(anyhow::anyhow!(
                         "LLM call exhausted retries on transient error: {}",
@@ -2127,7 +2127,7 @@ impl AgenticLoop {
                                 "Provider returned empty tool-calls completion ({} partial tool call(s) dropped) and didn't recover after {} retries. Check llm_call logs with target=llm.body for the captured response body.",
                                 partial_tool_calls, LLM_RETRY_MAX_ATTEMPTS
                             ),
-                        });
+                        }).await;
                     }
                     return Err(anyhow::anyhow!(
                         "empty tool-calls completion not recovered after {} retries",
@@ -2139,24 +2139,24 @@ impl AgenticLoop {
                     if let Some(tx) = agent_tx.as_ref() {
                         let _ = tx.send(AgentUpdate::ModelError {
                             error: format!("Model communication failed: {}", e),
-                        });
+                        }).await;
                     }
                     return Err(e).context("LLM call failed");
                 }
             };
 
             if let Some(tx) = agent_tx.as_ref() {
-                let _ = tx.send(AgentUpdate::AssistantStreamingStarted);
+                let _ = tx.send(AgentUpdate::AssistantStreamingStarted).await;
                 if !response.content.is_empty() {
                     let _ = tx.send(AgentUpdate::AssistantDelta {
                         text_chunk: response.content.clone(),
                         seq: 1,
-                    });
+                    }).await;
                 }
                 let _ = tx.send(AgentUpdate::AssistantComplete {
                     full_text: response.content.clone(),
                     reasoning_content: response.reasoning_content.clone(),
-                });
+                }).await;
             }
 
             if response.tool_calls.is_empty() {
@@ -2187,7 +2187,7 @@ impl AgenticLoop {
                                 "Model produced no actionable output ({}). The conversation has been stopped.",
                                 reason
                             ),
-                        });
+                        }).await;
                     }
                     return Err(anyhow::anyhow!(
                         "model produced empty completion: {}",
@@ -2198,7 +2198,7 @@ impl AgenticLoop {
                 if let Some(tx) = agent_tx.as_ref() {
                     let _ = tx.send(AgentUpdate::ConversationComplete {
                         final_text: response.content.clone(),
-                    });
+                    }).await;
                 }
                 return Ok(response.content);
             }
@@ -2214,7 +2214,7 @@ impl AgenticLoop {
                     })
                     .collect();
                 if !plan_items.is_empty() {
-                    let _ = tx.send(AgentUpdate::ToolPlanned { plan_items });
+                    let _ = tx.send(AgentUpdate::ToolPlanned { plan_items }).await;
                 }
             }
 
@@ -2233,7 +2233,7 @@ impl AgenticLoop {
                         name: tool_call.name.clone(),
                         params_json: serde_json::to_string(&tool_call.parameters)
                             .unwrap_or_default(),
-                    });
+                    }).await;
                 }
 
                 let result = if !Self::is_tool_allowed(run_context.as_ref(), &tool_call.name) {
@@ -2289,7 +2289,7 @@ impl AgenticLoop {
                         tool_call_id: tool_call.id.clone(),
                         name: tool_call.name.clone(),
                         result_json: result.content.clone(),
-                    });
+                    }).await;
                 }
 
                 messages.push(Message::new_tool_result(

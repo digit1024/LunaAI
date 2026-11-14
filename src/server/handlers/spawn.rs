@@ -44,9 +44,11 @@ pub fn spawn_agent_task(
     };
 
     tokio::spawn(async move {
-        // NOTE: unbounded for now — per-run channel, bounded lifetime via the
-        // stream timeout; bounded backpressure lands with the Phase-4 rewrite.
-        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel::<AgentUpdate>();
+        // Bounded: if persistence/broadcast stalls (e.g. storage contention),
+        // the agent loop awaits instead of queueing updates without limit.
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<AgentUpdate>(
+            crate::agentic::protocol::AGENT_UPDATE_CHANNEL_CAP,
+        );
         let mut loop_engine = AgenticLoop::new(
             mcp_registry,
             llm_client,

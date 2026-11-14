@@ -92,10 +92,10 @@ pub async fn execute_spawn_worker(
         };
     }
 
-    // NOTE: unbounded for now — the consumer (WorkerPersistence) is fast and the
-    // channel is per-run and bounded in lifetime by the parent's timeouts.
-    // Bounded backpressure lands with the Phase-4 dispatch rewrite.
-    let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel::<AgentUpdate>();
+    // Bounded: backpressure onto the worker loop if persistence stalls.
+    let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<AgentUpdate>(
+        crate::agentic::protocol::AGENT_UPDATE_CHANNEL_CAP,
+    );
     let storage_clone = storage.clone();
     let persist_conv_id = conv_id;
     let persist_task = tokio::spawn(async move {
@@ -158,7 +158,7 @@ async fn resolve_worker_profile(
 async fn run_worker_agent(
     mut child: AgenticLoop,
     task: String,
-    agent_tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>,
+    agent_tx: tokio::sync::mpsc::Sender<AgentUpdate>,
     worker_run_context: RunContext,
 ) -> Result<String> {
     child
