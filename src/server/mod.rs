@@ -380,6 +380,10 @@ async fn initialize_mcp_registry(
 
 const SCHEDULER_INTERVAL_SECS: u64 = 45;
 const SCHEDULER_BATCH_LIMIT: u32 = 10;
+/// Maximum number of scheduled agent runs executing concurrently. Each can
+/// take up to stream_timeout_secs; the cap prevents a burst of due jobs from
+/// stacking unbounded LLM calls.
+const SCHEDULER_MAX_CONCURRENT_JOBS: usize = 2;
 
 fn spawn_scheduler_loop(ctx: Arc<ServerContext>) {
     tokio::spawn(async move {
@@ -397,6 +401,8 @@ fn spawn_scheduler_loop(ctx: Arc<ServerContext>) {
             }
         }
 
+        let permits = Arc::new(tokio::sync::Semaphore::new(SCHEDULER_MAX_CONCURRENT_JOBS));
+
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(SCHEDULER_INTERVAL_SECS));
         interval.tick().await;
         loop {
@@ -412,6 +418,7 @@ fn spawn_scheduler_loop(ctx: Arc<ServerContext>) {
                     }
                 }
             };
+            let mut join_set = tokio::task::JoinSet::new();
             for job in jobs {
                 let taken = {
                     let storage = ctx.storage.clone();
@@ -427,34 +434,45 @@ fn spawn_scheduler_loop(ctx: Arc<ServerContext>) {
                     continue;
                 }
                 let job_id = job.id.clone();
-                // Run each job in its own task so a panic inside a job cannot
-                // kill the scheduler loop or leave the row stuck in 'running'.
                 let job_ctx = ctx.clone();
-                let handle = tokio::spawn(async move { run_scheduled_task(job_ctx, job).await });
-                match handle.await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => {
-                        tracing::warn!("Scheduler: run_scheduled_task failed: {}", e);
+                let permits = permits.clone();
+                join_set.spawn(async move {
+                    // Concurrency cap applies to execution, not to taking the
+                    // batch: a burst of due jobs runs N-at-a-time instead of
+                    // serializing the whole batch behind one slow agent run.
+                    let _permit = permits.acquire_owned().await;
+                    // Catch panics inside the job so a crash can neither kill
+                    // the scheduler nor leave the row stuck in 'running'.
+                    use futures::FutureExt;
+                    let outcome = std::panic::AssertUnwindSafe(run_scheduled_task(job_ctx, job))
+                        .catch_unwind()
+                        .await;
+                    match outcome {
+                        Ok(r) => (job_id, r.map_err(|e| e.to_string())),
+                        Err(_) => (job_id, Err("Job task panicked".to_string())),
+                    }
+                });
+            }
+            while let Some(joined) = join_set.join_next().await {
+                match joined {
+                    Ok((_job_id, Ok(()))) => {}
+                    Ok((job_id, Err(msg))) => {
+                        tracing::warn!(job_id = %job_id, "Scheduler: job failed: {}", msg);
                         let storage = ctx.storage.clone();
                         let _ = storage.set_scheduled_job_completed(
                             &job_id,
                             Utc::now().timestamp(),
                             true,
-                            Some(&e.to_string()),
+                            Some(&msg),
                         );
                     }
                     Err(join_err) => {
+                        // Should not happen: tasks catch their own panics and
+                        // are never aborted. Any row left 'running' is
+                        // recovered at the next startup.
                         tracing::error!(
-                            job_id = %job_id,
                             error = %join_err,
-                            "Scheduler: job task panicked; marking job failed"
-                        );
-                        let storage = ctx.storage.clone();
-                        let _ = storage.set_scheduled_job_completed(
-                            &job_id,
-                            Utc::now().timestamp(),
-                            true,
-                            Some("Job task panicked"),
+                            "Scheduler: job task terminated abnormally"
                         );
                     }
                 }
