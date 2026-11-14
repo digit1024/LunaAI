@@ -9,7 +9,6 @@ use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 fn chunk_text(s: &str, chunk_chars: usize, overlap: usize) -> Vec<String> {
     if chunk_chars == 0 {
@@ -82,7 +81,7 @@ pub fn trim_extracted_text_for_inline(content: Option<String>, max_chars: usize)
 
 /// Build vector index when full extract is larger than `inline_max_chars`.
 pub async fn index_large_attachment_if_needed(
-    storage: Arc<Mutex<Storage>>,
+    storage: Arc<Storage>,
     embedding_provider: Option<&dyn EmbeddingProvider>,
     rag: &AttachmentRagConfig,
     conversation_id: &str,
@@ -107,7 +106,7 @@ pub async fn index_large_attachment_if_needed(
     }
 
     {
-        let guard = storage.lock().await;
+        let guard = storage.clone();
         guard
             .delete_attachment_doc_chunks_for(conversation_id, attachment_uid)
             .context("clear attachment chunk index")?;
@@ -119,7 +118,7 @@ pub async fn index_large_attachment_if_needed(
             .embed(chunk)
             .await
             .with_context(|| format!("embed attachment chunk {}", idx))?;
-        let guard = storage.lock().await;
+        let guard = storage.clone();
         guard.insert_attachment_doc_chunk(AttachmentDocChunk {
             conversation_id,
             attachment_uid,

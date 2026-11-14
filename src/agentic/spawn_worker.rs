@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 /// Run a worker sub-agent. Takes only owned `Send` data so nested workers are safe to spawn.
@@ -18,7 +18,7 @@ use uuid::Uuid;
 /// already validated it against `[agentic].max_worker_depth`.
 pub async fn execute_spawn_worker(
     app_config: Option<Arc<AppConfig>>,
-    storage: Option<Arc<Mutex<crate::storage::Storage>>>,
+    storage: Option<Arc<crate::storage::Storage>>,
     mcp_registry: Arc<RwLock<MCPServerRegistry>>,
     tool_call_timeout_secs: u64,
     task: String,
@@ -67,8 +67,6 @@ pub async fn execute_spawn_worker(
     };
 
     let conv_id = match storage
-        .lock()
-        .await
         .create_internal_conversation(title, Some(&profile_name))
     {
         Ok(id) => id,
@@ -83,7 +81,7 @@ pub async fn execute_spawn_worker(
         }
     };
 
-    if let Err(e) = storage.lock().await.add_message_to_conversation(
+    if let Err(e) = storage.add_message_to_conversation(
         &conv_id,
         "user".to_string(),
         task.clone(),
@@ -174,14 +172,14 @@ async fn run_worker_agent(
 
 /// Persists worker agent updates to an internal conversation without WebSocket broadcast.
 struct WorkerPersistence {
-    storage: Arc<Mutex<crate::storage::Storage>>,
+    storage: Arc<crate::storage::Storage>,
     conversation_id: Uuid,
     pending_tool_calls: Vec<ToolCall>,
     tool_params: HashMap<String, Value>,
 }
 
 impl WorkerPersistence {
-    fn new(storage: Arc<Mutex<crate::storage::Storage>>, conversation_id: Uuid) -> Self {
+    fn new(storage: Arc<crate::storage::Storage>, conversation_id: Uuid) -> Self {
         Self {
             storage,
             conversation_id,
@@ -229,8 +227,6 @@ impl WorkerPersistence {
                     ..MessageMetadata::default()
                 };
                 self.storage
-                    .lock()
-                    .await
                     .add_message_with_metadata(
                         &self.conversation_id,
                         "assistant".to_string(),
@@ -284,8 +280,6 @@ impl WorkerPersistence {
             attachments: None,
         };
         self.storage
-            .lock()
-            .await
             .add_message_with_metadata(
                 &self.conversation_id,
                 "tool".to_string(),

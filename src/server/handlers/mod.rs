@@ -14,7 +14,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
-use tokio::sync::{mpsc::Sender, Mutex, RwLock};
+use tokio::sync::{mpsc::Sender, RwLock};
 use uuid::Uuid;
 
 mod agent;
@@ -35,7 +35,7 @@ pub struct ServerContext {
     /// Per-IP auth failure throttle (brute-force slowdown).
     pub auth_throttle: Arc<crate::server::http::AuthThrottle>,
     pub prompt_manager: PromptManager,
-    pub storage: Arc<Mutex<Storage>>,
+    pub storage: Arc<Storage>,
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
     pub subscriptions: Arc<crate::server::conversation_subscriptions::ConversationSubscriptions>,
     pub schedule_service: Arc<ScheduleService>,

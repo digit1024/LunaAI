@@ -87,7 +87,7 @@ impl<'a> ContextPipeline<'a> {
         }
 
         let last_at = {
-            let storage = self.ctx.storage.lock().await;
+            let storage = self.ctx.storage.clone();
             match storage.get_last_message_created_at(
                 &self.conversation_id.to_string(),
                 self.triggering_message_rowid,
@@ -186,7 +186,7 @@ impl<'a> ContextPipeline<'a> {
         )
         .await;
         if let Some(outcome) = outcome {
-            let storage_guard = self.ctx.storage.lock().await;
+            let storage_guard = self.ctx.storage.clone();
             let message_rowid = if let Some(rowid) = self.triggering_message_rowid {
                 rowid
             } else {

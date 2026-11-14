@@ -811,7 +811,7 @@ mod tests {
         use crate::storage::sqlite_storage_simple::SqliteSettings;
         use crate::storage::Storage;
         use agentic_loop::mcp_servers_registry::MCPServerRegistry;
-        use tokio::sync::{Mutex, RwLock};
+        use tokio::sync::RwLock;
 
         let mut config = crate::config::AppConfig::default();
         config.server.api_key = api_key.to_string();
@@ -823,7 +823,7 @@ mod tests {
             Storage::new_with_settings(&db_path, SqliteSettings::default()).expect("test db");
         // Unlink now; the open connection keeps working and nothing lingers.
         let _ = std::fs::remove_file(&db_path);
-        let storage = Arc::new(Mutex::new(storage));
+        let storage = Arc::new(storage);
 
         Arc::new(ServerContext {
             config: config.clone(),

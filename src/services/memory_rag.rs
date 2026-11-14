@@ -22,7 +22,6 @@ use crate::llm::tokenizer::TokenCounter;
 use crate::llm::{Message as LlmMessage, Role};
 use crate::storage::Storage;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 /// Marker prefix used to identify (and strip) an injected memory block.
 /// Kept stable so prior versions' blocks are recognized too.
@@ -178,7 +177,7 @@ fn fit_to_token_budget(
 ///
 /// Returns `Some(InjectionOutcome)` when a new block was injected; `None` otherwise.
 pub async fn inject_memory_block(
-    storage: Arc<Mutex<Storage>>,
+    storage: Arc<Storage>,
     embedding_provider: Option<&dyn EmbeddingProvider>,
     embedding_config: &EmbeddingConfig,
     token_counter: &TokenCounter,
@@ -205,7 +204,7 @@ pub async fn inject_memory_block(
     };
 
     let entries = {
-        let guard = storage.lock().await;
+        let guard = storage.clone();
         match guard.search_memory_by_vector(
             &query_embedding,
             embedding_config.max_memories,

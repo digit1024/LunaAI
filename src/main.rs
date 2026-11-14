@@ -147,7 +147,6 @@ pub fn main() {
 
 async fn run_deep_sleep_manual(config_path: Option<PathBuf>) {
     use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     let app_config = if let Some(path) = config_path {
         config::AppConfig::load_from_path(Some(&path)).expect("Failed to load config")
@@ -181,7 +180,7 @@ async fn run_deep_sleep_manual(config_path: Option<PathBuf>) {
     }
     let storage = storage::Storage::new_default_with_settings(sqlite_settings)
         .expect("Failed to open database");
-    let storage = Arc::new(Mutex::new(storage));
+    let storage = Arc::new(storage);
 
     let embedding_provider = if app_config.embedding.is_active() {
         embeddings::OpenAiEmbeddingProvider::from_config(&app_config.embedding).ok()
@@ -210,7 +209,6 @@ async fn run_deep_sleep_manual(config_path: Option<PathBuf>) {
 
 async fn run_reorganize_memories(config_path: Option<PathBuf>) {
     use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     let app_config = if let Some(path) = config_path {
         config::AppConfig::load_from_path(Some(&path)).expect("Failed to load config")
@@ -237,7 +235,7 @@ async fn run_reorganize_memories(config_path: Option<PathBuf>) {
     sqlite_settings.embedding_dimension = Some(app_config.embedding.dimensions);
     let storage = storage::Storage::new_default_with_settings(sqlite_settings)
         .expect("Failed to open database");
-    let storage = Arc::new(Mutex::new(storage));
+    let storage = Arc::new(storage);
 
     match services::deep_sleep_service::reorganize_memory_vectors(storage, embedding_provider).await {
         Ok(()) => info!("Memory vector reorganize completed successfully"),

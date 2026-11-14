@@ -16,7 +16,7 @@ impl ServerHandler {
         const DEFAULT_LIMIT: usize = 100;
         let limit = limit.unwrap_or(DEFAULT_LIMIT as u32) as usize;
         let offset = offset.unwrap_or(0) as usize;
-        let storage = self.ctx.storage.lock().await;
+        let storage = self.ctx.storage.clone();
         let entries = if let Some(q) = query.filter(|s| !s.trim().is_empty()) {
             let keywords: Vec<String> = q
                 .split_whitespace()
@@ -44,7 +44,7 @@ impl ServerHandler {
         let content_changed;
         let final_content;
         {
-            let storage = self.ctx.storage.lock().await;
+            let storage = self.ctx.storage.clone();
             let current = storage
                 .get_memory_by_id(id)
                 .context("failed to load memory")?
@@ -76,7 +76,7 @@ impl ServerHandler {
             if let Some(provider) = &self.ctx.embedding_provider {
                 match provider.embed(&final_content).await {
                     Ok(embedding) => {
-                        let storage = self.ctx.storage.lock().await;
+                        let storage = self.ctx.storage.clone();
                         if let Err(e) = storage.update_memory_vec_row(id, &embedding) {
                             tracing::warn!(error = %e, memory_id = id, "Failed to update memory vector");
                         }
@@ -87,7 +87,7 @@ impl ServerHandler {
                 }
             }
         }
-        let storage = self.ctx.storage.lock().await;
+        let storage = self.ctx.storage.clone();
         let entry = storage
             .get_memory_by_id(id)
             .context("failed to reload memory")?
@@ -98,7 +98,7 @@ impl ServerHandler {
         Ok(())
     }
     pub(super) async fn handle_delete_memory(&self, id: i64) -> Result<()> {
-        let storage = self.ctx.storage.lock().await;
+        let storage = self.ctx.storage.clone();
         let deleted = storage.delete_memory(id).context("failed to delete memory")?;
         if deleted {
             self.send_event(ServerEvent::MemoryDeleted { id })?;

@@ -6,7 +6,6 @@ use chrono::{DateTime, Duration, Utc};
 use cron::Schedule;
 use std::str::FromStr;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
 /// Normalize cron string: 5-field (min hour dom month dow) -> 6-field (sec min hour dom month dow).
@@ -97,7 +96,7 @@ pub fn next_run_from_cron(schedule: &str, after_utc_secs: i64) -> Result<i64> {
 }
 
 pub struct ScheduleService {
-    storage: Arc<Mutex<Storage>>,
+    storage: Arc<Storage>,
 }
 
 /// Parameters for scheduling a new task.
@@ -112,7 +111,7 @@ pub struct ScheduleTaskRequest {
 }
 
 impl ScheduleService {
-    pub fn new(storage: Arc<Mutex<Storage>>) -> Self {
+    pub fn new(storage: Arc<Storage>) -> Self {
         Self { storage }
     }
 
@@ -142,14 +141,14 @@ impl ScheduleService {
             schedule: req.schedule,
         };
 
-        let guard = self.storage.lock().await;
+        let guard = self.storage.clone();
         guard.insert_scheduled_job(&job).context("Failed to insert scheduled job")?;
         Ok(job)
     }
 
     /// Cancel (delete) a scheduled job by id. Returns true if the job existed and was removed.
     pub async fn cancel_scheduled_task(&self, job_id: &str) -> Result<bool> {
-        let guard = self.storage.lock().await;
+        let guard = self.storage.clone();
         guard
             .delete_scheduled_job(job_id)
             .context("Failed to delete scheduled job")

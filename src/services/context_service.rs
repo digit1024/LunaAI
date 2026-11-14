@@ -129,7 +129,7 @@ impl ContextService {
     /// Manually summarize a conversation on demand (user-triggered).
     pub async fn perform_manual_summarization(
         conv_id: uuid::Uuid,
-        storage: std::sync::Arc<tokio::sync::Mutex<crate::storage::Storage>>,
+        storage: std::sync::Arc<crate::storage::Storage>,
         llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
         resolved: &ResolvedProfile,
         compact_config: &crate::config::ConversationCompactConfig,
@@ -137,7 +137,7 @@ impl ContextService {
         use anyhow::Context;
 
         let db_messages = {
-            let storage_guard = storage.lock().await;
+            let storage_guard = storage.clone();
             storage_guard
                 .load_conversation_messages(&conv_id.to_string())
                 .context("Failed to load messages from database")?
@@ -168,7 +168,7 @@ impl ContextService {
 
         {
             let summary_created_at = summary_created_at(&db_messages, &range);
-            let storage_guard = storage.lock().await;
+            let storage_guard = storage.clone();
             storage_guard
                 .perform_summarization(
                     &conv_id.to_string(),
@@ -197,11 +197,11 @@ impl ContextService {
     ///
     /// # Returns
     /// Ok(()) if summarization was triggered or not needed, Err if it failed
-    /// Check and trigger summarization (server version - takes Arc<Mutex<Storage>>)
+    /// Check and trigger summarization (server version - takes Arc<Storage>)
     pub async fn check_and_trigger_summarization(
         llm_messages: &[LlmMessage],
         conv_id: uuid::Uuid,
-        storage: std::sync::Arc<tokio::sync::Mutex<crate::storage::Storage>>,
+        storage: std::sync::Arc<crate::storage::Storage>,
         llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
         resolved: &ResolvedProfile,
         compact_config: &crate::config::ConversationCompactConfig,
@@ -216,11 +216,11 @@ impl ContextService {
         ).await
     }
 
-    /// Internal implementation for server (Arc<Mutex<Storage>>)
+    /// Internal implementation for server (Arc<Storage>)
     async fn check_and_trigger_summarization_impl(
         llm_messages: &[LlmMessage],
         conv_id: uuid::Uuid,
-        storage: std::sync::Arc<tokio::sync::Mutex<crate::storage::Storage>>,
+        storage: std::sync::Arc<crate::storage::Storage>,
         llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
         resolved: &ResolvedProfile,
         compact_config: &crate::config::ConversationCompactConfig,
@@ -243,7 +243,7 @@ impl ContextService {
         // scale the local estimate by (real / local) for the SAME request, which
         // corrects tokenizer bias per model while preserving growth since then.
         let anchor = {
-            let guard = storage.lock().await;
+            let guard = storage.clone();
             guard
                 .latest_usage_anchor(&conv_id.to_string())
                 .unwrap_or(None)
@@ -297,7 +297,7 @@ impl ContextService {
 
         // Load messages from DB (ordered by created_at ASC)
         let db_messages = {
-            let storage_guard = storage.lock().await;
+            let storage_guard = storage.clone();
             storage_guard
                 .load_conversation_messages(&conv_id.to_string())
                 .context("failed to load conversation for summarization")?
@@ -359,7 +359,7 @@ impl ContextService {
         // Perform database summarization (marks all msgs_to_summarize as summarized, including tools)
         {
             let summary_created_at = summary_created_at(&db_messages, &range);
-            let storage_guard = storage.lock().await;
+            let storage_guard = storage.clone();
             storage_guard
                 .perform_summarization(
                     &conv_id.to_string(),

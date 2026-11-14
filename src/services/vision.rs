@@ -8,7 +8,6 @@ use crate::storage::Storage;
 use anyhow::Result;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 /// True when the image `mime` should be described rather than embedded.
 pub fn should_describe(config: &AppConfig, main_preset: &ModelPreset, mime: &str) -> bool {
@@ -45,7 +44,7 @@ pub fn content_hash(path: &str) -> Option<String> {
 /// populates) `image_descriptions`; on a miss calls `client` once. Does not
 /// mutate `attachment`.
 pub async fn describe_cached(
-    storage: &Arc<Mutex<Storage>>,
+    storage: &Arc<Storage>,
     client: &Arc<dyn LlmClient>,
     config: &AppConfig,
     attachment: &Attachment,
@@ -58,7 +57,7 @@ pub async fn describe_cached(
     });
 
     if let Some(key) = &cache_key {
-        let guard = storage.lock().await;
+        let guard = storage.clone();
         if let Ok(Some(cached)) = guard.get_image_description(key) {
             drop(guard);
             return Ok(cached);
@@ -134,7 +133,7 @@ pub async fn describe_cached(
     }
 
     if let Some(key) = &cache_key {
-        let guard = storage.lock().await;
+        let guard = storage.clone();
         let _ = guard.upsert_image_description(key, &description, chrono::Utc::now().timestamp());
     }
 

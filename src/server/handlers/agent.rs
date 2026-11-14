@@ -53,7 +53,7 @@ impl ServerHandler {
         let uuid = Uuid::parse_str(&conversation_id).context("invalid conversation id format")?;
 
         {
-            let storage = self.ctx.storage.lock().await;
+            let storage = self.ctx.storage.clone();
             if storage
                 .get_conversation(&uuid)
                 .context("failed to get conversation")?
@@ -87,7 +87,7 @@ impl ServerHandler {
         }
 
         {
-            let storage = self.ctx.storage.lock().await;
+            let storage = self.ctx.storage.clone();
             let db_messages = storage
                 .load_conversation_messages(&uuid.to_string())
                 .context("failed to load conversation messages")?;
@@ -108,7 +108,7 @@ impl ServerHandler {
     }
     pub(super) async fn repair_incomplete_tool_tail(&self, conv_uuid: Uuid) -> Result<bool> {
         let ids = {
-            let storage = self.ctx.storage.lock().await;
+            let storage = self.ctx.storage.clone();
             let db_messages = storage
                 .load_conversation_messages(&conv_uuid.to_string())
                 .context("failed to load conversation messages")?;
@@ -117,7 +117,7 @@ impl ServerHandler {
         if ids.is_empty() {
             return Ok(false);
         }
-        let storage = self.ctx.storage.lock().await;
+        let storage = self.ctx.storage.clone();
         storage
             .delete_messages(&ids)
             .context("failed to delete incomplete tool tail")?;
@@ -129,7 +129,7 @@ impl ServerHandler {
         Ok(true)
     }
     pub(super) async fn broadcast_conversation_loaded(&self, uuid: Uuid) -> Result<()> {
-        let storage = self.ctx.storage.lock().await;
+        let storage = self.ctx.storage.clone();
         let conv = storage
             .get_conversation(&uuid)
             .context("failed to load conversation")?
@@ -224,7 +224,7 @@ impl ServerHandler {
             return Err(anyhow!("Cannot send an empty message"));
         }
 
-        let storage = self.ctx.storage.lock().await;
+        let storage = self.ctx.storage.clone();
         let mut pending_profile_switch: Option<String> = None;
         let conversation_uuid = if let Some(existing) = conversation_id {
             let uuid = Uuid::parse_str(&existing).context("invalid conversation id")?;
@@ -338,7 +338,7 @@ impl ServerHandler {
         };
 
         let message_id = {
-            let storage = self.ctx.storage.lock().await;
+            let storage = self.ctx.storage.clone();
             storage
                 .add_message_with_metadata(
                     &conversation_uuid,
@@ -407,7 +407,7 @@ impl ServerHandler {
                 resolved_attachments.clone(),
             );
             if let Some(rowid) = message_uuid_to_rowid(&message_id) {
-                let storage = self.ctx.storage.lock().await;
+                let storage = self.ctx.storage.clone();
                 if let Err(e) = storage.update_message_attachments(rowid, &updated) {
                     tracing::warn!(
                         error = %e,
@@ -475,7 +475,7 @@ impl ServerHandler {
         Ok(())
     }
     pub(super) async fn build_llm_messages(&self, conversation_id: Uuid) -> Result<Vec<LlmMessage>> {
-        let storage = self.ctx.storage.lock().await;
+        let storage = self.ctx.storage.clone();
         // Load messages directly from storage (more efficient than loading full conversation)
         let db_messages = storage
             .load_conversation_messages(&conversation_id.to_string())

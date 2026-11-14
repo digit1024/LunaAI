@@ -18,7 +18,7 @@ use agentic_loop::mcp_servers_registry::MCPServerRegistry;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 pub struct ServerOptions {
@@ -184,7 +184,7 @@ fn build_sqlite_and_embedding_settings(
     (sqlite_settings, embedding_provider)
 }
 
-async fn init_storage(sqlite_settings: SqliteSettings) -> Result<Arc<Mutex<Storage>>> {
+async fn init_storage(sqlite_settings: SqliteSettings) -> Result<Arc<Storage>> {
     // Fail fast. Silently falling back to a predictable temp-dir DB lets another
     // local user pre-create or symlink that path (data leak / corruption) and
     // masks real failures (e.g. disk full, bad permissions) as "lost history".
@@ -197,11 +197,11 @@ async fn init_storage(sqlite_settings: SqliteSettings) -> Result<Arc<Mutex<Stora
         )
     })?;
 
-    Ok(Arc::new(Mutex::new(storage)))
+    Ok(Arc::new(storage))
 }
 
 fn init_llm_audit_writer(
-    storage: Arc<Mutex<Storage>>,
+    storage: Arc<Storage>,
 ) -> Arc<dyn crate::llm::LlmObserver> {
     let (tx, mut rx) =
         tokio::sync::mpsc::channel::<crate::llm::LlmCallRecord>(LLM_AUDIT_CHANNEL_CAP);
@@ -210,7 +210,7 @@ fn init_llm_audit_writer(
 
     tokio::spawn(async move {
         while let Some(record) = rx.recv().await {
-            let storage_guard = storage.lock().await;
+            let storage_guard = storage.clone();
             if let Err(e) = storage_guard.insert_llm_call(&record) {
                 tracing::warn!(
                     error = %e,
@@ -228,7 +228,7 @@ fn init_llm_audit_writer(
 fn build_server_context(
     config: Arc<AppConfig>,
     prompt_manager: PromptManager,
-    storage: Arc<Mutex<Storage>>,
+    storage: Arc<Storage>,
     mcp_registry: Arc<RwLock<MCPServerRegistry>>,
     default_allowed_tool_names: std::collections::HashSet<String>,
     embedding_provider: Option<Arc<dyn crate::embeddings::EmbeddingProvider>>,
@@ -386,7 +386,7 @@ fn spawn_scheduler_loop(ctx: Arc<ServerContext>) {
         // Recover jobs left in 'running' by a previous crash/restart before
         // scheduling anything new, so they don't stay stuck forever.
         {
-            let storage = ctx.storage.lock().await;
+            let storage = ctx.storage.clone();
             match storage.recover_stuck_running_jobs(Utc::now().timestamp()) {
                 Ok(0) => {}
                 Ok(n) => tracing::warn!(
@@ -403,7 +403,7 @@ fn spawn_scheduler_loop(ctx: Arc<ServerContext>) {
             interval.tick().await;
             let now = Utc::now().timestamp();
             let jobs: Vec<ScheduledJob> = {
-                let storage = ctx.storage.lock().await;
+                let storage = ctx.storage.clone();
                 match storage.get_due_scheduled_jobs(now, SCHEDULER_BATCH_LIMIT) {
                     Ok(j) => j,
                     Err(e) => {
@@ -414,7 +414,7 @@ fn spawn_scheduler_loop(ctx: Arc<ServerContext>) {
             };
             for job in jobs {
                 let taken = {
-                    let storage = ctx.storage.lock().await;
+                    let storage = ctx.storage.clone();
                     match storage.set_scheduled_job_running(&job.id, now) {
                         Ok(t) => t,
                         Err(e) => {
@@ -435,7 +435,7 @@ fn spawn_scheduler_loop(ctx: Arc<ServerContext>) {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {
                         tracing::warn!("Scheduler: run_scheduled_task failed: {}", e);
-                        let storage = ctx.storage.lock().await;
+                        let storage = ctx.storage.clone();
                         let _ = storage.set_scheduled_job_completed(
                             &job_id,
                             Utc::now().timestamp(),
@@ -449,7 +449,7 @@ fn spawn_scheduler_loop(ctx: Arc<ServerContext>) {
                             error = %join_err,
                             "Scheduler: job task panicked; marking job failed"
                         );
-                        let storage = ctx.storage.lock().await;
+                        let storage = ctx.storage.clone();
                         let _ = storage.set_scheduled_job_completed(
                             &job_id,
                             Utc::now().timestamp(),
@@ -477,7 +477,7 @@ fn spawn_deep_sleep_loop(ctx: Arc<ServerContext>) {
 
             // Check if due
             let is_due = {
-                let guard = ctx.storage.lock().await;
+                let guard = ctx.storage.clone();
                 crate::services::deep_sleep_service::is_due(&guard, deep_sleep_cfg.interval_hours)
             };
 
@@ -558,7 +558,7 @@ impl crate::llm::LlmObserver for LlmCallAuditObserver {
 
 fn spawn_title_generation_thread(
     config: Arc<AppConfig>,
-    storage: Arc<Mutex<Storage>>,
+    storage: Arc<Storage>,
 ) {
     tokio::spawn(async move {
         let title_config = &config.title_summary;
@@ -569,7 +569,7 @@ fn spawn_title_generation_thread(
 
             // Get conversations without titles
             let conversation_ids = {
-                let storage_guard = storage.lock().await;
+                let storage_guard = storage.clone();
                 match storage_guard.get_conversations_without_title() {
                     Ok(ids) => ids,
                     Err(e) => {
@@ -615,7 +615,7 @@ fn spawn_title_generation_thread(
                 // Load messages first, then release lock before async LLM call
                 let title_result = {
                     let messages = {
-                        let storage_guard = storage.lock().await;
+                        let storage_guard = storage.clone();
                         storage_guard.load_conversation_messages(&conversation_id_str)
                     };
                     
@@ -663,7 +663,7 @@ fn spawn_title_generation_thread(
 
                 match title_result {
                     Ok(title) => {
-                        let storage_guard = storage.lock().await;
+                        let storage_guard = storage.clone();
                         if let Err(e) = storage_guard.update_conversation_title_and_flag(&conversation_id, &title) {
                             tracing::warn!("Failed to update title for conversation {}: {}", conversation_id, e);
                         } else {

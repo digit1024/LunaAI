@@ -12,7 +12,6 @@ use crate::storage::Storage;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing;
 
 const STATE_LAST_RUN_AT: &str = "last_run_at";
@@ -45,13 +44,13 @@ fn max_tokens_for_summarize_or_extract(profile_max_tokens: Option<u32>) -> Optio
 /// Reorganize the memory_vec index: delete all vector rows, then re-embed and re-insert
 /// every memory from the `memory` table. Requires embedding to be configured.
 pub async fn reorganize_memory_vectors(
-    storage: Arc<Mutex<Storage>>,
+    storage: Arc<Storage>,
     embedding_provider: Arc<dyn EmbeddingProvider>,
 ) -> Result<()> {
     tracing::info!("Reorganize: starting memory vector rebuild");
 
     let memories = {
-        let guard = storage.lock().await;
+        let guard = storage.clone();
         guard.delete_all_memory_vec_rows().context("Failed to delete memory_vec rows")?;
         guard.list_memory(REORGANIZE_MEMORY_LIMIT).context("Failed to list memories")?
     };
@@ -64,7 +63,7 @@ pub async fn reorganize_memory_vectors(
     for entry in &memories {
         match embedding_provider.embed(&entry.content).await {
             Ok(embedding) => {
-                let guard = storage.lock().await;
+                let guard = storage.clone();
                 if let Err(e) = guard.insert_memory_vec_row(entry.id, &embedding) {
                     tracing::warn!(id = entry.id, error = %e, "Reorganize: failed to insert vector");
                     failed += 1;
@@ -113,7 +112,7 @@ struct NewMemory {
 /// Run a full deep sleep cycle: processes ALL unprocessed conversations
 /// by looping step1→step2→step3 in batches until caught up.
 pub async fn run_deep_sleep_cycle(
-    storage: Arc<Mutex<Storage>>,
+    storage: Arc<Storage>,
     config: &DeepSleepConfig,
     llm_client: Arc<dyn LlmClient>,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
@@ -123,7 +122,7 @@ pub async fn run_deep_sleep_cycle(
     tracing::info!("Deep Sleep: starting cycle");
 
     let mut last_processed_id: i64 = {
-        let guard = storage.lock().await;
+        let guard = storage.clone();
         guard
             .get_deep_sleep_state(STATE_LAST_PROCESSED_MSG_ID)
             .unwrap_or(None)
@@ -199,7 +198,7 @@ pub async fn run_deep_sleep_cycle(
         // ── Advance watermark after successful batch ──
         last_processed_id = max_msg_id;
         {
-            let guard = storage.lock().await;
+            let guard = storage.clone();
             guard.set_deep_sleep_state(STATE_LAST_PROCESSED_MSG_ID, &max_msg_id.to_string())?;
         }
 
@@ -212,7 +211,7 @@ pub async fn run_deep_sleep_cycle(
 
     // Update last_run_at
     {
-        let guard = storage.lock().await;
+        let guard = storage.clone();
         guard.set_deep_sleep_state(STATE_LAST_RUN_AT, &chrono::Utc::now().timestamp().to_string())?;
     }
 
@@ -229,14 +228,14 @@ pub async fn run_deep_sleep_cycle(
 // ── STEP 1: Summarize Conversations ──
 
 async fn step1_summarize_conversations(
-    storage: &Arc<Mutex<Storage>>,
+    storage: &Arc<Storage>,
     config: &DeepSleepConfig,
     llm_client: &Arc<dyn LlmClient>,
     profile_max_tokens: Option<u32>,
     last_processed_id: i64,
 ) -> Result<(String, i64)> {
     let conversations = {
-        let guard = storage.lock().await;
+        let guard = storage.clone();
         guard.get_conversations_with_messages_after(last_processed_id, config.max_conversations_per_run)?
     };
 
@@ -255,7 +254,7 @@ async fn step1_summarize_conversations(
     for conversation in &conversations {
         // Load messages for this conversation
         let messages = {
-            let guard = storage.lock().await;
+            let guard = storage.clone();
             guard.load_conversation_messages(&conversation.id)?
         };
 
@@ -387,7 +386,7 @@ async fn call_llm_summarize(
 // ── STEP 2: Evaluate Existing Memories ──
 
 async fn step2_evaluate_memories(
-    storage: &Arc<Mutex<Storage>>,
+    storage: &Arc<Storage>,
     config: &DeepSleepConfig,
     llm_client: &Arc<dyn LlmClient>,
     profile_max_tokens: Option<u32>,
@@ -395,7 +394,7 @@ async fn step2_evaluate_memories(
     embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
 ) -> Result<()> {
     let memories = {
-        let guard = storage.lock().await;
+        let guard = storage.clone();
         guard.list_memory(1000)?
     };
 
@@ -435,7 +434,7 @@ async fn step2_evaluate_memories(
 
         match evaluations {
             Ok(evals) => {
-                let guard = storage.lock().await;
+                let guard = storage.clone();
                 for eval in evals {
                     match eval.action.to_lowercase().as_str() {
                         "delete" => {
@@ -548,7 +547,7 @@ async fn call_llm_evaluate(
 // ── STEP 3: Extract New Memories ──
 
 async fn step3_extract_new_memories(
-    storage: &Arc<Mutex<Storage>>,
+    storage: &Arc<Storage>,
     config: &DeepSleepConfig,
     llm_client: &Arc<dyn LlmClient>,
     profile_max_tokens: Option<u32>,
@@ -557,7 +556,7 @@ async fn step3_extract_new_memories(
 ) -> Result<()> {
     // Load current memories (post-evaluation) for context
     let current_memories = {
-        let guard = storage.lock().await;
+        let guard = storage.clone();
         guard.list_memory(1000)?
     };
 
@@ -584,7 +583,7 @@ async fn step3_extract_new_memories(
                 "Deep Sleep Step 3: LLM proposed new memories, applying dedup and store"
             );
 
-            let guard = storage.lock().await;
+            let guard = storage.clone();
             let mut stored = 0usize;
             let mut skipped = 0usize;
 

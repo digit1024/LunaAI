@@ -17,7 +17,7 @@ impl ServerHandler {
         let title_text = title.unwrap_or_else(|| "Generating title...".to_string());
         let profile_name = Some(self.session.profile_name.clone());
         let internal = internal.unwrap_or(false);
-        let storage = self.ctx.storage.lock().await;
+        let storage = self.ctx.storage.clone();
         let conversation_id = storage
             .create_conversation_with_profile(title_text, profile_name.as_deref(), internal)
             .context("failed to create conversation")?;
@@ -30,7 +30,7 @@ impl ServerHandler {
     }
     pub(super) async fn handle_load_conversation(&mut self, conversation_id: String) -> Result<()> {
         let uuid = Uuid::parse_str(&conversation_id).context("invalid conversation id format")?;
-        let storage = self.ctx.storage.lock().await;
+        let storage = self.ctx.storage.clone();
         if let Some(conv) = storage
             .get_conversation(&uuid)
             .context("failed to load conversation")?
@@ -79,7 +79,7 @@ impl ServerHandler {
         include_internal: Option<bool>,
     ) -> Result<()> {
         let include_internal = include_internal.unwrap_or(false);
-        let storage = self.ctx.storage.lock().await;
+        let storage = self.ctx.storage.clone();
         if let Some(q) = query.filter(|s| !s.trim().is_empty()) {
             let results = storage
                 .search_history(
@@ -158,7 +158,7 @@ impl ServerHandler {
             ));
         }
         let uuid = Uuid::parse_str(&conversation_id).context("invalid conversation id format")?;
-        let storage = self.ctx.storage.lock().await;
+        let storage = self.ctx.storage.clone();
         let updated = storage
             .update_conversation_title_and_flag(&uuid, &title)
             .context("failed to rename conversation")?;
@@ -178,7 +178,7 @@ impl ServerHandler {
         internal: bool,
     ) -> Result<()> {
         let uuid = Uuid::parse_str(&conversation_id).context("invalid conversation id format")?;
-        let storage = self.ctx.storage.lock().await;
+        let storage = self.ctx.storage.clone();
         let updated = storage
             .set_conversation_internal(&uuid, internal)
             .context("failed to update conversation internal flag")?;
@@ -203,7 +203,7 @@ impl ServerHandler {
         }
 
         let deleted = {
-            let storage = self.ctx.storage.lock().await;
+            let storage = self.ctx.storage.clone();
             storage
                 .delete_conversation(&uuid)
                 .context("failed to delete conversation")?
@@ -274,7 +274,7 @@ impl ServerHandler {
         }
 
         // Delete messages up to and including the specified message
-        let storage = self.ctx.storage.lock().await;
+        let storage = self.ctx.storage.clone();
         let deleted_count = storage
             .truncate_conversation(&conv_uuid, &msg_uuid)
             .context("failed to truncate conversation")?;

@@ -9,7 +9,7 @@ impl ServerHandler {
         
         // Update active conversation's profile in database if there is one
         if let Some(conv_id) = self.session.active_conversation_id {
-            let storage = self.ctx.storage.lock().await;
+            let storage = self.ctx.storage.clone();
             if let Err(e) = storage.update_conversation_profile(&conv_id, Some(&profile)) {
                 tracing::error!(
                     conversation_id = %conv_id,

@@ -17,7 +17,7 @@ use crate::{
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::{collections::HashMap, collections::HashSet, sync::Arc, time::Duration};
-use tokio::{sync::Mutex, task::JoinHandle};
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 /// Spawn the agent task for a conversation. Used by handle_send_message and run_scheduled_task.
@@ -133,11 +133,11 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
     let (conversation_id, mut agent_messages, time_last_at) = if let Some(conv_id_str) = &job.conversation_id {
         let conv_uuid = Uuid::parse_str(conv_id_str).context("invalid conversation_id in job")?;
         let exists = {
-            let storage = ctx.storage.lock().await;
+            let storage = ctx.storage.clone();
             storage.get_conversation(&conv_uuid).context("failed to get conversation")?.is_some()
         };
         if !exists {
-            let storage = ctx.storage.lock().await;
+            let storage = ctx.storage.clone();
             storage
                 .set_scheduled_job_completed(
                     &job.id,
@@ -149,7 +149,7 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
             return Ok(());
         }
         let db_messages = {
-            let storage = ctx.storage.lock().await;
+            let storage = ctx.storage.clone();
             storage
                 .load_conversation_messages(conv_id_str)
                 .context("failed to load conversation messages")?
@@ -177,19 +177,19 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
             .clone()
             .unwrap_or_else(|| truncate_preview(&job.message));
         let conv_id = {
-            let storage = ctx.storage.lock().await;
+            let storage = ctx.storage.clone();
             storage
                 .create_conversation_with_profile(title.clone(), Some(profile_name), false)
                 .context("failed to create conversation")?
         };
         {
-            let storage = ctx.storage.lock().await;
+            let storage = ctx.storage.clone();
             storage
                 .add_message_to_conversation(&conv_id, "user".to_string(), job.message.clone())
                 .context("failed to add message")?;
         }
         let db_messages = {
-            let storage = ctx.storage.lock().await;
+            let storage = ctx.storage.clone();
             storage
                 .load_conversation_messages(&conv_id.to_string())
                 .context("failed to load messages")?
@@ -216,7 +216,7 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
         )
         .await;
         if let Some(outcome) = outcome {
-            let storage_guard = ctx.storage.lock().await;
+            let storage_guard = ctx.storage.clone();
             if let Ok(Some(message_rowid)) = storage_guard
                 .get_latest_user_message_id(&conversation_id.to_string())
             {
@@ -269,7 +269,7 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
                 "Tools policy computation failed for scheduled job; marking job failed"
             );
             let now = chrono::Utc::now().timestamp();
-            let storage = ctx.storage.lock().await;
+            let storage = ctx.storage.clone();
             storage
                 .set_scheduled_job_completed(&job.id, now, true, Some(&e.to_string()))
                 .context("failed to mark job failed")?;
@@ -310,7 +310,7 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
         // Finalize the row so it doesn't stay stuck in 'running' forever:
         // recurring jobs skip to their next run, one-off jobs are failed.
         let now = chrono::Utc::now().timestamp();
-        let storage = ctx.storage.lock().await;
+        let storage = ctx.storage.clone();
         let recurring = job
             .schedule
             .as_deref()
@@ -356,7 +356,7 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
     };
 
     let now = chrono::Utc::now().timestamp();
-    let storage = ctx.storage.lock().await;
+    let storage = ctx.storage.clone();
     if let Some(reason) = agent_failed {
         storage
             .set_scheduled_job_completed(&job.id, now, true, Some(&reason))
@@ -393,14 +393,14 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
 }
 
 struct PersistenceContext {
-    storage: Arc<Mutex<Storage>>,
+    storage: Arc<Storage>,
     conversation_id: Uuid,
     pending_tool_calls: Vec<crate::llm::ToolCall>,
     tool_params: HashMap<String, Value>,
 }
 
 impl PersistenceContext {
-    fn new(storage: Arc<Mutex<Storage>>, conversation_id: Uuid) -> Self {
+    fn new(storage: Arc<Storage>, conversation_id: Uuid) -> Self {
         Self {
             storage,
             conversation_id,
@@ -422,8 +422,6 @@ impl PersistenceContext {
             ..MessageMetadata::default()
         };
         self.storage
-            .lock()
-            .await
             .add_message_with_metadata(
                 &self.conversation_id,
                 "assistant".to_string(),
@@ -479,8 +477,6 @@ impl PersistenceContext {
         };
         // Use empty content - tool_result_json holds the actual data
         self.storage
-            .lock()
-            .await
             .add_message_with_metadata(
                 &self.conversation_id,
                 "tool".to_string(),

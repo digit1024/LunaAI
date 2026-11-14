@@ -568,7 +568,7 @@ pub struct AgenticLoop {
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
     pub llm_client: Arc<dyn LlmClient>,
     pub schedule_service: Option<Arc<ScheduleService>>,
-    pub storage: Option<Arc<tokio::sync::Mutex<crate::storage::Storage>>>,
+    pub storage: Option<Arc<crate::storage::Storage>>,
     pub app_config: Option<Arc<crate::config::AppConfig>>,
     pub embedded_tools: EmbeddedToolRegistry,
     pub tool_call_timeout_secs: u64,
@@ -594,7 +594,7 @@ impl AgenticLoop {
         }
     }
 
-    pub fn with_storage(mut self, storage: Arc<tokio::sync::Mutex<crate::storage::Storage>>) -> Self {
+    pub fn with_storage(mut self, storage: Arc<crate::storage::Storage>) -> Self {
         self.storage = Some(storage);
         self
     }
@@ -1237,7 +1237,7 @@ impl AgenticLoop {
             };
         };
         let params = &tool_call.parameters;
-        let guard = storage.lock().await;
+        let guard = storage.clone();
 
         match tool_call.name.as_str() {
             "store_memory" => {
@@ -1341,7 +1341,7 @@ impl AgenticLoop {
             .map(|n| (n as usize).min(100))
             .unwrap_or(20);
 
-        let guard = storage.lock().await;
+        let guard = storage.clone();
         match guard.search_history(&query, limit, false) {
             Ok(snippets) if snippets.is_empty() => ToolResult {
                 content: "No conversations found matching your search.".to_string(),
@@ -1388,7 +1388,7 @@ impl AgenticLoop {
             .map(|n| (n as usize).min(100))
             .unwrap_or(20);
 
-        let guard = storage.lock().await;
+        let guard = storage.clone();
         match guard.list_scheduled_jobs(status_filter, limit) {
             Ok(jobs) if jobs.is_empty() => ToolResult {
                 content: format!("No scheduled tasks found (status: {}).", status_input),
@@ -1473,7 +1473,7 @@ impl AgenticLoop {
                     })
             });
 
-        let guard = storage.lock().await;
+        let guard = storage.clone();
         match guard.list_conversations_metadata(limit, after_date_secs) {
             Ok(convs) if convs.is_empty() => ToolResult {
                 content: "No conversations found.".to_string(),
@@ -1537,7 +1537,7 @@ impl AgenticLoop {
             .map(|n| (n as usize).min(200))
             .unwrap_or(50);
 
-        let guard = storage.lock().await;
+        let guard = storage.clone();
         match guard.load_conversation_messages_limited(&conv_id, limit) {
             Ok(messages) if messages.is_empty() => ToolResult {
                 content: format!("No messages found for conversation {}.", conv_id),
@@ -1820,7 +1820,7 @@ impl AgenticLoop {
         const MAX_PENDING_PER_CONVERSATION: usize = 25;
         const MAX_PENDING_TOTAL: usize = 100;
         if let Some(storage) = &self.storage {
-            let guard = storage.lock().await;
+            let guard = storage.clone();
             if let Ok(jobs) = guard.list_scheduled_jobs(Some("pending"), MAX_PENDING_TOTAL + 1) {
                 if jobs.len() > MAX_PENDING_TOTAL {
                     return ToolResult {
@@ -2432,7 +2432,7 @@ impl AgenticLoop {
                 };
             }
         };
-        let guard = storage.lock().await;
+        let guard = storage.clone();
         match guard.search_attachment_chunks_by_vector(
             &conv.to_string(),
             &emb,
