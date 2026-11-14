@@ -175,7 +175,7 @@ def _download_mcp_luna_memory_binary(dest: Path) -> bool:
         with urlopen(req, timeout=60) as resp:
             data = resp.read()
         dest.write_bytes(data)
-        os.chmod(dest, 0o755)
+        os.chmod(dest, 0o700)
         return True
     except OSError as e:
         print(f"  Download failed: {e}")

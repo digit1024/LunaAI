@@ -11,6 +11,13 @@ buildscript {
 }
 
 rootProject.buildDir = '../build'
+
+allprojects {
+    // Pin resolved dependency versions in gradle.lockfile files (committed).
+    dependencyLocking {
+        lockAllConfigurations()
+    }
+}
 subprojects {
     project.buildDir = "${rootProject.buildDir}/${project.name}"
     afterEvaluate { project ->

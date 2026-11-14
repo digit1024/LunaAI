@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools==84.2.1", "wheel==0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Opinionated quick configuration for Luna AI (server + thin_ui)"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["toml>=0.10.2", "pytest>=7.0.0"]
+dependencies = ["toml==0.10.2", "pytest==9.2.0"]
 
 [project.scripts]
 luna_ai_quick_setup = "quick_setup.main:main"

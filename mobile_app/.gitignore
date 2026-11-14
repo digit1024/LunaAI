@@ -5,7 +5,6 @@
 .flutter-plugins-dependencies
 .metadata
 build/
-pubspec.lock
 
 # Platform specific build directories
 android/.gradle/
