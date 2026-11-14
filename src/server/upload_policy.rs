@@ -165,14 +165,6 @@ pub fn classify_with_caps(
     Ok(UploadClass { ext, kind })
 }
 
-/// True when `name` is exactly `{attachment_uid}.{ext}` with one extension segment.
-pub fn filename_matches(name: &str, attachment_uid: &str) -> bool {
-    let Some((stem, ext)) = name.split_once('.') else {
-        return false;
-    };
-    !ext.is_empty() && !ext.contains('.') && !stem.is_empty() && stem == attachment_uid
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

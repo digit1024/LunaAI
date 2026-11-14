@@ -80,39 +80,15 @@ pub(super) async fn expand_attach_tokens(
 
 /// Locate an uploaded file by exact `{attachment_uid}.{ext}` under
 /// `uploads/{conversation_id}/`, or `uploads/_no_conversation/` when the client
-/// uploaded before a conversation id existed.
+/// uploaded before a conversation id existed. Symlinks are rejected.
 pub(super) async fn resolve_attachment_upload_path(
     uploads_base: &Path,
     conversation_id: &Uuid,
     attachment_uid: &str,
 ) -> Result<std::path::PathBuf> {
-    let dirs = [
-        uploads_base.join(conversation_id.to_string()),
-        uploads_base.join("_no_conversation"),
-    ];
-    for dir in dirs {
-        if tokio::fs::metadata(&dir).await.map(|m| !m.is_dir()).unwrap_or(true) {
-            continue;
-        }
-        let mut entries = tokio::fs::read_dir(&dir).await.context("read upload directory")?;
-        while let Some(entry) = entries.next_entry().await.context("read upload directory")? {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if !crate::server::upload_policy::filename_matches(&name, attachment_uid) {
-                continue;
-            }
-            let p = entry.path();
-            let meta = tokio::fs::symlink_metadata(&p).await?;
-            if meta.file_type().is_symlink() {
-                return Err(anyhow!("attachment path must not be a symlink"));
-            }
-            return Ok(p);
-        }
-    }
-    Err(anyhow!(
-        "no file found for attachment id {}",
-        attachment_uid
-    ))
+    crate::uploads::find_scoped(uploads_base, Some(conversation_id), attachment_uid)
+        .await
+        .ok_or_else(|| anyhow!("no file found for attachment id {}", attachment_uid))
 }
 
 pub(super) fn memory_entry_to_view(entry: &MemoryEntry) -> MemoryView {

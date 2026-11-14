@@ -704,6 +704,39 @@ impl Storage {
     pub fn delete_scheduled_job(&self, id: &str) -> SqliteResult<bool> {
         self.sqlite.delete_scheduled_job(id)
     }
+
+    // ── Uploads dedupe/cleanup index ──
+
+    /// Insert (or replace) an uploads-index row.
+    pub fn insert_upload_record(
+        &self,
+        rec: &super::sqlite_storage_simple::UploadRecord,
+    ) -> SqliteResult<()> {
+        self.sqlite.insert_upload_record(rec)
+    }
+
+    /// Find the newest upload with the given content hash in a conversation subdir.
+    pub fn find_upload_by_hash(
+        &self,
+        sha256: &str,
+        conversation_key: &str,
+    ) -> SqliteResult<Option<super::sqlite_storage_simple::UploadRecord>> {
+        self.sqlite.find_upload_by_hash(sha256, conversation_key)
+    }
+
+    /// Remove an uploads-index row by uid.
+    pub fn delete_upload_record(&self, uid: &str) -> SqliteResult<()> {
+        self.sqlite.delete_upload_record(uid)
+    }
+
+    /// Remove every uploads-index row for one conversation subdir.
+    pub fn delete_upload_records_for_conversation(
+        &self,
+        conversation_key: &str,
+    ) -> SqliteResult<usize> {
+        self.sqlite
+            .delete_upload_records_for_conversation(conversation_key)
+    }
 }
 
 // NOTE: no `impl Default for Storage` on purpose. The previous Default silently

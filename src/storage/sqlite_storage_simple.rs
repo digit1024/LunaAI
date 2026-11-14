@@ -153,6 +153,20 @@ pub struct AttachmentDocChunk<'a> {
 /// Number of pooled reader connections for SELECT-only methods.
 const READER_CONNECTIONS: usize = 4;
 
+/// One uploaded attachment tracked in the dedupe/cleanup index.
+#[derive(Debug, Clone)]
+pub struct UploadRecord {
+    pub uid: String,
+    /// Subdir under uploads/ where the file lives (conversation UUID string
+    /// or `_no_conversation`).
+    pub conversation_key: String,
+    pub sha256: String,
+    pub ext: String,
+    pub original_name: String,
+    pub size_bytes: i64,
+    pub created_at: i64,
+}
+
 /// SQLite-based storage implementation.
 ///
 /// Concurrency model: one dedicated writer connection (all mutations and
@@ -598,6 +612,27 @@ impl SqliteStorage {
         )?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_llm_calls_conv ON llm_calls(conversation_id, started_at)",
+            [],
+        )?;
+
+        // Uploaded-attachment dedupe/cleanup index: O(1) content dedupe on
+        // attach and per-conversation orphan cleanup on delete. Files uploaded
+        // before this table existed are not indexed (they simply won't dedupe;
+        // conversation deletion still removes them via directory removal).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS uploads_index (
+                uid TEXT PRIMARY KEY,
+                conversation_key TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                ext TEXT NOT NULL,
+                original_name TEXT NOT NULL DEFAULT '',
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_uploads_index_sha ON uploads_index(sha256, conversation_key)",
             [],
         )?;
 
@@ -2125,6 +2160,75 @@ impl SqliteStorage {
             })
         })?;
         rows.collect()
+    }
+    /// Insert (or replace) an uploads-index row.
+    pub fn insert_upload_record(&self, rec: &UploadRecord) -> SqliteResult<()> {
+        let conn = self.w();
+        conn.execute(
+            "INSERT OR REPLACE INTO uploads_index (uid, conversation_key, sha256, ext, original_name, size_bytes, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                rec.uid,
+                rec.conversation_key,
+                rec.sha256,
+                rec.ext,
+                rec.original_name,
+                rec.size_bytes,
+                rec.created_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Newest uploads-index row with the given content hash in one
+    /// conversation subdir, for O(1) upload dedupe.
+    pub fn find_upload_by_hash(
+        &self,
+        sha256: &str,
+        conversation_key: &str,
+    ) -> SqliteResult<Option<UploadRecord>> {
+        let conn = self.r();
+        let mut stmt = conn.prepare(
+            "SELECT uid, conversation_key, sha256, ext, original_name, size_bytes, created_at
+             FROM uploads_index WHERE sha256 = ?1 AND conversation_key = ?2
+             ORDER BY created_at DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![sha256, conversation_key], |row| {
+            Ok(UploadRecord {
+                uid: row.get(0)?,
+                conversation_key: row.get(1)?,
+                sha256: row.get(2)?,
+                ext: row.get(3)?,
+                original_name: row.get(4)?,
+                size_bytes: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        })?;
+        rows.next().transpose()
+    }
+
+    /// Remove an uploads-index row by uid.
+    pub fn delete_upload_record(&self, uid: &str) -> SqliteResult<()> {
+        let conn = self.w();
+        conn.execute(
+            "DELETE FROM uploads_index WHERE uid = ?1",
+            params![uid],
+        )?;
+        Ok(())
+    }
+
+    /// Remove every uploads-index row for one conversation subdir.
+    /// Returns the number of rows removed.
+    pub fn delete_upload_records_for_conversation(
+        &self,
+        conversation_key: &str,
+    ) -> SqliteResult<usize> {
+        let conn = self.w();
+        let n = conn.execute(
+            "DELETE FROM uploads_index WHERE conversation_key = ?1",
+            params![conversation_key],
+        )?;
+        Ok(n)
     }
 }
 

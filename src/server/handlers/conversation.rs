@@ -234,6 +234,15 @@ impl ServerHandler {
 
         // Best-effort cleanup of files owned by this conversation (uploads and
         // published static images); without this they are orphaned forever.
+        {
+            let storage = self.ctx.storage.clone();
+            if let Err(e) = storage.delete_upload_records_for_conversation(&uuid.to_string()) {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to clear upload index rows for deleted conversation"
+                );
+            }
+        }
         for dir in [
             self.ctx.config.uploads_dir().join(uuid.to_string()),
             self.ctx.config.static_dir().join(uuid.to_string()),

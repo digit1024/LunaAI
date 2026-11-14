@@ -236,30 +236,13 @@ fn vision_err(message: &str) -> ToolResult {
 
 /// Find an uploaded attachment `{uid}.{ext}` in the conversation dir (or the
 /// pre-conversation fallback dir).
-fn resolve_uploaded_attachment(
+async fn resolve_uploaded_attachment(
     uploads_base: &std::path::Path,
     conversation: Option<uuid::Uuid>,
     uid: &str,
 ) -> Option<std::path::PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(conv) = conversation {
-        dirs.push(uploads_base.join(conv.to_string()));
-    }
-    dirs.push(uploads_base.join("_no_conversation"));
-    for dir in dirs {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                if let Some(name) = entry.file_name().to_str() {
-                    if let Some((stem, ext)) = name.split_once('.') {
-                        if !ext.is_empty() && !ext.contains('.') && stem == uid {
-                            return Some(entry.path());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
+    // Shared, symlink-rejecting implementation (SMELL-1).
+    crate::uploads::find_scoped(uploads_base, conversation.as_ref(), uid).await
 }
 
 /// Resolve a workspace path and require it to stay within `root`.
@@ -2337,7 +2320,7 @@ impl AgenticLoop {
 
         let path = if let Some(uid) = attachment_id {
             let conv = run_context.and_then(|c| c.conversation_id);
-            match resolve_uploaded_attachment(&config.uploads_dir(), conv, uid) {
+            match resolve_uploaded_attachment(&config.uploads_dir(), conv, uid).await {
                 Some(p) => p,
                 None => return vision_err(&format!("no uploaded attachment found for id '{uid}'")),
             }
@@ -2475,8 +2458,8 @@ impl AgenticLoop {
 mod vision_tool_tests {
     use super::*;
 
-    #[test]
-    fn resolves_uploaded_attachment_by_uid() {
+    #[tokio::test]
+    async fn resolves_uploaded_attachment_by_uid() {
         let base = std::env::temp_dir().join(format!("luna_vt_{}", std::process::id()));
         let conv = uuid::Uuid::new_v4();
         let dir = base.join(conv.to_string());
@@ -2484,8 +2467,8 @@ mod vision_tool_tests {
         let uid = "11111111-2222-3333-4444-555555555555";
         std::fs::write(dir.join(format!("{uid}.png")), b"x").unwrap();
 
-        assert!(resolve_uploaded_attachment(&base, Some(conv), uid).is_some());
-        assert!(resolve_uploaded_attachment(&base, Some(conv), "nope").is_none());
+        assert!(resolve_uploaded_attachment(&base, Some(conv), uid).await.is_some());
+        assert!(resolve_uploaded_attachment(&base, Some(conv), "nope").await.is_none());
         let _ = std::fs::remove_dir_all(&base);
     }
 

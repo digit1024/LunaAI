@@ -327,14 +327,40 @@ pub async fn attach_file_handler(
         (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create upload directory".to_string())
     })?;
 
-    // Dedupe: reuse an identical existing upload instead of storing a copy.
-    if let Some((existing_uid, existing_path)) = find_duplicate(&target_dir, &data).await {
-        tracing::info!(uid = %existing_uid, original_name = %original_name, "Reused identical upload");
-        return Ok(Json(AttachFileResponse {
-            uid: existing_uid,
-            original_name,
-            stored_path: existing_path.display().to_string(),
-        }));
+    // Dedupe via the sha256 index: O(1) lookup instead of byte-comparing
+    // every file in the target dir (each up to MAX_UPLOAD_BYTES).
+    let sha256 = crate::uploads::sha256_hex(&data);
+    {
+        let storage = ctx.storage.clone();
+        match storage.find_upload_by_hash(&sha256, subdir) {
+            Ok(Some(existing)) => {
+                let existing_path =
+                    target_dir.join(format!("{}.{}", existing.uid, existing.ext));
+                match tokio::fs::symlink_metadata(&existing_path).await {
+                    Ok(m) if !m.file_type().is_symlink() => {
+                        tracing::info!(
+                            uid = %existing.uid,
+                            original_name = %original_name,
+                            "Reused identical upload"
+                        );
+                        return Ok(Json(AttachFileResponse {
+                            uid: existing.uid,
+                            original_name,
+                            stored_path: existing_path.display().to_string(),
+                        }));
+                    }
+                    _ => {
+                        // Index row whose file vanished (or was replaced by a
+                        // symlink): drop the stale row and store a fresh copy.
+                        let _ = storage.delete_upload_record(&existing.uid);
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "Upload dedupe lookup failed; storing without dedupe");
+            }
+        }
     }
 
     let uid = Uuid::new_v4();
@@ -343,6 +369,23 @@ pub async fn attach_file_handler(
     tokio::fs::write(&path, &data).await.map_err(|_| {
         (StatusCode::INTERNAL_SERVER_ERROR, "Failed to write upload".to_string())
     })?;
+
+    // Track in the dedupe/cleanup index (best effort).
+    {
+        let storage = ctx.storage.clone();
+        let rec = crate::storage::sqlite_storage_simple::UploadRecord {
+            uid: uid.to_string(),
+            conversation_key: subdir.to_string(),
+            sha256,
+            ext: class.ext.clone(),
+            original_name: original_name.clone(),
+            size_bytes: data.len() as i64,
+            created_at: chrono::Utc::now().timestamp(),
+        };
+        if let Err(e) = storage.insert_upload_record(&rec) {
+            tracing::warn!(error = %e, uid = %uid, "Failed to record upload in index");
+        }
+    }
 
     let stored_path = path.display().to_string();
     tracing::info!(
@@ -361,56 +404,6 @@ pub async fn attach_file_handler(
     }))
 }
 
-/// Return an existing file in `dir` with identical bytes (size prefilter + byte compare).
-async fn find_duplicate(dir: &StdPath, data: &[u8]) -> Option<(String, PathBuf)> {
-    let mut entries = tokio::fs::read_dir(dir).await.ok()?;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        let meta = match tokio::fs::symlink_metadata(&path).await {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        if !meta.is_file() || meta.len() != data.len() as u64 {
-            continue;
-        }
-        if let Ok(existing) = tokio::fs::read(&path).await {
-            if existing == data {
-                let stem = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                return Some((stem, path));
-            }
-        }
-    }
-    None
-}
-
-/// Resolve an uploaded file by attachment uid across conversation subdirs.
-async fn find_upload_by_uid(uploads_base: &StdPath, uid: &str) -> Option<PathBuf> {
-    let mut subdirs = tokio::fs::read_dir(uploads_base).await.ok()?;
-    while let Ok(Some(sub)) = subdirs.next_entry().await {
-        if !sub.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        let Ok(mut inner) = tokio::fs::read_dir(sub.path()).await else {
-            continue;
-        };
-        while let Ok(Some(entry)) = inner.next_entry().await {
-            let matches = entry
-                .file_name()
-                .to_str()
-                .map(|name| upload_policy::filename_matches(name, uid))
-                .unwrap_or(false);
-            if matches {
-                return Some(entry.path());
-            }
-        }
-    }
-    None
-}
-
 /// Serve an uploaded attachment's bytes for preview, by uid (authenticated).
 pub async fn attachment_file_handler(
     State(ctx): State<Arc<ServerContext>>,
@@ -425,7 +418,7 @@ pub async fn attachment_file_handler(
         return Err(StatusCode::BAD_REQUEST);
     }
     let uploads_base = ctx.config.uploads_dir();
-    let path = find_upload_by_uid(&uploads_base, &uid)
+    let path = crate::uploads::find_any(&uploads_base, &uid)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
     let bytes = tokio::fs::read(&path)
@@ -455,30 +448,16 @@ pub async fn remove_file_handler(
 
     let uploads_base = ctx.config.uploads_dir();
     let mut removed = false;
-    if let Ok(mut rd) = tokio::fs::read_dir(&uploads_base).await {
-        while let Ok(Some(sub)) = rd.next_entry().await {
-            let path = sub.path();
-            if !path.is_dir() {
-                continue;
-            }
-            if let Ok(mut inner) = tokio::fs::read_dir(&path).await {
-                while let Ok(Some(e)) = inner.next_entry().await {
-                    let name = e.file_name();
-                    if let Some(s) = name.to_str() {
-                        if upload_policy::filename_matches(s, &uid) {
-                            if tokio::fs::remove_file(e.path()).await.is_ok() {
-                                removed = true;
-                                tracing::info!("Removed upload {}", s);
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-            if removed {
-                break;
-            }
+    if let Some(path) = crate::uploads::find_any(&uploads_base, &uid).await {
+        if tokio::fs::remove_file(&path).await.is_ok() {
+            removed = true;
+            tracing::info!("Removed upload {}", uid);
         }
+    }
+    // Drop the dedupe-index row regardless (it may point at a missing file).
+    let storage = ctx.storage.clone();
+    if let Err(e) = storage.delete_upload_record(&uid) {
+        tracing::warn!(error = %e, uid = %uid, "Failed to remove upload index row");
     }
 
     Ok(Json(RemoveFileResponse { success: removed }))
@@ -672,10 +651,10 @@ mod tests {
     #[test]
     fn attachment_filename_exact_match() {
         let uid = "11111111-2222-3333-4444-555555555555";
-        assert!(upload_policy::filename_matches(&format!("{uid}.png"), uid));
-        assert!(!upload_policy::filename_matches(&format!("{uid}x.png"), uid));
-        assert!(!upload_policy::filename_matches(&format!("{uid}.tar.gz"), uid));
-        assert!(!upload_policy::filename_matches(uid, uid));
+        assert!(crate::uploads::filename_matches(&format!("{uid}.png"), uid));
+        assert!(!crate::uploads::filename_matches(&format!("{uid}x.png"), uid));
+        assert!(!crate::uploads::filename_matches(&format!("{uid}.tar.gz"), uid));
+        assert!(!crate::uploads::filename_matches(uid, uid));
     }
 
     #[test]
@@ -771,21 +750,6 @@ mod tests {
             app.oneshot(ok_req).await.unwrap().status(),
             StatusCode::OK
         );
-    }
-
-    #[tokio::test]
-    async fn finds_upload_by_uid_across_subdirs() {
-        let base = std::env::temp_dir().join(format!("luna_findupload_{}", Uuid::new_v4()));
-        let sub = base.join("conv");
-        tokio::fs::create_dir_all(&sub).await.unwrap();
-        let uid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-        tokio::fs::write(sub.join(format!("{uid}.txt")), b"hi")
-            .await
-            .unwrap();
-
-        assert!(find_upload_by_uid(&base, uid).await.is_some());
-        assert!(find_upload_by_uid(&base, "no-such-uid").await.is_none());
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[tokio::test]

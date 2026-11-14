@@ -10,6 +10,7 @@ mod storage;
 mod tools;
 mod tools_policy;
 mod types;
+mod uploads;
 
 use clap::Parser;
 use std::path::PathBuf;
