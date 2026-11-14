@@ -275,6 +275,23 @@ fn resolve_workspace_path(root: &std::path::Path, raw: &str) -> Option<std::path
     canon.starts_with(&root).then_some(canon)
 }
 
+/// Confinement check for `publish_image`: true when the canonicalized
+/// `source_canon` lies inside the uploads dir or the `files.root` root.
+/// Roots that do not exist / fail to canonicalize are treated as non-matching.
+/// Pure (no I/O beyond canonicalizing the roots) so it is unit-testable.
+fn publish_source_in_allowed_root(
+    cfg: &crate::config::AppConfig,
+    source_canon: &std::path::Path,
+) -> bool {
+    [cfg.uploads_dir(), cfg.files_root()]
+        .iter()
+        .any(|root| {
+            std::fs::canonicalize(root)
+                .map(|rc| source_canon.starts_with(&rc))
+                .unwrap_or(false)
+        })
+}
+
 fn delete_memory_tool_definition() -> ToolDefinition {    ToolDefinition {
         name: "delete_memory".to_string(),
         description: "Delete a memory entry by its ID. Use this to remove outdated or incorrect information from long-term memory.".to_string(),
@@ -319,21 +336,22 @@ fn spawn_worker_tool_definition() -> ToolDefinition {
             completion and returns its final response. Use when a task is independent of the \
             current conversation flow — e.g. deep research, writing a document, running a \
             multi-step analysis, or any work where intermediate steps would clutter this \
-            conversation. The worker's available tools are determined by its profile's \
-            tools policy (which may differ from the current session if a profile is specified). Its \
-            internal reasoning and tool calls are stored separately and never shown in this \
-            conversation. Only the final result is returned here. \
-            Do NOT use for short tasks you can handle directly.".to_string(),
+            conversation. The worker uses the current profile's tools policy; a different \
+            profile may be specified only if the server configuration allows it \
+            ([agentic].worker_profiles). Workers cannot spawn further workers beyond the \
+            configured depth limit. The worker's internal reasoning and tool calls are stored \
+            separately and never shown in this conversation. Only the final result is returned \
+            here. Do NOT use for short tasks you can handle directly.".to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
                 "task": {
                     "type": "string",
-                    "description": "Complete, self-contained description of what the worker should do. Include all context it needs — it cannot access this conversation's history."
+                    "description": "Complete, self-contained description of the work to do. Include all context needed — the worker cannot access this conversation's history."
                 },
                 "profile": {
                     "type": "string",
-                    "description": "Optional. Name of a configured profile to use for this worker (e.g. a coding-focused profile). If omitted, the current session profile is used."
+                    "description": "Optional. Name of an allowed profile for this worker. If omitted (or overrides are not permitted), the current session profile is used."
                 }
             },
             "required": ["task"]
@@ -454,13 +472,28 @@ fn parse_spawn_worker_args(
     tool_call: &ToolCall,
     run_context: Option<&RunContext>,
     app_config: Option<&crate::config::AppConfig>,
-) -> Result<(String, String), ToolResult> {
+) -> Result<(String, String, u32), ToolResult> {
     let Some(parent_ctx) = run_context else {
         return Err(ToolResult {
             content: "spawn_worker requires run context".to_string(),
             is_error: true,
         });
     };
+
+    // Depth cap: a worker's own runs carry depth = parent + 1. Enforce before
+    // doing any other work so runaway nesting is refused cheaply.
+    let agentic = app_config.map(|c| &c.agentic);
+    let max_depth = agentic.map(|c| c.max_worker_depth).unwrap_or(0);
+    let child_depth = parent_ctx.depth.saturating_add(1);
+    if child_depth > max_depth {
+        return Err(ToolResult {
+            content: format!(
+                "spawn_worker: maximum worker nesting depth ({max_depth}) reached; \
+                 cannot spawn a worker from within a worker."
+            ),
+            is_error: true,
+        });
+    }
 
     let params = &tool_call.parameters;
     let task = params
@@ -494,12 +527,41 @@ fn parse_spawn_worker_args(
                 is_error: true,
             });
         }
+        // Allowlist gate: by default (worker_profiles = None) a worker may only
+        // run under the parent's own profile — the model cannot escalate to a
+        // more privileged profile's tools policy. An explicit allowlist (even
+        // empty) is required to permit named overrides.
+        match &cfg.agentic.worker_profiles {
+            None => {
+                if override_name != parent_ctx.profile_name {
+                    return Err(ToolResult {
+                        content: format!(
+                            "spawn_worker: profile override '{override_name}' is not permitted. \
+                             By default workers may only use the current profile ('{}'). \
+                             List allowed profiles in [agentic].worker_profiles to override.",
+                            parent_ctx.profile_name
+                        ),
+                        is_error: true,
+                    });
+                }
+            }
+            Some(allowed) => {
+                if !allowed.iter().any(|p| p == override_name) {
+                    return Err(ToolResult {
+                        content: format!(
+                            "spawn_worker: profile '{override_name}' is not in [agentic].worker_profiles"
+                        ),
+                        is_error: true,
+                    });
+                }
+            }
+        }
         override_name.to_string()
     } else {
         parent_ctx.profile_name.clone()
     };
 
-    Ok((task, profile_name))
+    Ok((task, profile_name, child_depth))
 }
 
 pub struct AgenticLoop {
@@ -666,7 +728,24 @@ impl AgenticLoop {
         // occasional empty completion much later doesn't run out of
         // retries.
         let mut empty_completion_retries: u32 = 0;
+        let max_turns = self
+            .app_config
+            .as_ref()
+            .map(|c| c.agentic.max_turns)
+            .unwrap_or(crate::config::default_agentic_max_turns());
+        let mut turn: u32 = 0;
         'turn: loop {
+            turn += 1;
+            if turn > max_turns {
+                let msg = format!(
+                    "Agentic loop stopped: reached the maximum of {max_turns} turns for a single run."
+                );
+                tracing::warn!(max_turns, "Agentic loop turn cap reached");
+                if let Some(tx) = agent_tx.as_ref() {
+                    let _ = tx.send(AgentUpdate::ModelError { error: msg.clone() });
+                }
+                return Ok(msg);
+            }
             let available_tools = self.build_available_tools(&run_context).await?;
 
             // P0c: wrap the initial call in bounded backoff so DeepSeek
@@ -1018,52 +1097,37 @@ impl AgenticLoop {
                         ),
                         is_error: true,
                     }
-                } else if tool_call.name == "schedule_task" {
-                    self.execute_schedule_task(&tool_call, run_context_clone.as_ref()).await
-                } else if tool_call.name == "cancel_scheduled_task" {
-                    self.execute_cancel_scheduled_task(&tool_call).await
-                } else if tool_call.name == "list_scheduled_tasks" {
-                    self.execute_list_scheduled_tasks(&tool_call).await
-                } else if tool_call.name == "list_conversations" {
-                    self.execute_list_conversations(&tool_call).await
-                } else if tool_call.name == "get_conversation_messages" {
-                    self.execute_get_conversation_messages(&tool_call).await
-                } else if tool_call.name == "store_memory"
-                    || tool_call.name == "search_memory"
-                    || tool_call.name == "search_memory_by_category"
-                    || tool_call.name == "delete_memory"
+                } else if crate::tools_policy::INTERNAL_TOOL_NAMES.contains(&tool_call.name.as_str())
                 {
-                    self.execute_memory_tool(&tool_call, run_context_clone.as_ref()).await
-                } else if tool_call.name == "search_attachment_chunks" {
-                    self.execute_attachment_search_tool(&tool_call, run_context_clone.as_ref())
-                        .await
-                } else if tool_call.name == "vision_analyze" {
-                    self.execute_vision_analyze_tool(&tool_call, run_context_clone.as_ref())
-                        .await
-                } else if tool_call.name == "search_history" {
-                    self.execute_search_history_tool(&tool_call).await
-                } else if tool_call.name == "publish_image" {
-                    self.execute_publish_image(&tool_call, run_context_clone.as_ref())
-                        .await
-                } else if tool_call.name == "spawn_worker" {
-                    let spawn_result = parse_spawn_worker_args(
-                        &tool_call,
-                        run_context_clone.as_ref(),
-                        self.app_config.as_deref(),
-                    );
-                    match spawn_result {
-                        Ok((task, profile_name)) => {
-                            Box::pin(crate::agentic::spawn_worker::execute_spawn_worker(
-                                self.app_config.clone(),
-                                self.storage.clone(),
-                                self.mcp_registry.clone(),
-                                self.tool_call_timeout_secs,
-                                task,
-                                profile_name,
-                            ))
-                            .await
+                    let internal_timeout = self.internal_tool_timeout(&tool_call.name);
+                    match timeout(
+                        internal_timeout,
+                        self.dispatch_internal_tool(&tool_call, run_context_clone.as_ref()),
+                    )
+                    .await
+                    {
+                        Ok(Some(r)) => r,
+                        // Name is in INTERNAL_TOOL_NAMES but the chain did not
+                        // handle it (defensive): fall through to the MCP path.
+                        Ok(None) => {
+                            self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref())
+                                .await
                         }
-                        Err(tool_result) => tool_result,
+                        Err(_) => {
+                            tracing::error!(
+                                tool = %tool_call.name,
+                                timeout_secs = internal_timeout.as_secs(),
+                                "Internal tool call timed out"
+                            );
+                            ToolResult {
+                                content: format!(
+                                    "Internal tool '{}' timed out after {}s",
+                                    tool_call.name,
+                                    internal_timeout.as_secs()
+                                ),
+                                is_error: true,
+                            }
+                        }
                     }
                 } else if let Some(r) = self.embedded_tools.dispatch(&tool_call).await {
                     r
@@ -1085,6 +1149,83 @@ impl AgenticLoop {
                     result.is_error,
                 ));
             }
+        }
+    }
+
+    /// Per-call timeout for internal tools. `spawn_worker` gets the (longer)
+    /// worker timeout; everything else uses the standard tool-call timeout.
+    /// Internal tools previously ran with NO timeout at all (only MCP tools
+    /// went through `execute_tool_with_retry`).
+    fn internal_tool_timeout(&self, name: &str) -> Duration {
+        if name == "spawn_worker" {
+            Duration::from_secs(
+                self.app_config
+                    .as_ref()
+                    .map(|c| c.agentic.worker_timeout_secs)
+                    .unwrap_or(self.tool_call_timeout_secs),
+            )
+        } else {
+            Duration::from_secs(self.tool_call_timeout_secs)
+        }
+    }
+
+    /// Single dispatch chain for the built-in internal tools, shared by the
+    /// streaming and non-streaming loops. Returns None when `tool_call` is not
+    /// an internal tool (callers then fall through to embedded/MCP dispatch).
+    /// Callers wrap this in `internal_tool_timeout`.
+    async fn dispatch_internal_tool(
+        &self,
+        tool_call: &ToolCall,
+        run_context: Option<&RunContext>,
+    ) -> Option<ToolResult> {
+        if tool_call.name == "schedule_task" {
+            Some(self.execute_schedule_task(tool_call, run_context).await)
+        } else if tool_call.name == "cancel_scheduled_task" {
+            Some(self.execute_cancel_scheduled_task(tool_call).await)
+        } else if tool_call.name == "list_scheduled_tasks" {
+            Some(self.execute_list_scheduled_tasks(tool_call).await)
+        } else if tool_call.name == "list_conversations" {
+            Some(self.execute_list_conversations(tool_call).await)
+        } else if tool_call.name == "get_conversation_messages" {
+            Some(self.execute_get_conversation_messages(tool_call).await)
+        } else if tool_call.name == "store_memory"
+            || tool_call.name == "search_memory"
+            || tool_call.name == "search_memory_by_category"
+            || tool_call.name == "delete_memory"
+        {
+            Some(self.execute_memory_tool(tool_call, run_context).await)
+        } else if tool_call.name == "search_attachment_chunks" {
+            Some(
+                self.execute_attachment_search_tool(tool_call, run_context)
+                    .await,
+            )
+        } else if tool_call.name == "vision_analyze" {
+            Some(
+                self.execute_vision_analyze_tool(tool_call, run_context)
+                    .await,
+            )
+        } else if tool_call.name == "search_history" {
+            Some(self.execute_search_history_tool(tool_call).await)
+        } else if tool_call.name == "publish_image" {
+            Some(self.execute_publish_image(tool_call, run_context).await)
+        } else if tool_call.name == "spawn_worker" {
+            match parse_spawn_worker_args(tool_call, run_context, self.app_config.as_deref()) {
+                Ok((task, profile_name, child_depth)) => Some(
+                    Box::pin(crate::agentic::spawn_worker::execute_spawn_worker(
+                        self.app_config.clone(),
+                        self.storage.clone(),
+                        self.mcp_registry.clone(),
+                        self.tool_call_timeout_secs,
+                        task,
+                        profile_name,
+                        child_depth,
+                    ))
+                    .await,
+                ),
+                Err(tool_result) => Some(tool_result),
+            }
+        } else {
+            None
         }
     }
 
@@ -1515,7 +1656,50 @@ impl AgenticLoop {
             }
         }
 
-        let static_base = crate::config::AppConfig::default().static_dir();
+        // Confine source reads to the uploads dir and the `@file:` root: the
+        // model must not be able to expose arbitrary images from disk
+        // (screenshots, photos, renamed sensitive files) via the web-served
+        // static dir. Escape hatch: [agentic].publish_image_unrestricted_sources.
+        let unrestricted = self
+            .app_config
+            .as_ref()
+            .map(|c| c.agentic.publish_image_unrestricted_sources)
+            .unwrap_or(false);
+        if !unrestricted {
+            let source_canon = match tokio::fs::canonicalize(source).await {
+                Ok(p) => p,
+                Err(e) => {
+                    return ToolResult {
+                        content: format!("publish_image: cannot resolve path: {}", e),
+                        is_error: true,
+                    };
+                }
+            };
+            // No app config => no roots to confine against => reject (safe default).
+            let allowed = self
+                .app_config
+                .as_ref()
+                .map(|cfg| publish_source_in_allowed_root(cfg, &source_canon))
+                .unwrap_or(false);
+            if !allowed {
+                tracing::warn!(
+                    path = %source.display(),
+                    "publish_image: rejected source outside uploads/files root"
+                );
+                return ToolResult {
+                    content: "publish_image: source path must be inside the uploads directory \
+                              or the configured files root ([files].root; default HOME). Set \
+                              [agentic].publish_image_unrestricted_sources=true to override."
+                        .to_string(),
+                    is_error: true,
+                };
+            }
+        }
+
+        let static_base = match self.app_config.as_ref() {
+            Some(cfg) => cfg.static_dir(),
+            None => crate::config::AppConfig::default().static_dir(),
+        };
         if let Err(e) = tokio::fs::create_dir_all(&static_base).await {
             return ToolResult {
                 content: format!("publish_image: failed to prepare static dir: {}", e),
@@ -1628,6 +1812,36 @@ impl AgenticLoop {
                 content: "schedule_task requires non-empty 'message'".to_string(),
                 is_error: true,
             };
+        }
+
+        // Cap pending jobs (SEC-7): a prompt-injected or runaway model must not
+        // be able to install unbounded future autonomous runs. Both a
+        // per-conversation and a global ceiling are enforced.
+        const MAX_PENDING_PER_CONVERSATION: usize = 25;
+        const MAX_PENDING_TOTAL: usize = 100;
+        if let Some(storage) = &self.storage {
+            let guard = storage.lock().await;
+            if let Ok(jobs) = guard.list_scheduled_jobs(Some("pending"), MAX_PENDING_TOTAL + 1) {
+                if jobs.len() > MAX_PENDING_TOTAL {
+                    return ToolResult {
+                        content: format!(
+                            "schedule_task: too many pending scheduled tasks ({} > {MAX_PENDING_TOTAL}); cancel some first",
+                            jobs.len()
+                        ),
+                        is_error: true,
+                    };
+                }
+                let conv = ctx.conversation_id.map(|c| c.to_string());
+                let mine = jobs.iter().filter(|j| j.conversation_id == conv).count();
+                if mine >= MAX_PENDING_PER_CONVERSATION {
+                    return ToolResult {
+                        content: format!(
+                            "schedule_task: this conversation already has {mine} pending scheduled tasks (max {MAX_PENDING_PER_CONVERSATION}); cancel some first"
+                        ),
+                        is_error: true,
+                    };
+                }
+            }
         }
 
         match svc
@@ -1808,7 +2022,24 @@ impl AgenticLoop {
         agent_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
         run_context: Option<RunContext>,
     ) -> Result<String> {
+        let max_turns = self
+            .app_config
+            .as_ref()
+            .map(|c| c.agentic.max_turns)
+            .unwrap_or(crate::config::default_agentic_max_turns());
+        let mut turn: u32 = 0;
         loop {
+            turn += 1;
+            if turn > max_turns {
+                let msg = format!(
+                    "Agentic loop stopped: reached the maximum of {max_turns} turns for a single run."
+                );
+                tracing::warn!(max_turns, "Agentic loop turn cap reached (non-streaming)");
+                if let Some(tx) = agent_tx.as_ref() {
+                    let _ = tx.send(AgentUpdate::ModelError { error: msg.clone() });
+                }
+                return Ok(msg);
+            }
             let available_tools = self.build_available_tools(&run_context).await?;
 
             // P0c: same bounded-backoff retry as the streaming path.
@@ -2017,33 +2248,36 @@ impl AgenticLoop {
                         ),
                         is_error: true,
                     }
-                } else if tool_call.name == "schedule_task" {
-                    self.execute_schedule_task(&tool_call, run_context.as_ref()).await
-                } else if tool_call.name == "cancel_scheduled_task" {
-                    self.execute_cancel_scheduled_task(&tool_call).await
-                } else if tool_call.name == "list_scheduled_tasks" {
-                    self.execute_list_scheduled_tasks(&tool_call).await
-                } else if tool_call.name == "list_conversations" {
-                    self.execute_list_conversations(&tool_call).await
-                } else if tool_call.name == "get_conversation_messages" {
-                    self.execute_get_conversation_messages(&tool_call).await
-                } else if tool_call.name == "store_memory"
-                    || tool_call.name == "search_memory"
-                    || tool_call.name == "search_memory_by_category"
-                    || tool_call.name == "delete_memory"
+                } else if crate::tools_policy::INTERNAL_TOOL_NAMES.contains(&tool_call.name.as_str())
                 {
-                    self.execute_memory_tool(&tool_call, run_context.as_ref()).await
-                } else if tool_call.name == "search_attachment_chunks" {
-                    self.execute_attachment_search_tool(&tool_call, run_context.as_ref())
-                        .await
-                } else if tool_call.name == "vision_analyze" {
-                    self.execute_vision_analyze_tool(&tool_call, run_context.as_ref())
-                        .await
-                } else if tool_call.name == "search_history" {
-                    self.execute_search_history_tool(&tool_call).await
-                } else if tool_call.name == "publish_image" {
-                    self.execute_publish_image(&tool_call, run_context.as_ref())
-                        .await
+                    let internal_timeout = self.internal_tool_timeout(&tool_call.name);
+                    match timeout(
+                        internal_timeout,
+                        self.dispatch_internal_tool(&tool_call, run_context.as_ref()),
+                    )
+                    .await
+                    {
+                        Ok(Some(r)) => r,
+                        Ok(None) => {
+                            self.execute_tool_with_retry(tool_call.clone(), agent_tx.as_ref())
+                                .await
+                        }
+                        Err(_) => {
+                            tracing::error!(
+                                tool = %tool_call.name,
+                                timeout_secs = internal_timeout.as_secs(),
+                                "Internal tool call timed out"
+                            );
+                            ToolResult {
+                                content: format!(
+                                    "Internal tool '{}' timed out after {}s",
+                                    tool_call.name,
+                                    internal_timeout.as_secs()
+                                ),
+                                is_error: true,
+                            }
+                        }
+                    }
                 } else if let Some(r) = self.embedded_tools.dispatch(&tool_call).await {
                     r
                 } else {
@@ -2264,5 +2498,129 @@ mod vision_tool_tests {
         assert!(resolve_workspace_path(&root, "a.png").is_some());
         assert!(resolve_workspace_path(&root, "../etc/passwd").is_none());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn publish_source_confined_to_files_root() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+
+        let allowed_root = std::env::temp_dir().join(format!("luna_pub_ok_{pid}_{n}"));
+        let outside_root = std::env::temp_dir().join(format!("luna_pub_out_{pid}_{n}"));
+        std::fs::create_dir_all(&allowed_root).unwrap();
+        std::fs::create_dir_all(&outside_root).unwrap();
+        std::fs::write(allowed_root.join("in.png"), b"x").unwrap();
+        std::fs::write(outside_root.join("out.png"), b"x").unwrap();
+
+        let mut cfg = crate::config::AppConfig::default();
+        cfg.files.root = Some(allowed_root.to_string_lossy().to_string());
+
+        let inside = std::fs::canonicalize(allowed_root.join("in.png")).unwrap();
+        let outside = std::fs::canonicalize(outside_root.join("out.png")).unwrap();
+
+        assert!(publish_source_in_allowed_root(&cfg, &inside));
+        assert!(!publish_source_in_allowed_root(&cfg, &outside));
+
+        let _ = std::fs::remove_dir_all(&allowed_root);
+        let _ = std::fs::remove_dir_all(&outside_root);
+    }
+
+    #[test]
+    fn spawn_worker_args_enforce_profile_and_depth_limits() {
+        use crate::agentic::protocol::RunContext;
+        use crate::config::AttachmentRagConfig;
+        use crate::llm::ToolCall;
+
+        let mut cfg = crate::config::AppConfig::default();
+        cfg.profiles
+            .insert("coding".to_string(), crate::config::LlmProfile::default());
+
+        let run_ctx = |profile: &str, depth: u32| RunContext {
+            conversation_id: None,
+            profile_name: profile.to_string(),
+            allowed_tool_names: std::collections::HashSet::new(),
+            embedding_provider: None,
+            attachment_rag: AttachmentRagConfig::default(),
+            depth,
+        };
+        let call = |params: serde_json::Value| ToolCall {
+            id: "t".to_string(),
+            name: "spawn_worker".to_string(),
+            parameters: params,
+        };
+        let parent = run_ctx("openai", 0);
+
+        // Default: no override -> parent profile, depth incremented.
+        let (task, profile, depth) = parse_spawn_worker_args(
+            &call(serde_json::json!({"task": "x"})),
+            Some(&parent),
+            Some(&cfg),
+        )
+        .unwrap();
+        assert_eq!((task.as_str(), profile.as_str(), depth), ("x", "openai", 1));
+
+        // Default (worker_profiles unset): override to another profile rejected.
+        let err = parse_spawn_worker_args(
+            &call(serde_json::json!({"task": "x", "profile": "coding"})),
+            Some(&parent),
+            Some(&cfg),
+        )
+        .unwrap_err();
+        assert!(err.is_error && err.content.contains("not permitted"), "{err:?}");
+
+        // Override to the SAME profile is allowed (effective no-op).
+        let (_, profile, _) = parse_spawn_worker_args(
+            &call(serde_json::json!({"task": "x", "profile": "openai"})),
+            Some(&parent),
+            Some(&cfg),
+        )
+        .unwrap();
+        assert_eq!(profile, "openai");
+
+        // Unknown profile rejected regardless of allowlist.
+        let err = parse_spawn_worker_args(
+            &call(serde_json::json!({"task": "x", "profile": "nope"})),
+            Some(&parent),
+            Some(&cfg),
+        )
+        .unwrap_err();
+        assert!(err.content.contains("not configured"), "{err:?}");
+
+        // Explicit allowlist: listed profiles allowed, others (even the parent's) not.
+        cfg.agentic.worker_profiles = Some(vec!["coding".to_string()]);
+        let (_, profile, _) = parse_spawn_worker_args(
+            &call(serde_json::json!({"task": "x", "profile": "coding"})),
+            Some(&parent),
+            Some(&cfg),
+        )
+        .unwrap();
+        assert_eq!(profile, "coding");
+        assert!(parse_spawn_worker_args(
+            &call(serde_json::json!({"task": "x", "profile": "openai"})),
+            Some(&parent),
+            Some(&cfg),
+        )
+        .is_err());
+
+        // Depth cap: parent already at depth 1 with max_worker_depth 1 -> rejected.
+        let nested = run_ctx("openai", 1);
+        let err = parse_spawn_worker_args(
+            &call(serde_json::json!({"task": "x"})),
+            Some(&nested),
+            Some(&cfg),
+        )
+        .unwrap_err();
+        assert!(err.content.contains("nesting depth"), "{err:?}");
+
+        // max_worker_depth = 0 disables workers entirely.
+        cfg.agentic.max_worker_depth = 0;
+        assert!(parse_spawn_worker_args(
+            &call(serde_json::json!({"task": "x"})),
+            Some(&parent),
+            Some(&cfg),
+        )
+        .is_err());
     }
 }

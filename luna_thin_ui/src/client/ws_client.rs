@@ -100,7 +100,7 @@ impl LunaWsClient {
             Ok((ws_stream, response)) => {
                 tracing::info!("✅ WebSocket connected via wss:// (status: {})", response.status());
                 self.setup_connection(ws_stream).await;
-                return Ok(WsConnectResult::secure());
+                Ok(WsConnectResult::secure())
             }
             Err(e) => {
                 tracing::warn!("⚠️ Secure connection (wss://) failed: {}", e);
@@ -114,15 +114,15 @@ impl LunaWsClient {
                             response.status()
                         );
                         self.setup_connection(ws_stream).await;
-                        return Ok(WsConnectResult::insecure(
+                        Ok(WsConnectResult::insecure(
                             secure_failure,
                             &config.host,
                             config.port,
-                        ));
+                        ))
                     }
                     Err(fallback_err) => {
                         tracing::error!("❌ Both secure and insecure connections failed");
-                        return Err(fallback_err);
+                        Err(fallback_err)
                     }
                 }
             }

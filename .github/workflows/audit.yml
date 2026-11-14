@@ -1,0 +1,24 @@
+name: Scheduled Security Audit
+
+# Weekly supply-chain decay check. `cargo audit` on push/PR (check.yml) catches
+# regressions we introduce; this schedule catches newly-published advisories
+# against our already-locked dependencies so they don't silently accumulate
+# between releases (see audits/server-code-review-2026-11.md, SEC-1d).
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev pkg-config
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: cargo audit
+        run: unset ARGV0 && cargo audit

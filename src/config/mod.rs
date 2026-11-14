@@ -283,6 +283,29 @@ pub struct ServerConfig {
     pub wal_autocheckpoint: u32,
     #[serde(default = "default_sqlite_busy_timeout_ms")]
     pub sqlite_busy_timeout_ms: u64,
+    /// Minimum accepted length (in characters) for `api_key`. Startup refuses a
+    /// shorter key. Lower it (e.g. to 0) only if you understand the risk.
+    #[serde(default = "default_min_api_key_length")]
+    pub min_api_key_length: usize,
+    /// After this many failed auth attempts from one IP within the window,
+    /// further attempts are rejected with 429 until the window resets.
+    #[serde(default = "default_auth_rate_limit_max")]
+    pub auth_rate_limit_max: u32,
+    /// Sliding window (seconds) for auth failure rate limiting.
+    #[serde(default = "default_auth_rate_limit_window_secs")]
+    pub auth_rate_limit_window_secs: u64,
+}
+
+fn default_min_api_key_length() -> usize {
+    32
+}
+
+fn default_auth_rate_limit_max() -> u32 {
+    30
+}
+
+fn default_auth_rate_limit_window_secs() -> u64 {
+    300
 }
 
 fn default_server_enabled() -> bool {
@@ -320,6 +343,15 @@ impl ServerConfig {
                  Set a strong api_key in config.toml (and matching thin UI server_config.toml)."
                     .to_string(),
             );
+        }
+        let len = self.api_key.trim().chars().count();
+        if len < self.min_api_key_length {
+            return Err(format!(
+                "Refusing to start: [server].api_key is {len} characters; the minimum is {}. \
+                 Generate a strong key (e.g. `openssl rand -hex 32`) or, if you accept the risk, \
+                 lower [server].min_api_key_length.",
+                self.min_api_key_length
+            ));
         }
         Ok(())
     }
@@ -362,6 +394,9 @@ impl Default for ServerConfig {
             wal_enabled: default_wal_enabled(),
             wal_autocheckpoint: default_wal_autocheckpoint(),
             sqlite_busy_timeout_ms: default_sqlite_busy_timeout_ms(),
+            min_api_key_length: default_min_api_key_length(),
+            auth_rate_limit_max: default_auth_rate_limit_max(),
+            auth_rate_limit_window_secs: default_auth_rate_limit_window_secs(),
         }
     }
 }
@@ -881,6 +916,59 @@ impl Default for DeepSleepConfig {
     }
 }
 
+// ── Agentic loop security limits ──
+
+fn default_agentic_max_worker_depth() -> u32 {
+    1
+}
+
+pub fn default_agentic_max_turns() -> u32 {
+    50
+}
+
+fn default_agentic_worker_timeout_secs() -> u64 {
+    600
+}
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct AgenticConfig {
+    /// Escape hatch: when true, `publish_image` may read ANY path readable by
+    /// the server (legacy behavior). Default false confines sources to the
+    /// uploads dir and `files.root`.
+    #[serde(default)]
+    pub publish_image_unrestricted_sources: bool,
+    /// Profiles `spawn_worker` may be asked to run under. `None` (default)
+    /// restricts workers to the parent run's current profile — the model cannot
+    /// escalate to a more privileged profile's tools policy. An explicit list
+    /// (possibly empty) is an allowlist of overridable profile names.
+    #[serde(default)]
+    pub worker_profiles: Option<Vec<String>>,
+    /// Maximum `spawn_worker` nesting depth (workers spawning workers).
+    /// 0 disables spawning workers entirely; default 1 (no nesting).
+    #[serde(default = "default_agentic_max_worker_depth")]
+    pub max_worker_depth: u32,
+    /// Per-call timeout for `spawn_worker` (workers legitimately run longer
+    /// than regular tool calls).
+    #[serde(default = "default_agentic_worker_timeout_secs")]
+    pub worker_timeout_secs: u64,
+    /// Maximum agentic turns (LLM round-trips) per run before the loop stops
+    /// with an error. Guards against runaway tool loops.
+    #[serde(default = "default_agentic_max_turns")]
+    pub max_turns: u32,
+}
+
+impl Default for AgenticConfig {
+    fn default() -> Self {
+        Self {
+            publish_image_unrestricted_sources: false,
+            worker_profiles: None,
+            max_worker_depth: default_agentic_max_worker_depth(),
+            worker_timeout_secs: default_agentic_worker_timeout_secs(),
+            max_turns: default_agentic_max_turns(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct AppConfig {
     pub default: String,
@@ -913,6 +1001,8 @@ pub struct AppConfig {
     pub files: FilesConfig,
     #[serde(default)]
     pub vision: VisionConfig,
+    #[serde(default)]
+    pub agentic: AgenticConfig,
 }
 
 impl Default for AppConfig {
@@ -960,6 +1050,7 @@ impl Default for AppConfig {
             attachment_rag: AttachmentRagConfig::default(),
             files: FilesConfig::default(),
             vision: VisionConfig::default(),
+            agentic: AgenticConfig::default(),
         }
     }
 }
@@ -1135,8 +1226,23 @@ mod tests {
         cfg.api_key = "luna".into();
         assert!(cfg.is_weak_api_key());
 
-        cfg.api_key = "a-strong-random-key".into();
+        cfg.api_key = "a-strong-random-key-that-is-long-enough-32".into();
         assert!(!cfg.is_weak_api_key());
+        assert!(cfg.validate_security().is_ok());
+    }
+
+    #[test]
+    fn rejects_short_api_keys_unless_lowered() {
+        let mut cfg = ServerConfig {
+            api_key: "a-strong-random-key".into(), // 19 chars < 32
+            ..Default::default()
+        };
+        assert!(!cfg.is_weak_api_key());
+        let err = cfg.validate_security().unwrap_err();
+        assert!(err.contains("minimum is 32"), "{err}");
+
+        // Escape hatch: lower the floor.
+        cfg.min_api_key_length = 16;
         assert!(cfg.validate_security().is_ok());
     }
 

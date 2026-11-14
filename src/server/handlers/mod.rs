@@ -14,7 +14,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
-use tokio::sync::{mpsc::UnboundedSender, Mutex, RwLock};
+use tokio::sync::{mpsc::Sender, Mutex, RwLock};
 use uuid::Uuid;
 
 mod agent;
@@ -32,6 +32,8 @@ pub struct ServerContext {
     pub server_cfg: Arc<crate::config::ServerConfig>,
     /// Ephemeral token for static file URLs (not the permanent API key).
     pub static_token: String,
+    /// Per-IP auth failure throttle (brute-force slowdown).
+    pub auth_throttle: Arc<crate::server::http::AuthThrottle>,
     pub prompt_manager: PromptManager,
     pub storage: Arc<Mutex<Storage>>,
     pub mcp_registry: Arc<RwLock<MCPServerRegistry>>,
@@ -120,14 +122,14 @@ pub struct ServerHandler {
     pub ctx: Arc<ServerContext>,
     pub session: SessionState,
     pub connection_id: ConnectionId,
-    outbound: UnboundedSender<ServerEvent>,
+    outbound: Sender<ServerEvent>,
 }
 
 impl ServerHandler {
     pub fn new(
         ctx: Arc<ServerContext>,
         connection_id: ConnectionId,
-        outbound: UnboundedSender<ServerEvent>,
+        outbound: Sender<ServerEvent>,
     ) -> Result<Self> {
         Ok(Self {
             session: SessionState::new(&ctx.config, &ctx.default_allowed_tool_names)?,
@@ -212,9 +214,14 @@ impl ServerHandler {
     }
 
     fn send_event(&self, event: ServerEvent) -> Result<()> {
-        self.outbound
-            .send(event)
-            .map_err(|_| anyhow!("WebSocket outbound channel closed"))
+        self.outbound.try_send(event).map_err(|e| match e {
+            tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                anyhow!("WebSocket outbound queue full (client too slow); event dropped")
+            }
+            tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                anyhow!("WebSocket outbound channel closed")
+            }
+        })
     }
 
     async fn handle_health(&self) -> Result<()> {

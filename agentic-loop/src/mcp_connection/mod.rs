@@ -224,6 +224,8 @@ mod tests {
 
     //WARNING: This test will run the command "uvx mcp-shell-server" - It will fail if uvx is not installed or not in the path!
     #[tokio::test]
+    #[ignore = "integration test: spawns a real `uvx mcp-shell-server` (requires uv/uvx on PATH + \
+                network to fetch the package). Run manually with `cargo test -p agentic-loop -- --ignored`."]
     async fn test_mcp_tool_flow() {
         //Step 1: Connect to the MCP server
         let mut mcp_connection = MCPConnection::new("test_mcp_server".into(), MCPServerConfig {

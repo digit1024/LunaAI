@@ -11,6 +11,26 @@ use crate::{
     llm::{Attachment, ToolCall},
 };
 
+/// Build a safe FTS5 MATCH expression from raw user text.
+///
+/// User input passed directly to `MATCH` makes FTS5 raise query-syntax errors
+/// for inputs like `"foo`, `NEAR(a b)`, `col:x` or a bare `*`, which surface as
+/// server errors. Quote each whitespace-separated token (doubling any embedded
+/// `"`) and OR them together, so any input becomes a valid literal query.
+/// Trade-off: advanced FTS operators (prefix `*`, `AND`, column filters) are
+/// treated as literal text. Returns None when there are no tokens.
+fn fts_match_query(raw: &str) -> Option<String> {
+    let tokens: Vec<String> = raw
+        .split_whitespace()
+        .map(|tok| format!("\"{}\"", tok.replace('"', "\"\"")))
+        .collect();
+    if tokens.is_empty() {
+        None
+    } else {
+        Some(tokens.join(" OR "))
+    }
+}
+
 // Load sqlite-vec extension for memory vector search (must be called before opening any connection)
 fn load_sqlite_vec_extension() {
     // SAFETY: `sqlite3_vec_init` is the official sqlite-vec entry point with the
@@ -169,7 +189,10 @@ impl From<&ServerConfig> for SqliteSettings {
 }
 
 impl SqliteStorage {
-    /// Create a new SQLite storage instance
+    /// Create a new SQLite storage instance with default settings.
+    /// Convenience constructor used by tests and library consumers; the server
+    /// uses `new_with_settings` directly.
+    #[allow(dead_code)]
     pub fn new<P: AsRef<Path>>(db_path: P) -> SqliteResult<Self> {
         Self::new_with_settings(db_path, &SqliteSettings::default())
     }
@@ -886,7 +909,12 @@ impl SqliteStorage {
         };
         let mut stmt = self.conn.prepare(sql)?;
 
-        let snippet_iter = stmt.query_map(params![query, limit as i64], |row| {
+        // Escape raw user input into a safe FTS5 MATCH expression (BUG-4):
+        // unescaped FTS syntax (`"`, `NEAR(`, `col:`, `*`) used to error out.
+        let Some(match_query) = fts_match_query(query) else {
+            return Ok(Vec::new());
+        };
+        let snippet_iter = stmt.query_map(params![match_query, limit as i64], |row| {
             Ok(Snippet {
                 conversation_id: row.get(0)?,
                 content: row.get(1)?,
@@ -927,12 +955,28 @@ impl SqliteStorage {
         Ok(changes > 0)
     }
 
+    /// Replace the stored attachments JSON for a single message row. Used when
+    /// auxiliary enrichment (e.g. vision descriptions) arrives after the user
+    /// message was already persisted and acked to the client.
+    pub fn update_message_attachments(
+        &self,
+        message_id: i64,
+        attachments: &[Attachment],
+    ) -> SqliteResult<bool> {
+        let json = serde_json::to_string(attachments)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+        let changes = self.conn.execute(
+            "UPDATE messages SET attachments_json = ?1 WHERE id = ?2",
+            params![json, message_id],
+        )?;
+        Ok(changes > 0)
+    }
+
     /// Delete messages by IDs (used during summarization)
     pub fn delete_messages(&self, message_ids: &[i64]) -> SqliteResult<usize> {
         if message_ids.is_empty() {
             return Ok(0);
         }
-
         // Build placeholders for IN clause
         let placeholders: String = message_ids
             .iter()
@@ -974,17 +1018,6 @@ impl SqliteStorage {
             target_rowid
         );
         Ok(changes)
-    }
-
-    /// Legacy truncate - deprecated, use truncate_conversation_by_rowid via storage_wrapper
-    #[allow(dead_code)]
-    pub fn truncate_conversation(
-        &self,
-        _conversation_id: &str,
-        _message_id: &str,
-    ) -> SqliteResult<usize> {
-        // This should not be called - truncate should go through storage_wrapper which handles UUID matching
-        Ok(0)
     }
 
     /// Perform summarization: mark old messages as summarized and insert summary
@@ -1209,15 +1242,10 @@ impl SqliteStorage {
         limit: usize,
         offset: usize,
     ) -> SqliteResult<Vec<MemoryEntry>> {
-        let fts_query: String = keywords
-            .iter()
-            .filter(|s| !s.is_empty())
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(" OR ");
-        if fts_query.is_empty() {
+        // Escape raw keywords into a safe FTS5 MATCH expression (BUG-4).
+        let Some(fts_query) = fts_match_query(&keywords.join(" ")) else {
             return Ok(Vec::new());
-        }
+        };
         let mut stmt = self.conn.prepare(
             "SELECT m.id, m.content, m.category, m.importance, m.created_at, m.updated_at
              FROM memory m
@@ -1844,6 +1872,19 @@ impl SqliteStorage {
         Ok(changes > 0)
     }
 
+    /// Recover jobs left in 'running' state by a crash/restart: return them to
+    /// 'pending' so the scheduler picks them up again (at-least-once semantics).
+    /// Returns the number of recovered rows. Called once at startup.
+    pub fn recover_stuck_running_jobs(&self, now_utc_secs: i64) -> SqliteResult<usize> {
+        let changes = self.conn.execute(
+            "UPDATE scheduled_jobs SET status = 'pending', updated_at_utc_secs = ?1, \
+             error_message = 'recovered: server restarted while job was running' \
+             WHERE status = 'running'",
+            params![now_utc_secs],
+        )?;
+        Ok(changes)
+    }
+
     /// Mark job completed or failed
     pub fn set_scheduled_job_completed(
         &self,
@@ -2299,6 +2340,98 @@ mod tests {
         assert!(storage.set_conversation_internal(&public_id, false)?);
         let after_unmark = storage.list_conversations_paginated(None, None, false)?;
         assert_eq!(after_unmark.len(), 1);
+
+        let _ = fs::remove_file(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn stuck_running_jobs_recovered_to_pending() -> SqliteResult<()> {
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join("test_sched_recover.db");
+        let _ = fs::remove_file(&db_path);
+
+        let storage = SqliteStorage::new(&db_path)?;
+        let now = 1_700_000_000i64;
+
+        let job = ScheduledJob {
+            id: "job-stuck".to_string(),
+            conversation_id: None,
+            run_at_utc_secs: now - 60,
+            message: "do the thing".to_string(),
+            profile_name: None,
+            title: None,
+            status: "pending".to_string(),
+            created_at_utc_secs: now - 120,
+            updated_at_utc_secs: now - 120,
+            error_message: None,
+            schedule: None,
+        };
+        storage.insert_scheduled_job(&job)?;
+
+        // Simulate the scheduler taking the job, then the process crashing.
+        assert!(storage.set_scheduled_job_running(&job.id, now)?);
+        assert!(storage
+            .get_due_scheduled_jobs(now + 1000, 10)?
+            .is_empty(), "running job must not be re-picked before recovery");
+
+        // Startup recovery returns it to 'pending' so it can run again.
+        let recovered = storage.recover_stuck_running_jobs(now + 1)?;
+        assert_eq!(recovered, 1);
+        let due = storage.get_due_scheduled_jobs(now + 1000, 10)?;
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].id, job.id);
+
+        // Idempotent: nothing left to recover.
+        assert_eq!(storage.recover_stuck_running_jobs(now + 2)?, 0);
+
+        let _ = fs::remove_file(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn fts_query_escapes_user_input() {
+        assert_eq!(
+            fts_match_query("hello world").as_deref(),
+            Some("\"hello\" OR \"world\"")
+        );
+        assert_eq!(
+            fts_match_query("say \"hi\"").as_deref(),
+            Some("\"say\" OR \"\"\"hi\"\"\"")
+        );
+        assert_eq!(fts_match_query("NEAR(a b)").as_deref(), Some("\"NEAR(a\" OR \"b)\""));
+        assert!(fts_match_query("   ").is_none());
+        assert!(fts_match_query("").is_none());
+    }
+
+    #[test]
+    fn search_with_fts_syntax_chars_does_not_error() -> SqliteResult<()> {
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join(format!("test_fts_escape_{}.db", std::process::id()));
+        let _ = fs::remove_file(&db_path);
+
+        let storage = SqliteStorage::new(&db_path)?;
+        let conv = storage.insert_conversation_with_profile("FTS", None, false)?;
+        storage.insert_message_with_metadata(
+            &conv,
+            "user",
+            "hello world",
+            None,
+            &MessageMetadata::default(),
+        )?;
+
+        // These raw inputs used to raise FTS5 syntax errors; now they are
+        // escaped into literal phrase queries and simply match nothing.
+        for q in ["\"unbalanced", "NEAR(a b)", "*", "col:foo", "a\"b", "-x", "^y"] {
+            let r = storage.search_history(q, 10, false);
+            assert!(r.is_ok(), "query {q:?} errored: {:?}", r.err());
+        }
+        // Normal search still works.
+        assert_eq!(storage.search_history("hello", 10, false)?.len(), 1);
+
+        // Memory search path is escaped too.
+        let r = storage.search_memory_paginated(&["\"weird".to_string(), "NEAR(a".to_string()], 10, 0);
+        assert!(r.is_ok(), "memory search errored: {:?}", r.err());
 
         let _ = fs::remove_file(&db_path);
         Ok(())

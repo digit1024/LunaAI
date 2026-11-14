@@ -10,5 +10,8 @@ pub const MAX_DOC_BYTES: u64 = 100 * 1024 * 1024;
 pub const MAX_TEXT_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Hard ceiling on the multipart upload body (bytes); the outer bound that
-/// per-type caps sit under.
-pub const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
+/// per-type caps sit under. Must be >= the largest per-type cap
+/// (`MAX_DOC_BYTES`) plus multipart framing overhead, otherwise that cap is
+/// unreachable and larger documents are rejected with a confusing 413 at the
+/// transport layer instead of the per-type policy check.
+pub const MAX_UPLOAD_BYTES: usize = MAX_DOC_BYTES as usize + 1024 * 1024;

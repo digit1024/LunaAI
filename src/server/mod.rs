@@ -71,11 +71,64 @@ async fn launch(options: ServerOptions) -> Result<()> {
         .context("failed to bind server")?;
     tracing::info!(address = %bind_addr, "Luna server listening (HTTP + WebSocket on /ws)");
 
-    let app = http::create_http_router(ctx);
-    axum::serve(listener, app)
-        .await
-        .context("server error")?;
+    let app = http::create_http_router(ctx.clone());
+    // Serve with connect info so the auth middleware can rate-limit failures
+    // per client IP (brute-force slowdown on exposed interfaces).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("server error")?;
+
+    // Sockets have drained; abort any in-flight agent runs so nothing keeps
+    // writing to storage after shutdown (they would otherwise be killed
+    // mid-write when the runtime drops, leaving incomplete tool tails).
+    {
+        let mut runs = ctx.active_agent_runs.write().await;
+        for (conv_id, abort) in runs.drain() {
+            tracing::info!(conversation_id = %conv_id, "Aborting active agent run for shutdown");
+            abort.abort();
+        }
+    }
+    tracing::info!("Luna server stopped");
     Ok(())
+}
+
+/// Resolves when the process is asked to stop: Ctrl-C (SIGINT) or SIGTERM
+/// (systemd / containers). On non-Unix platforms only Ctrl-C is available.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to install Ctrl-C handler");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                let _ = sig.recv().await;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to install SIGTERM handler");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    tracing::info!("Shutdown signal received; draining in-flight requests...");
 }
 
 fn load_config_or_default(path: Option<&PathBuf>) -> AppConfig {
@@ -132,14 +185,17 @@ fn build_sqlite_and_embedding_settings(
 }
 
 async fn init_storage(sqlite_settings: SqliteSettings) -> Result<Arc<Mutex<Storage>>> {
-    let storage = Storage::new_default_with_settings(sqlite_settings.clone())
-        .or_else(|err| {
-            tracing::error!("SQLite init failed: {}. Using temp db.", err);
-            Storage::new_with_settings(
-                std::env::temp_dir().join("cosmic_llm_server.db"),
-                sqlite_settings,
-            )
-        })?;
+    // Fail fast. Silently falling back to a predictable temp-dir DB lets another
+    // local user pre-create or symlink that path (data leak / corruption) and
+    // masks real failures (e.g. disk full, bad permissions) as "lost history".
+    // Surface the error and refuse to start instead.
+    let storage = Storage::new_default_with_settings(sqlite_settings).map_err(|err| {
+        anyhow::anyhow!(
+            "Failed to open the SQLite database: {err}. Check the data directory \
+             permissions and available disk space. Refusing to fall back to a \
+             temp-dir database."
+        )
+    })?;
 
     Ok(Arc::new(Mutex::new(storage)))
 }
@@ -147,7 +203,8 @@ async fn init_storage(sqlite_settings: SqliteSettings) -> Result<Arc<Mutex<Stora
 fn init_llm_audit_writer(
     storage: Arc<Mutex<Storage>>,
 ) -> Arc<dyn crate::llm::LlmObserver> {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::llm::LlmCallRecord>();
+    let (tx, mut rx) =
+        tokio::sync::mpsc::channel::<crate::llm::LlmCallRecord>(LLM_AUDIT_CHANNEL_CAP);
     let observer: Arc<dyn crate::llm::LlmObserver> =
         Arc::new(LlmCallAuditObserver { tx });
 
@@ -183,6 +240,10 @@ fn build_server_context(
         config: config.clone(),
         server_cfg: Arc::new(config.server.clone()),
         static_token: Uuid::new_v4().to_string(),
+        auth_throttle: Arc::new(http::AuthThrottle::new(
+            config.server.auth_rate_limit_max,
+            config.server.auth_rate_limit_window_secs,
+        )),
         prompt_manager,
         storage: storage.clone(),
         mcp_registry,
@@ -322,6 +383,20 @@ const SCHEDULER_BATCH_LIMIT: u32 = 10;
 
 fn spawn_scheduler_loop(ctx: Arc<ServerContext>) {
     tokio::spawn(async move {
+        // Recover jobs left in 'running' by a previous crash/restart before
+        // scheduling anything new, so they don't stay stuck forever.
+        {
+            let storage = ctx.storage.lock().await;
+            match storage.recover_stuck_running_jobs(Utc::now().timestamp()) {
+                Ok(0) => {}
+                Ok(n) => tracing::warn!(
+                    count = n,
+                    "Scheduler: recovered jobs stuck in 'running' after restart"
+                ),
+                Err(e) => tracing::warn!(error = %e, "Scheduler: failed to recover stuck jobs"),
+            }
+        }
+
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(SCHEDULER_INTERVAL_SECS));
         interval.tick().await;
         loop {
@@ -352,15 +427,36 @@ fn spawn_scheduler_loop(ctx: Arc<ServerContext>) {
                     continue;
                 }
                 let job_id = job.id.clone();
-                if let Err(e) = run_scheduled_task(ctx.clone(), job).await {
-                    tracing::warn!("Scheduler: run_scheduled_task failed: {}", e);
-                    let storage = ctx.storage.lock().await;
-                    let _ = storage.set_scheduled_job_completed(
-                        &job_id,
-                        Utc::now().timestamp(),
-                        true,
-                        Some(&e.to_string()),
-                    );
+                // Run each job in its own task so a panic inside a job cannot
+                // kill the scheduler loop or leave the row stuck in 'running'.
+                let job_ctx = ctx.clone();
+                let handle = tokio::spawn(async move { run_scheduled_task(job_ctx, job).await });
+                match handle.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        tracing::warn!("Scheduler: run_scheduled_task failed: {}", e);
+                        let storage = ctx.storage.lock().await;
+                        let _ = storage.set_scheduled_job_completed(
+                            &job_id,
+                            Utc::now().timestamp(),
+                            true,
+                            Some(&e.to_string()),
+                        );
+                    }
+                    Err(join_err) => {
+                        tracing::error!(
+                            job_id = %job_id,
+                            error = %join_err,
+                            "Scheduler: job task panicked; marking job failed"
+                        );
+                        let storage = ctx.storage.lock().await;
+                        let _ = storage.set_scheduled_job_completed(
+                            &job_id,
+                            Utc::now().timestamp(),
+                            true,
+                            Some("Job task panicked"),
+                        );
+                    }
                 }
             }
         }
@@ -433,17 +529,29 @@ fn spawn_deep_sleep_loop(ctx: Arc<ServerContext>) {
 ///
 /// `LlmCallSpan` finishes are synchronous (they fire from `Drop` too),
 /// so we cannot acquire a `tokio::Mutex` lock from inside `record()`.
-/// Instead, every record is pushed to an unbounded channel and a single
-/// background task drains it into SQLite. Audit log failures are warned
-/// but never propagated — the LLM hot path must not depend on this.
+/// Instead, every record is pushed to a bounded channel and a single
+/// background task drains it into SQLite. The channel is bounded so a stalled
+/// writer cannot grow memory without limit; under sustained backpressure the
+/// newest audit records are dropped with a warning (audit data is best-effort —
+/// the LLM hot path must never depend on it).
 struct LlmCallAuditObserver {
-    tx: tokio::sync::mpsc::UnboundedSender<crate::llm::LlmCallRecord>,
+    tx: tokio::sync::mpsc::Sender<crate::llm::LlmCallRecord>,
 }
+
+/// Capacity of the bounded LLM-audit channel.
+const LLM_AUDIT_CHANNEL_CAP: usize = 8192;
 
 impl crate::llm::LlmObserver for LlmCallAuditObserver {
     fn record(&self, record: crate::llm::LlmCallRecord) {
-        if let Err(err) = self.tx.send(record) {
-            tracing::warn!(error = %err, "LLM audit log receiver dropped; record lost");
+        use tokio::sync::mpsc::error::TrySendError;
+        match self.tx.try_send(record) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                tracing::warn!("LLM audit queue full; dropping audit record (best-effort log)");
+            }
+            Err(TrySendError::Closed(_)) => {
+                tracing::warn!("LLM audit log receiver dropped; record lost");
+            }
         }
     }
 }

@@ -6,9 +6,9 @@ use axum::{
     body::Body,
     extract::{
         ws::WebSocketUpgrade,
-        DefaultBodyLimit, Path, Request, State,
+        ConnectInfo, DefaultBodyLimit, Path, Request, State,
     },
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Json, Response},
     routing::{delete, get, post},
@@ -17,9 +17,11 @@ use axum::{
 use futures::stream;
 use multer::Multipart;
 use serde::Serialize;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Component, Path as StdPath, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
@@ -87,15 +89,164 @@ fn ct_eq_str(a: &str, b: &str) -> bool {
     bool::from(a.as_bytes().ct_eq(b.as_bytes()))
 }
 
+/// Security headers for responses that carry user-supplied content:
+/// no MIME sniffing, no caching by intermediaries, and scriptable formats
+/// (SVG/HTML) forced to download instead of rendering inline.
+fn insert_content_headers(headers: &mut HeaderMap, mime: &str) {
+    if let Ok(v) = HeaderValue::from_str(mime) {
+        headers.insert(header::CONTENT_TYPE, v);
+    }
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store"),
+    );
+    let disposition = if mime.eq_ignore_ascii_case("image/svg+xml")
+        || mime.to_ascii_lowercase().starts_with("text/html")
+    {
+        "attachment"
+    } else {
+        "inline"
+    };
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_static(disposition),
+    );
+}
+
+/// Parse the `boundary` parameter out of a `multipart/form-data` Content-Type
+/// value. Handles any parameter order, case variations and quoted values
+/// (a plain `strip_prefix` parse rejected all of these).
+fn parse_multipart_boundary(content_type: &str) -> Option<String> {
+    let mut parts = content_type.split(';');
+    if !parts.next()?.trim().eq_ignore_ascii_case("multipart/form-data") {
+        return None;
+    }
+    for param in parts {
+        let Some((name, value)) = param.split_once('=') else {
+            continue;
+        };
+        if !name.trim().eq_ignore_ascii_case("boundary") {
+            continue;
+        }
+        let value = value.trim();
+        let value = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .unwrap_or(value);
+        if value.is_empty() {
+            return None;
+        }
+        return Some(value.to_string());
+    }
+    None
+}
+
 async fn require_api_key(
     State(ctx): State<Arc<ServerContext>>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    // Client IP is injected into request extensions when served via
+    // `into_make_service_with_connect_info`. When absent (e.g. router-level
+    // tests) throttling is skipped but auth is still enforced.
+    let ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| addr.ip());
+
+    if let Some(ip) = ip {
+        if ctx.auth_throttle.is_throttled(ip) {
+            return Err(StatusCode::TOO_MANY_REQUESTS);
+        }
+    }
+
     if !authorize(request.headers(), &ctx.server_cfg.api_key) {
+        if let Some(ip) = ip {
+            if ctx.auth_throttle.record_failure(ip) {
+                tracing::warn!(
+                    %ip,
+                    "Too many failed auth attempts from this IP; rejecting with 429 until the window resets"
+                );
+            }
+        }
         return Err(StatusCode::UNAUTHORIZED);
     }
+
+    if let Some(ip) = ip {
+        ctx.auth_throttle.clear(ip);
+    }
     Ok(next.run(request).await)
+}
+
+/// Per-IP authentication-failure throttle. After `max` failed attempts within
+/// `window_secs`, further requests from that IP are rejected with 429 until the
+/// window rolls over. Slows down API-key brute forcing when the server is
+/// exposed to a network (default bind is loopback; see [server].host).
+pub struct AuthThrottle {
+    max: u32,
+    window_secs: u64,
+    /// ip -> (failure count, window start unix secs). Plain std Mutex: never
+    /// held across an await.
+    state: std::sync::Mutex<HashMap<IpAddr, (u32, u64)>>,
+}
+
+impl AuthThrottle {
+    pub fn new(max: u32, window_secs: u64) -> Self {
+        Self {
+            max,
+            window_secs,
+            state: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    /// Record a failed attempt; returns true when the IP just crossed the limit.
+    pub fn record_failure(&self, ip: IpAddr) -> bool {
+        let now = Self::now_secs();
+        let mut map = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let count = {
+            let entry = map.entry(ip).or_insert((0, now));
+            if now.saturating_sub(entry.1) >= self.window_secs {
+                *entry = (0, now);
+            }
+            entry.0 = entry.0.saturating_add(1);
+            entry.0
+        };
+        // Opportunistic cleanup so the map stays bounded under spoofed/rotating
+        // sources; only kicks in at a size no single user would reach.
+        if map.len() > 4096 {
+            map.retain(|_, (_, start)| now.saturating_sub(*start) < self.window_secs);
+        }
+        count >= self.max
+    }
+
+    /// True when this IP is currently over the failure limit within its window.
+    pub fn is_throttled(&self, ip: IpAddr) -> bool {
+        let now = Self::now_secs();
+        let map = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        match map.get(&ip) {
+            Some((count, start)) => {
+                now.saturating_sub(*start) < self.window_secs && *count >= self.max
+            }
+            None => false,
+        }
+    }
+
+    /// Forget failures for an IP after a successful authentication.
+    pub fn clear(&self, ip: IpAddr) {
+        let mut map = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        map.remove(&ip);
+    }
 }
 
 type UploadError = (StatusCode, String);
@@ -111,9 +262,8 @@ pub async fn attach_file_handler(
         .get(header::CONTENT_TYPE)
         .and_then(|ct| ct.to_str().ok())
         .ok_or_else(|| bad_request("Missing Content-Type"))?;
-    let boundary = content_type
-        .strip_prefix("multipart/form-data; boundary=")
-        .ok_or_else(|| bad_request("Expected multipart/form-data"))?;
+    let boundary = parse_multipart_boundary(content_type)
+        .ok_or_else(|| bad_request("Expected multipart/form-data with a boundary"))?;
 
     let body_bytes = axum::body::to_bytes(body, MAX_UPLOAD_BYTES)
         .await
@@ -284,7 +434,9 @@ pub async fn attachment_file_handler(
     let mime = crate::llm::mime::sniff(&bytes)
         .map(|s| s.mime)
         .unwrap_or("application/octet-stream");
-    Ok(([(header::CONTENT_TYPE, mime)], bytes).into_response())
+    let mut resp_headers = HeaderMap::new();
+    insert_content_headers(&mut resp_headers, mime);
+    Ok((resp_headers, bytes).into_response())
 }
 
 pub async fn remove_file_handler(
@@ -394,16 +546,22 @@ pub async fn ws_handler(
     State(ctx): State<Arc<ServerContext>>,
 ) -> Response {
     let ctx = ctx.clone();
-    ws.on_upgrade(move |socket| async move {
-        if let Err(e) = websocket::handle_ws_upgraded(socket, ctx).await {
-            tracing::warn!("WebSocket connection error: {}", e);
-        }
-    })
-    .into_response()
+    // Enforce size caps at the transport layer: without these, tungstenite
+    // buffers up to its 64 MiB message / 16 MiB frame defaults before the
+    // app-level check in the read loop ever sees the message (memory DoS).
+    ws.max_message_size(websocket::MAX_WS_TEXT_BYTES)
+        .max_frame_size(websocket::MAX_WS_FRAME_BYTES)
+        .max_write_buffer_size(websocket::MAX_WS_WRITE_BUFFER_BYTES)
+        .on_upgrade(move |socket| async move {
+            if let Err(e) = websocket::handle_ws_upgraded(socket, ctx).await {
+                tracing::warn!("WebSocket connection error: {}", e);
+            }
+        })
+        .into_response()
 }
 
 /// Resolve `path` under `static_base` without escaping via `..`, absolute segments, or symlinks.
-fn resolve_static_path(static_base: &StdPath, path: &str) -> Option<PathBuf> {
+async fn resolve_static_path(static_base: &StdPath, path: &str) -> Option<PathBuf> {
     let path = path.trim_start_matches('/');
     if path.is_empty() {
         return None;
@@ -416,8 +574,8 @@ fn resolve_static_path(static_base: &StdPath, path: &str) -> Option<PathBuf> {
             _ => return None,
         }
     }
-    let base_canon = std::fs::canonicalize(static_base).ok()?;
-    let full_canon = std::fs::canonicalize(&joined).ok()?;
+    let base_canon = tokio::fs::canonicalize(static_base).await.ok()?;
+    let full_canon = tokio::fs::canonicalize(&joined).await.ok()?;
     if !full_canon.starts_with(&base_canon) {
         return None;
     }
@@ -434,7 +592,7 @@ pub async fn static_file_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
     let static_base = ctx.config.static_dir();
-    let Some(full_path) = resolve_static_path(&static_base, &path) else {
+    let Some(full_path) = resolve_static_path(&static_base, &path).await else {
         return (StatusCode::NOT_FOUND, "Not found").into_response();
     };
     let meta = match tokio::fs::metadata(&full_path).await {
@@ -449,11 +607,17 @@ pub async fn static_file_handler(
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file").into_response(),
     };
     let mime_type = mime_guess::from_path(&full_path).first_or_octet_stream();
-    (
-        [(header::CONTENT_TYPE, mime_type.as_ref())],
-        body,
-    )
-        .into_response()
+    let mut resp_headers = HeaderMap::new();
+    insert_content_headers(&mut resp_headers, mime_type.as_ref());
+    if mime_type.as_ref() == "image/svg+xml" {
+        // Defense in depth for user-published SVGs: sandbox neutralizes any
+        // embedded script even if the file is opened directly in a browser.
+        resp_headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("sandbox"),
+        );
+    }
+    (resp_headers, body).into_response()
 }
 
 pub fn create_http_router(ctx: Arc<ServerContext>) -> Router {
@@ -514,6 +678,101 @@ mod tests {
         assert!(!upload_policy::filename_matches(uid, uid));
     }
 
+    #[test]
+    fn parses_multipart_boundary_variants() {        // Standard form
+        assert_eq!(
+            parse_multipart_boundary("multipart/form-data; boundary=abc123").as_deref(),
+            Some("abc123")
+        );
+        // Quoted boundary
+        assert_eq!(
+            parse_multipart_boundary("multipart/form-data; boundary=\"quoted-x\"").as_deref(),
+            Some("quoted-x")
+        );
+        // Case variations + extra parameters before boundary
+        assert_eq!(
+            parse_multipart_boundary("Multipart/Form-Data; charset=utf-8; boundary=xyz").as_deref(),
+            Some("xyz")
+        );
+        // Wrong media type / missing / empty
+        assert_eq!(parse_multipart_boundary("application/json; boundary=abc"), None);
+        assert_eq!(parse_multipart_boundary("multipart/form-data"), None);
+        assert_eq!(parse_multipart_boundary("multipart/form-data; boundary=\"\""), None);
+        assert_eq!(parse_multipart_boundary("multipart/form-data; boundary="), None);
+    }
+
+    #[test]
+    fn auth_throttle_locks_after_max_failures() {
+        let throttle = AuthThrottle::new(3, 60);
+        let ip: IpAddr = "10.1.2.3".parse().unwrap();
+        let other: IpAddr = "10.1.2.4".parse().unwrap();
+
+        assert!(!throttle.is_throttled(ip));
+        assert!(!throttle.record_failure(ip)); // 1
+        assert!(!throttle.record_failure(ip)); // 2
+        assert!(throttle.record_failure(ip)); // 3 -> crosses the limit
+        assert!(throttle.is_throttled(ip));
+        // Other IPs are unaffected.
+        assert!(!throttle.is_throttled(other));
+
+        // A successful auth clears the counter.
+        throttle.clear(ip);
+        assert!(!throttle.is_throttled(ip));
+        assert!(!throttle.record_failure(ip));
+    }
+
+    #[tokio::test]
+    async fn auth_throttle_returns_429_after_repeated_failures() {
+        use std::net::{Ipv4Addr, SocketAddrV4};
+        use tower::ServiceExt;
+
+        let ctx = test_ctx_with("test-key-0123456789abcdef", 2);
+        let app = create_http_router(ctx);
+        let peer = ConnectInfo(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(203, 0, 113, 9),
+            1234,
+        )));
+
+        let bad = || {
+            Request::builder()
+                .uri("/api/mcp-servers")
+                .extension(peer)
+                .header("x-api-key", "wrong")
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        // First two wrong-key attempts: 401. Third crosses the limit: 429.
+        assert_eq!(
+            app.clone().oneshot(bad()).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            app.clone().oneshot(bad()).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            app.clone().oneshot(bad()).await.unwrap().status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+
+        // Throttle is per-IP: a correct key from a different IP still works.
+        let other = ConnectInfo(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(198, 51, 100, 7),
+            1,
+        )));
+        let ok_req = Request::builder()
+            .uri("/api/mcp-servers")
+            .extension(other)
+            .header("x-api-key", "test-key-0123456789abcdef")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.oneshot(ok_req).await.unwrap().status(),
+            StatusCode::OK
+        );
+    }
+
     #[tokio::test]
     async fn finds_upload_by_uid_across_subdirs() {
         let base = std::env::temp_dir().join(format!("luna_findupload_{}", Uuid::new_v4()));
@@ -529,15 +788,165 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    #[test]
-    fn resolve_static_rejects_traversal() {
+    #[tokio::test]
+    async fn resolve_static_rejects_traversal() {
         let base = std::env::temp_dir().join(format!("luna_static_test_{}", Uuid::new_v4()));
         std::fs::create_dir_all(&base).unwrap();
         std::fs::write(base.join("ok.txt"), b"hi").unwrap();
-        assert!(resolve_static_path(&base, "ok.txt").is_some());
-        assert!(resolve_static_path(&base, "../ok.txt").is_none());
-        assert!(resolve_static_path(&base, "/etc/passwd").is_none());
-        assert!(resolve_static_path(&base, "a/../../etc/passwd").is_none());
+        assert!(resolve_static_path(&base, "ok.txt").await.is_some());
+        assert!(resolve_static_path(&base, "../ok.txt").await.is_none());
+        assert!(resolve_static_path(&base, "/etc/passwd").await.is_none());
+        assert!(resolve_static_path(&base, "a/../../etc/passwd").await.is_none());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Minimal ServerContext over a throwaway temp DB for router-level tests.
+    fn test_ctx(api_key: &str) -> Arc<ServerContext> {
+        test_ctx_with(api_key, 30)
+    }
+
+    fn test_ctx_with(api_key: &str, auth_rate_limit_max: u32) -> Arc<ServerContext> {
+        use crate::prompts::PromptManager;
+        use crate::services::ScheduleService;
+        use crate::storage::sqlite_storage_simple::SqliteSettings;
+        use crate::storage::Storage;
+        use agentic_loop::mcp_servers_registry::MCPServerRegistry;
+        use tokio::sync::{Mutex, RwLock};
+
+        let mut config = crate::config::AppConfig::default();
+        config.server.api_key = api_key.to_string();
+        config.server.auth_rate_limit_max = auth_rate_limit_max;
+        let config = Arc::new(config);
+
+        let db_path = std::env::temp_dir().join(format!("luna_http_test_{}.db", Uuid::new_v4()));
+        let storage =
+            Storage::new_with_settings(&db_path, SqliteSettings::default()).expect("test db");
+        // Unlink now; the open connection keeps working and nothing lingers.
+        let _ = std::fs::remove_file(&db_path);
+        let storage = Arc::new(Mutex::new(storage));
+
+        Arc::new(ServerContext {
+            config: config.clone(),
+            server_cfg: Arc::new(config.server.clone()),
+            static_token: Uuid::new_v4().to_string(),
+            auth_throttle: Arc::new(AuthThrottle::new(
+                config.server.auth_rate_limit_max,
+                config.server.auth_rate_limit_window_secs,
+            )),
+            prompt_manager: PromptManager { system_prompt: None },
+            storage: storage.clone(),
+            mcp_registry: Arc::new(RwLock::new(MCPServerRegistry::new())),
+            subscriptions: Arc::new(
+                crate::server::conversation_subscriptions::ConversationSubscriptions::new(),
+            ),
+            schedule_service: Arc::new(ScheduleService::new(storage)),
+            default_allowed_tool_names: std::collections::HashSet::new(),
+            embedding_provider: None,
+            active_agent_runs: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        })
+    }
+
+    #[tokio::test]
+    async fn auth_middleware_gates_api_routes() {
+        use tower::ServiceExt;
+
+        let ctx = test_ctx("test-key-0123456789abcdef");
+        let app = create_http_router(ctx);
+
+        // No key -> 401
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/mcp-servers")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // Wrong key -> 401
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/mcp-servers")
+                    .header("x-api-key", "wrong-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // x-api-key -> 200
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/mcp-servers")
+                    .header("x-api-key", "test-key-0123456789abcdef")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Authorization: Bearer -> 200
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/mcp-servers")
+                    .header("authorization", "Bearer test-key-0123456789abcdef")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // /ws is gated before the upgrade handshake
+        let resp = app
+            .oneshot(Request::builder().uri("/ws").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn static_route_requires_capability_token() {
+        use tower::ServiceExt;
+
+        let ctx = test_ctx("test-key-0123456789abcdef");
+        let token = ctx.static_token.clone();
+        let app = create_http_router(ctx);
+
+        // Wrong token -> 401 (token is checked before touching the filesystem)
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/static/not-the-token/nope.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // Right token, missing file -> 404
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/static/{token}/definitely-missing.txt"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }

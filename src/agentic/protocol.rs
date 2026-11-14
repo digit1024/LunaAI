@@ -16,6 +16,9 @@ pub struct RunContext {
     pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     /// Thresholds for attachment document RAG.
     pub attachment_rag: AttachmentRagConfig,
+    /// `spawn_worker` nesting depth of this run: 0 for top-level runs,
+    /// parent + 1 for workers. Bounded by `[agentic].max_worker_depth`.
+    pub depth: u32,
 }
 
 impl std::fmt::Debug for RunContext {
@@ -26,6 +29,7 @@ impl std::fmt::Debug for RunContext {
             .field("allowed_tool_names", &self.allowed_tool_names)
             .field("embedding_provider", &self.embedding_provider.as_ref().map(|_| "Some"))
             .field("attachment_rag", &self.attachment_rag)
+            .field("depth", &self.depth)
             .finish()
     }
 }

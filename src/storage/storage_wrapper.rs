@@ -13,12 +13,6 @@ pub struct Storage {
 }
 
 impl Storage {
-    /// Create a new storage instance with SQLite backend
-    pub fn new<P: AsRef<Path>>(db_path: P) -> SqliteResult<Self> {
-        let sqlite = SqliteStorage::new(db_path)?;
-        Ok(Self { sqlite })
-    }
-
     /// Create a new storage instance with custom SQLite settings
     pub fn new_with_settings<P: AsRef<Path>>(
         db_path: P,
@@ -26,12 +20,6 @@ impl Storage {
     ) -> SqliteResult<Self> {
         let sqlite = SqliteStorage::new_with_settings(db_path, &settings)?;
         Ok(Self { sqlite })
-    }
-
-    /// Create a new storage instance with default database path
-    pub fn new_default() -> SqliteResult<Self> {
-        let db_path = Self::default_db_path();
-        Self::new(db_path)
     }
 
     pub fn new_default_with_settings(settings: SqliteSettings) -> SqliteResult<Self> {
@@ -254,6 +242,17 @@ impl Storage {
     /// Delete messages by database row ids (e.g. incomplete tool-tail repair).
     pub fn delete_messages(&self, message_ids: &[i64]) -> SqliteResult<usize> {
         self.sqlite.delete_messages(message_ids)
+    }
+
+    /// Replace the stored attachments of a message (e.g. after vision
+    /// descriptions arrived post-persist). `message_id` is the rowid.
+    pub fn update_message_attachments(
+        &self,
+        message_id: i64,
+        attachments: &[crate::llm::Attachment],
+    ) -> SqliteResult<bool> {
+        self.sqlite
+            .update_message_attachments(message_id, attachments)
     }
 
     pub fn delete_conversation(&self, conversation_id: &Uuid) -> SqliteResult<bool> {
@@ -678,6 +677,12 @@ impl Storage {
         self.sqlite.set_scheduled_job_running(id, now_utc_secs)
     }
 
+    /// Recover jobs stuck in 'running' after a crash/restart (back to 'pending').
+    /// Returns the number of recovered rows.
+    pub fn recover_stuck_running_jobs(&self, now_utc_secs: i64) -> SqliteResult<usize> {
+        self.sqlite.recover_stuck_running_jobs(now_utc_secs)
+    }
+
     /// Mark scheduled job completed or failed
     pub fn set_scheduled_job_completed(
         &self,
@@ -707,18 +712,8 @@ impl Storage {
     }
 }
 
-impl Default for Storage {
-    fn default() -> Self {
-        Self::new_default().unwrap_or_else(|e| {
-            tracing::error!(
-                error = %e,
-                "Failed to initialize SQLite storage"
-            );
-            // Fallback to a temporary database
-            Self::new(std::env::temp_dir().join("cosmic_llm_temp.db")).unwrap_or_else(|e| {
-                tracing::error!(error = %e, "Failed to create temporary database");
-                std::process::exit(1);
-            })
-        })
-    }
-}
+// NOTE: no `impl Default for Storage` on purpose. The previous Default silently
+// fell back to a predictable temp-dir database (and process::exit on failure),
+// which could split data across databases and is a local symlink/pre-create
+// risk. Callers must construct Storage explicitly and handle the error
+// (see server::init_storage, which now fails fast).

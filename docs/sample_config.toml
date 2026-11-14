@@ -169,6 +169,22 @@ title_generation_system_prompt = "Your task is to generate a conversation title 
 # system_prompt = "..."      # compaction system prompt (built-in default if omitted)
 # max_tokens = 4000          # max output tokens for compaction summary
 
+# ── Server (HTTP + WebSocket) ──
+# The server speaks plaintext HTTP/WS — there is no built-in TLS. Keep the bind
+# address on loopback, or put a TLS-terminating reverse proxy (caddy, nginx,
+# cloudflared) in front when exposing it to other machines. The api_key travels
+# in headers on every request, so never expose the raw port to untrusted
+# networks.
+[server]
+host = "127.0.0.1"           # use "0.0.0.0" only behind a trusted proxy/TLS
+port = 8080
+api_key = "change-me-openssl-rand-hex-32-please-change-me"  # >= 32 chars, required
+# min_api_key_length = 32    # startup refuses shorter keys
+# auth_rate_limit_max = 30   # failed auths per IP within the window -> HTTP 429
+# auth_rate_limit_window_secs = 300
+# stream_timeout_secs = 600
+# tool_call_timeout_secs = 240
+
 # ── Workspace file references (@file: / @folder:) ──
 # Expand typed references like `@file:src/main.rs:1-40` or `@folder:docs` inline.
 # Resolved within `root` (default: HOME); symlink escapes are rejected and
@@ -188,6 +204,32 @@ mode = "always"                # always | auto | native
 # profile = "vision"           # profile (-> model_preset) used to describe images
 # max_tokens = 512
 # system_prompt = "Describe the image for a text-only assistant. Be specific and factual..."
+
+# ── Agentic loop security limits ──
+[agentic]
+# publish_image source confinement. By default the tool may only publish images
+# that live under the uploads dir or `[files].root`; paths elsewhere on disk are
+# rejected so the model cannot expose arbitrary local images via the static dir.
+# Set true ONLY if you explicitly want the legacy behavior (any readable path).
+publish_image_unrestricted_sources = false
+
+# Profiles `spawn_worker` may run under. Default (unset) = workers may only use
+# the current profile — the model cannot escalate to another profile's tools
+# policy. Set an explicit list to allow named overrides (an empty list allows
+# no overrides at all):
+# worker_profiles = ["research", "coding"]
+
+# Maximum spawn_worker nesting depth. 0 disables workers entirely; 1 (default)
+# allows workers but they cannot spawn further workers.
+max_worker_depth = 1
+
+# Per-call timeout (seconds) for spawn_worker runs; workers legitimately run
+# longer than regular tool calls.
+worker_timeout_secs = 600
+
+# Maximum agentic turns (LLM round-trips) per run. Guards against runaway tool
+# loops burning tokens; the run stops with an error when exceeded.
+max_turns = 50
 
 # Time awareness: inject an ephemeral system message when time has passed between messages.
 # Never stored in conversation history. On the first message only the current time is injected.

@@ -40,9 +40,12 @@ pub fn spawn_agent_task(
         allowed_tool_names,
         embedding_provider: ctx.embedding_provider.clone(),
         attachment_rag: ctx.config.attachment_rag.clone(),
+        depth: 0,
     };
 
     tokio::spawn(async move {
+        // NOTE: unbounded for now — per-run channel, bounded lifetime via the
+        // stream timeout; bounded backpressure lands with the Phase-4 rewrite.
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel::<AgentUpdate>();
         let mut loop_engine = AgenticLoop::new(
             mcp_registry,
@@ -274,34 +277,92 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
         }
     };
 
-    {
-        let map = ctx.active_agent_runs.read().await;
-        if map.contains_key(&conversation_id) {
-            tracing::warn!(
-                job_id = %job.id,
-                conversation_id = %conversation_id,
-                "Skipping scheduled job: agent already running for conversation"
-            );
-            return Ok(());
-        }
-    }
-
-    let handle = spawn_agent_task(
-        ctx.clone(),
-        conversation_id,
-        agent_messages,
-        profile_name.to_string(),
-        llm_client,
-        allowed_tool_names,
-    );
-    {
+    // Atomically check + spawn + register under ONE write-lock scope so racing
+    // callers can never start two agents for the same conversation.
+    let mut collision = false;
+    let spawned = {
         let mut map = ctx.active_agent_runs.write().await;
-        map.insert(conversation_id, handle.abort_handle());
+        match map.entry(conversation_id) {
+            std::collections::hash_map::Entry::Vacant(vacant) => {
+                let h = spawn_agent_task(
+                    ctx.clone(),
+                    conversation_id,
+                    agent_messages,
+                    profile_name.to_string(),
+                    llm_client,
+                    allowed_tool_names,
+                );
+                vacant.insert(h.abort_handle());
+                Some(h)
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {
+                collision = true;
+                None
+            }
+        }
+    };
+    if collision {
+        tracing::warn!(
+            job_id = %job.id,
+            conversation_id = %conversation_id,
+            "Skipping scheduled job: agent already running for conversation"
+        );
+        // Finalize the row so it doesn't stay stuck in 'running' forever:
+        // recurring jobs skip to their next run, one-off jobs are failed.
+        let now = chrono::Utc::now().timestamp();
+        let storage = ctx.storage.lock().await;
+        let recurring = job
+            .schedule
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("once"));
+        match recurring.map(|s| crate::services::next_run_from_cron(s, now)) {
+            Some(Ok(next_run)) => {
+                let _ = storage.set_scheduled_job_next_run(&job.id, next_run, now);
+            }
+            Some(Err(e)) => {
+                let _ = storage.set_scheduled_job_completed(
+                    &job.id,
+                    now,
+                    true,
+                    Some(&format!(
+                        "Skipped (agent already running) and failed to compute next run: {e}"
+                    )),
+                );
+            }
+            None => {
+                let _ = storage.set_scheduled_job_completed(
+                    &job.id,
+                    now,
+                    true,
+                    Some("Skipped: agent already running for conversation"),
+                );
+            }
+        }
+        return Ok(());
     }
-    let _ = handle.await;
+    let handle = spawned.expect("handle is Some when there was no collision");
+    let agent_failed = match handle.await {
+        Ok(()) => None,
+        Err(join_err) => {
+            let msg = if join_err.is_panic() {
+                "Agent task panicked".to_string()
+            } else {
+                "Agent task was cancelled".to_string()
+            };
+            tracing::error!(job_id = %job.id, error = %join_err, "Scheduler: {}", msg);
+            Some(msg)
+        }
+    };
 
     let now = chrono::Utc::now().timestamp();
     let storage = ctx.storage.lock().await;
+    if let Some(reason) = agent_failed {
+        storage
+            .set_scheduled_job_completed(&job.id, now, true, Some(&reason))
+            .context("failed to mark job failed")?;
+        return Ok(());
+    }
     if let Some(ref schedule) = job.schedule {
         let s = schedule.trim();
         if !s.is_empty() && !s.eq_ignore_ascii_case("once") {

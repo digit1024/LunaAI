@@ -148,18 +148,74 @@ fn resolve(root: &Path, raw: &str) -> Option<PathBuf> {
         return None;
     }
     if is_denied(&canon) {
+        // Audit trail: expansions are silent to the client, so log denials and
+        // successes (SEC-6) — never the file contents.
+        tracing::info!(
+            path = %canon.display(),
+            "Blocked @file/@folder reference to a denied credential path"
+        );
         return None;
     }
     Some(canon)
 }
 
 fn is_denied(path: &Path) -> bool {
-    const DENY_COMPONENTS: &[&str] = &[".ssh", ".gnupg", ".aws"];
-    const DENY_NAMES: &[&str] = &[
-        ".env", "id_rsa", "id_ed25519", "authorized_keys", "known_hosts", ".netrc", ".pgpass",
-        ".npmrc", ".pypirc", "credentials", "credentials.json",
+    const DENY_COMPONENTS: &[&str] = &[
+        ".ssh",
+        ".gnupg",
+        ".aws",
+        ".kube",
+        ".docker",
+        ".mozilla",
+        ".thunderbird",
+        ".pki",
     ];
-    const DENY_EXTS: &[&str] = &["pem", "key", "p12", "pfx"];
+    const DENY_NAMES: &[&str] = &[
+        ".env",
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+        "id_ecdsa_sk",
+        "id_ed25519_sk",
+        "authorized_keys",
+        "known_hosts",
+        ".netrc",
+        ".pgpass",
+        ".npmrc",
+        ".pypirc",
+        ".git-credentials",
+        ".bash_history",
+        ".zsh_history",
+        ".mysql_history",
+        ".psql_history",
+        ".python_history",
+        ".lesshst",
+        ".wget-hsts",
+        ".vault-token",
+        ".secrets",
+        "credentials",
+        "credentials.json",
+        "application-default-credentials.json",
+        "key4.db",
+        "cert9.db",
+        "cookies.sqlite",
+        "logins.json",
+    ];
+    const DENY_EXTS: &[&str] = &[
+        "pem", "key", "p12", "pfx", "p8", "jks", "keystore", "kdbx",
+    ];
+    const DENY_PATH_SUBSTRINGS: &[&str] = &[
+        "/skills/.hub/",
+        "/.config/gcloud/",
+        "/.config/gh/",
+        "/.config/opencode/",
+        "/.config/rclone/",
+        "/.config/google-chrome/",
+        "/.config/chromium/",
+        "/.config/BraveSoftware/",
+        "/.local/share/keyrings/",
+    ];
 
     for component in path.components() {
         if let std::path::Component::Normal(os) = component {
@@ -181,7 +237,7 @@ fn is_denied(path: &Path) -> bool {
         }
     }
     let s = path.to_string_lossy();
-    s.contains("/skills/.hub/") || s.contains("/.config/gcloud/")
+    DENY_PATH_SUBSTRINGS.iter().any(|needle| s.contains(needle))
 }
 
 fn expand_file(
@@ -191,13 +247,37 @@ fn expand_file(
     end: Option<usize>,
     budget: &mut usize,
 ) -> Option<String> {
+    use std::io::Read;
+
     let canon = resolve(root, path_raw)?;
-    if !std::fs::metadata(&canon).ok()?.is_file() {
+    let meta = std::fs::metadata(&canon).ok()?;
+    if !meta.is_file() {
         return None;
     }
 
     let display = canon.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-    let bytes = std::fs::read(&canon).ok()?;
+    let file_len = meta.len();
+
+    // Bounded read: never load an arbitrarily large file into memory. Without a
+    // line range we only need enough bytes to fill the remaining budget (plus a
+    // little slack to detect truncation); with a range we may need to scan
+    // deeper, so allow up to a hard cap. This prevents a reference to a huge
+    // file (e.g. a multi-GiB log) from exhausting memory / stalling the worker.
+    const SCAN_CAP: u64 = 4 * 1024 * 1024;
+    const SNIFF_MIN: u64 = 64 * 1024;
+    let read_limit = if start.is_none() && end.is_none() {
+        (*budget as u64).saturating_add(1024).clamp(SNIFF_MIN, SCAN_CAP)
+    } else {
+        SCAN_CAP
+    };
+
+    let mut bytes = Vec::new();
+    std::fs::File::open(&canon)
+        .ok()?
+        .take(read_limit)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let file_truncated = file_len > bytes.len() as u64;
 
     let is_text = crate::llm::mime::sniff(&bytes)
         .map(|s| s.mime.starts_with("text/"))
@@ -205,14 +285,22 @@ fn expand_file(
     if !is_text {
         return Some(format!(
             "\n```\n[binary file: {} ({} bytes)]\n```\n",
-            display,
-            bytes.len()
+            display, file_len
         ));
     }
 
     let text = String::from_utf8_lossy(&bytes);
     let selected = apply_range(&text, start, end);
-    let (slice, truncated) = cap_bytes(selected, budget);
+    let (slice, mut truncated) = cap_bytes(selected, budget);
+    if file_truncated {
+        truncated = true;
+    }
+    tracing::info!(
+        path = %canon.display(),
+        inlined_bytes = slice.len(),
+        truncated,
+        "Expanded @file reference"
+    );
 
     let mut out = String::new();
     out.push_str("\n```");
@@ -246,7 +334,14 @@ fn expand_folder(root: &Path, raw: &str, budget: &mut usize) -> Option<String> {
     }
     entries.sort();
 
+    let entry_count = entries.len();
     let (slice, truncated) = cap_bytes(entries.join("\n"), budget);
+    tracing::info!(
+        path = %canon.display(),
+        entries = entry_count,
+        truncated,
+        "Expanded @folder reference"
+    );
     let mut out = format!("\n[folder listing: {}]\n", canon.display());
     out.push_str(&slice);
     if truncated {
@@ -370,13 +465,40 @@ mod tests {
     fn denied_credentials_left_literal() {
         let root = temp_root();
         std::fs::create_dir_all(root.join(".ssh")).unwrap();
-        std::fs::write(root.join(".ssh/id_rsa"), "PRIVATE").unwrap();
-        std::fs::write(root.join(".env"), "API_KEY=1").unwrap();
+        std::fs::write(root.join(".ssh/id_rsa"), b"PRIVATE").unwrap();
+        std::fs::write(root.join(".env"), b"API_KEY=1").unwrap();
         let out = expand("a @file:.env b @file:.ssh/id_rsa c", &policy(&root));
-        assert!(out.contains("@file:.env"), "{out}");
-        assert!(out.contains("@file:.ssh/id_rsa"), "{out}");
-        assert!(!out.contains("API_KEY"), "{out}");
-        assert!(!out.contains("PRIVATE"), "{out}");
+        assert!(out.contains("@file:.env"));
+        assert!(out.contains("@file:.ssh/id_rsa"));
+        assert!(!out.contains("API_KEY"));
+        assert!(!out.contains("PRIVATE"));
+    }
+
+    #[test]
+    fn denied_credentials_extended_list() {
+        let root = temp_root();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join(".kube")).unwrap();
+        std::fs::create_dir_all(root.join(".config/gh")).unwrap();
+        std::fs::write(root.join(".git-credentials"), b"https://user:pass@github.com").unwrap();
+        std::fs::write(root.join(".git/credentials.txt"), b"also secret").unwrap();
+        std::fs::write(root.join(".kube/config"), b"kube-token").unwrap();
+        std::fs::write(root.join(".config/gh/hosts.yml"), b"oauth_token: x").unwrap();
+        std::fs::write(root.join(".bash_history"), b"secret-cmd").unwrap();
+
+        let out = expand(
+            "a @file:.git-credentials b @file:.kube/config c @file:.config/gh/hosts.yml d @file:.bash_history e",
+            &policy(&root),
+        );
+        // All stay literal; no contents leak into the expansion.
+        assert!(out.contains("@file:.git-credentials"));
+        assert!(out.contains("@file:.kube/config"));
+        assert!(out.contains("@file:.config/gh/hosts.yml"));
+        assert!(out.contains("@file:.bash_history"));
+        assert!(!out.contains("pass@github"));
+        assert!(!out.contains("kube-token"));
+        assert!(!out.contains("oauth_token"));
+        assert!(!out.contains("secret-cmd"));
     }
 
     #[test]

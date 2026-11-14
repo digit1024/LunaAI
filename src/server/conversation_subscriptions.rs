@@ -4,7 +4,10 @@
 
 use crate::server::dto::ServerEvent;
 use std::collections::HashMap;
-use tokio::sync::{mpsc::UnboundedSender, RwLock};
+use tokio::sync::{
+    mpsc::{error::TrySendError, Sender},
+    RwLock,
+};
 use uuid::Uuid;
 
 /// Identifies a WebSocket connection (not a conversation).
@@ -17,8 +20,7 @@ impl ConnectionId {
     }
 }
 
-type ConversationSubscribers =
-    Vec<(ConnectionId, UnboundedSender<ServerEvent>)>;
+type ConversationSubscribers = Vec<(ConnectionId, Sender<ServerEvent>)>;
 
 /// Tracks which connection is viewing which conversation and broadcasts
 /// conversation-scoped events to all subscribers of that conversation.
@@ -44,7 +46,7 @@ impl ConversationSubscriptions {
         &self,
         connection_id: ConnectionId,
         conversation_id: Option<Uuid>,
-        sender: UnboundedSender<ServerEvent>,
+        sender: Sender<ServerEvent>,
     ) {
         let mut viewing = self.viewing.write().await;
         let mut subscribers = self.subscribers.write().await;
@@ -70,8 +72,30 @@ impl ConversationSubscriptions {
     }
 
     /// Send an event to all connections currently viewing this conversation.
-    /// Removes subscribers whose send fails (e.g. connection closed).
+    /// Removes subscribers whose channel closed; events are dropped for
+    /// subscribers whose bounded queue is full (client too slow).
     pub async fn broadcast(&self, conversation_id: Uuid, event: ServerEvent) {
+        self.broadcast_inner(conversation_id, event, None).await;
+    }
+
+    /// Like `broadcast`, but skips one connection (used when the caller already
+    /// sent the event to itself directly and must not receive it twice).
+    pub async fn broadcast_excluding(
+        &self,
+        conversation_id: Uuid,
+        event: ServerEvent,
+        exclude: ConnectionId,
+    ) {
+        self.broadcast_inner(conversation_id, event, Some(exclude))
+            .await;
+    }
+
+    async fn broadcast_inner(
+        &self,
+        conversation_id: Uuid,
+        event: ServerEvent,
+        exclude: Option<ConnectionId>,
+    ) {
         let mut subscribers = self.subscribers.write().await;
         let list = match subscribers.get_mut(&conversation_id) {
             Some(l) => l,
@@ -79,8 +103,19 @@ impl ConversationSubscriptions {
         };
         let mut dead = Vec::new();
         for (conn_id, sender) in list.iter() {
-            if sender.send(event.clone()).is_err() {
-                dead.push(*conn_id);
+            if exclude == Some(*conn_id) {
+                continue;
+            }
+            match sender.try_send(event.clone()) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    tracing::debug!(
+                        conversation_id = %conversation_id,
+                        connection_id = %conn_id.0,
+                        "Dropping broadcast event: subscriber outbound queue full"
+                    );
+                }
+                Err(TrySendError::Closed(_)) => dead.push(*conn_id),
             }
         }
         for conn_id in dead {
@@ -88,6 +123,15 @@ impl ConversationSubscriptions {
         }
         if list.is_empty() {
             subscribers.remove(&conversation_id);
+        }
+    }
+
+    /// Drop every subscriber of a conversation (e.g. after it was deleted).
+    pub async fn clear_conversation(&self, conversation_id: Uuid) {
+        let mut viewing = self.viewing.write().await;
+        let mut subscribers = self.subscribers.write().await;
+        if subscribers.remove(&conversation_id).is_some() {
+            viewing.retain(|_, conv| *conv != conversation_id);
         }
     }
 
@@ -122,7 +166,7 @@ mod tests {
         let subs = ConversationSubscriptions::new();
         let conn_id = ConnectionId::new();
         let conv_id = Uuid::new_v4();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
         subs.set_viewing(conn_id, Some(conv_id), tx).await;
         drop(rx);
 
@@ -141,5 +185,67 @@ mod tests {
             },
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn broadcast_excluding_and_clear_conversation() {
+        let subs = ConversationSubscriptions::new();
+        let conv_id = Uuid::new_v4();
+        let a = ConnectionId::new();
+        let b = ConnectionId::new();
+        let (tx_a, mut rx_a) = tokio::sync::mpsc::channel(8);
+        let (tx_b, mut rx_b) = tokio::sync::mpsc::channel(8);
+        subs.set_viewing(a, Some(conv_id), tx_a).await;
+        subs.set_viewing(b, Some(conv_id), tx_b).await;
+
+        // Excluded connection receives nothing; the other one does.
+        subs.broadcast_excluding(
+            conv_id,
+            ServerEvent::Info {
+                message: "hi".into(),
+            },
+            a,
+        )
+        .await;
+        assert!(rx_a.try_recv().is_err());
+        assert!(rx_b.try_recv().is_ok());
+
+        // After clearing, broadcasts reach nobody.
+        subs.clear_conversation(conv_id).await;
+        subs.broadcast(
+            conv_id,
+            ServerEvent::Info {
+                message: "gone".into(),
+            },
+        )
+        .await;
+        assert!(rx_a.try_recv().is_err());
+        assert!(rx_b.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn full_subscriber_queue_drops_instead_of_blocking() {
+        let subs = ConversationSubscriptions::new();
+        let conv_id = Uuid::new_v4();
+        let conn = ConnectionId::new();
+        // Capacity-1 channel, receiver never drains.
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        subs.set_viewing(conn, Some(conv_id), tx).await;
+
+        for i in 0..10 {
+            subs.broadcast(
+                conv_id,
+                ServerEvent::Info {
+                    message: format!("m{i}"),
+                },
+            )
+            .await;
+        }
+        // Broadcast must not block or prune the (full but alive) subscriber.
+        let still_subscribed = {
+            let subscribers = subs.subscribers.read().await;
+            subscribers.get(&conv_id).map(|l| l.len()).unwrap_or(0)
+        };
+        assert_eq!(still_subscribed, 1);
     }
 }

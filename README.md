@@ -110,10 +110,19 @@ unset ARGV0 && cargo run --release
 ```
 
 #### Running as Server
-Run Luna in server mode to access it from mobile devices and other clients:
+The main binary **is** the server: `cargo run --release` starts the HTTP/WebSocket server (default `127.0.0.1:8080`, configured via `[server]` in `config.toml`) that mobile apps and other clients connect to.
+
 ```bash
-unset ARGV0 && cargo run --release -- --server
+unset ARGV0 && cargo run --release
 ```
+
+> **Security notes:** the server speaks plaintext HTTP/WS (no built-in TLS) and
+> requires `[server].api_key` (≥ 32 characters; startup refuses empty/weak keys).
+> Keep the default loopback bind, or terminate TLS with a reverse proxy
+> (caddy/nginx/cloudflared) before exposing it on a network. Failed auth
+> attempts are rate-limited per IP (HTTP 429).
+
+Additional CLI modes: `--config PATH` (override config file), `--deep_sleep` (run one memory-maintenance cycle and exit), `--reorganize_memories` (rebuild memory vectors; requires `[embedding]` enabled).
 
 #### Thin desktop client (COSMIC)
 ```bash

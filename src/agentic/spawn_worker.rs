@@ -14,6 +14,8 @@ use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 /// Run a worker sub-agent. Takes only owned `Send` data so nested workers are safe to spawn.
+/// `depth` is this worker's nesting depth (parent depth + 1); the caller has
+/// already validated it against `[agentic].max_worker_depth`.
 pub async fn execute_spawn_worker(
     app_config: Option<Arc<AppConfig>>,
     storage: Option<Arc<Mutex<crate::storage::Storage>>>,
@@ -21,6 +23,7 @@ pub async fn execute_spawn_worker(
     tool_call_timeout_secs: u64,
     task: String,
     profile_name: String,
+    depth: u32,
 ) -> ToolResult {
     let Some(app_config) = app_config else {
         return ToolResult {
@@ -91,6 +94,9 @@ pub async fn execute_spawn_worker(
         };
     }
 
+    // NOTE: unbounded for now — the consumer (WorkerPersistence) is fast and the
+    // channel is per-run and bounded in lifetime by the parent's timeouts.
+    // Bounded backpressure lands with the Phase-4 dispatch rewrite.
     let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel::<AgentUpdate>();
     let storage_clone = storage.clone();
     let persist_conv_id = conv_id;
@@ -109,19 +115,14 @@ pub async fn execute_spawn_worker(
         allowed_tool_names: allowed_tools,
         embedding_provider: None,
         attachment_rag: AttachmentRagConfig::default(),
+        depth,
     };
 
-    let result = Box::pin(run_worker_agent(
-        mcp_registry,
-        llm_client,
-        tool_call_timeout_secs,
-        storage,
-        app_config,
-        task,
-        agent_tx,
-        worker_run_context,
-    ))
-    .await;
+    let child = AgenticLoop::new(mcp_registry, llm_client, None, tool_call_timeout_secs)
+        .with_storage(storage)
+        .with_app_config(app_config);
+
+    let result = Box::pin(run_worker_agent(child, task, agent_tx, worker_run_context)).await;
 
     let _ = persist_task.await;
 
@@ -157,19 +158,11 @@ async fn resolve_worker_profile(
 }
 
 async fn run_worker_agent(
-    mcp_registry: Arc<RwLock<MCPServerRegistry>>,
-    llm_client: Arc<dyn LlmClient>,
-    tool_call_timeout_secs: u64,
-    storage: Arc<Mutex<crate::storage::Storage>>,
-    app_config: Arc<AppConfig>,
+    mut child: AgenticLoop,
     task: String,
     agent_tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>,
     worker_run_context: RunContext,
 ) -> Result<String> {
-    let mut child = AgenticLoop::new(mcp_registry, llm_client, None, tool_call_timeout_secs)
-        .with_storage(storage)
-        .with_app_config(app_config);
-
     child
         .process_message(
             vec![Message::new(Role::User, task)],

@@ -12,18 +12,6 @@ pub enum UploadKind {
     Text,
 }
 
-impl UploadKind {
-    /// Per-type upload cap (bytes).
-    #[allow(dead_code)]
-    pub fn max_bytes(&self) -> u64 {
-        match self {
-            UploadKind::Image => MAX_IMAGE_BYTES,
-            UploadKind::Document => MAX_DOC_BYTES,
-            UploadKind::Text => MAX_TEXT_BYTES,
-        }
-    }
-}
-
 /// Accepted upload: the canonical extension to store under and its kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadClass {

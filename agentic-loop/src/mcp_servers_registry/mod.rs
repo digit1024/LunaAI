@@ -264,6 +264,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "integration test: spawns a real `npx @modelcontextprotocol/server-filesystem` \
+                over the network and asserts a hard-coded upstream tool count that drifts with \
+                the npm package version. Requires Node/npx + network; run manually with \
+                `cargo test -p agentic-loop -- --ignored`."]
     async fn test_initialize_from_config() {
         let mut mcp_server_registry = MCPServerRegistry::new();
         let path = test_data_path("sample_config.json");

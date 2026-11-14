@@ -10,7 +10,22 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 /// Reject oversized WebSocket text frames (DoS / memory exhaustion).
-const MAX_WS_TEXT_BYTES: usize = 1024 * 1024; // 1 MiB
+/// Enforced at the transport layer in `ws_handler` (tungstenite reassembles at
+/// most this many bytes) and re-checked in the read loop as defense in depth.
+pub(super) const MAX_WS_TEXT_BYTES: usize = 1024 * 1024; // 1 MiB
+/// Per-frame transport cap; messages are reassembled up to MAX_WS_TEXT_BYTES.
+pub(super) const MAX_WS_FRAME_BYTES: usize = 256 * 1024; // 256 KiB
+/// Upper bound on the outbound write buffer (tungstenite default is unbounded).
+/// Generous enough for large events (e.g. a full ConversationLoaded payload)
+/// but bounded so a stalled client cannot grow the socket buffer without limit;
+/// the connection is closed if it is exceeded.
+pub(super) const MAX_WS_WRITE_BUFFER_BYTES: usize = 32 * 1024 * 1024; // 32 MiB
+/// Capacity of the per-connection outbound event queue. Bounded so a client
+/// that stops reading cannot make the server buffer events without limit;
+/// when full, new events are dropped for that connection (deltas are
+/// recoverable: `AssistantComplete` carries the full text and clients can
+/// resync via `LoadConversation`).
+pub(super) const WS_EVENT_CHANNEL_CAP: usize = 1024;
 
 /// Runs the WebSocket command loop after upgrade. Auth is performed by the HTTP layer before upgrade.
 pub async fn handle_ws_upgraded(socket: WebSocket, ctx: Arc<ServerContext>) -> Result<()> {
@@ -22,7 +37,7 @@ pub async fn handle_ws_upgraded(socket: WebSocket, ctx: Arc<ServerContext>) -> R
     let sink: Arc<tokio::sync::Mutex<SplitSink<WebSocket, Message>>> =
         Arc::new(tokio::sync::Mutex::new(write));
     let sink_writer = sink.clone();
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<ServerEvent>();
+    let (out_tx, mut out_rx) = mpsc::channel::<ServerEvent>(WS_EVENT_CHANNEL_CAP);
     let mut handler = ServerHandler::new(ctx.clone(), connection_id, out_tx.clone())?;
 
     handler.handle_command(ClientCommand::HealthCheck).await;
@@ -64,7 +79,7 @@ pub async fn handle_ws_upgraded(socket: WebSocket, ctx: Arc<ServerContext>) -> R
                         limit = MAX_WS_TEXT_BYTES,
                         "Rejected oversized WebSocket text frame"
                     );
-                    let _ = out_tx.send(ServerEvent::Error {
+                    let _ = out_tx.try_send(ServerEvent::Error {
                         message: format!(
                             "WebSocket message exceeds {} byte limit",
                             MAX_WS_TEXT_BYTES
@@ -79,7 +94,7 @@ pub async fn handle_ws_upgraded(socket: WebSocket, ctx: Arc<ServerContext>) -> R
                     }
                     Err(err) => {
                         log_parse_error(&connection_id.0, &text, &err);
-                        let _ = out_tx.send(ServerEvent::Error {
+                        let _ = out_tx.try_send(ServerEvent::Error {
                             message: format!("Invalid command payload: {}", err),
                         });
                     }
@@ -112,6 +127,20 @@ pub async fn handle_ws_upgraded(socket: WebSocket, ctx: Arc<ServerContext>) -> R
     Ok(())
 }
 
+/// Truncate a payload for logging so oversized content doesn't flood the log
+/// files and sensitive data isn't retained in full (SMELL-6). Contents are
+/// user messages — treat them as potentially secret.
+fn truncate_for_log(raw: &str, max_chars: usize) -> std::borrow::Cow<'_, str> {
+    if raw.chars().count() <= max_chars {
+        return std::borrow::Cow::Borrowed(raw);
+    }
+    let kept: String = raw.chars().take(max_chars).collect();
+    std::borrow::Cow::Owned(format!(
+        "{kept}… [truncated, {} chars total]",
+        raw.chars().count()
+    ))
+}
+
 fn log_incoming_request(connection_id: &uuid::Uuid, raw_request: &str, processing_time: Duration) {
     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw_request) {
         tracing::info!(
@@ -123,13 +152,13 @@ fn log_incoming_request(connection_id: &uuid::Uuid, raw_request: &str, processin
         );
         tracing::debug!(
             connection_id = %connection_id,
-            raw_request = %raw_request,
+            raw_request = %truncate_for_log(raw_request, 2000),
             "Full incoming request details"
         );
     } else {
         tracing::warn!(
             connection_id = %connection_id,
-            raw_request = %raw_request,
+            raw_request = %truncate_for_log(raw_request, 200),
             request_size = raw_request.len(),
             "Received malformed JSON request"
         );
@@ -149,16 +178,18 @@ fn log_error_response(connection_id: &uuid::Uuid, raw_response: &str, processing
         }
         tracing::debug!(
             connection_id = %connection_id,
-            raw_response = %raw_response,
+            raw_response = %truncate_for_log(raw_response, 2000),
             "Full error response details"
         );
     }
 }
 
 fn log_parse_error(connection_id: &uuid::Uuid, raw_request: &str, error: &serde_json::Error) {
-    tracing::error!(
+    // WARN (not ERROR) with a truncated payload: malformed input is a client
+    // mistake, not a server fault, and raw request bodies may carry secrets.
+    tracing::warn!(
         connection_id = %connection_id,
-        raw_request = %raw_request,
+        raw_request = %truncate_for_log(raw_request, 200),
         error_message = %error,
         error_line = error.line(),
         error_column = error.column(),

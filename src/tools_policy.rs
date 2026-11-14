@@ -148,16 +148,18 @@ mod tests {
     #[tokio::test]
     async fn embedded_names_are_candidates_when_enabled() {
         let registry = RwLock::new(MCPServerRegistry::new());
-        let mut app_config = AppConfig::default();
-        app_config.embedded_tools = EmbeddedToolsConfig {
-            shell: ShellToolConfig {
-                enabled: true,
-                ..ShellToolConfig::default()
+        let mut app_config = AppConfig {
+            embedded_tools: EmbeddedToolsConfig {
+                shell: ShellToolConfig {
+                    enabled: true,
+                    ..ShellToolConfig::default()
+                },
+                time: TimeToolConfig {
+                    enabled: true,
+                    ..TimeToolConfig::default()
+                },
             },
-            time: TimeToolConfig {
-                enabled: true,
-                ..TimeToolConfig::default()
-            },
+            ..Default::default()
         };
         app_config.tools_policies.insert(
             "p".to_string(),
@@ -180,16 +182,18 @@ mod tests {
     #[tokio::test]
     async fn disabled_embedded_tools_are_not_candidates() {
         let registry = RwLock::new(MCPServerRegistry::new());
-        let mut app_config = AppConfig::default();
-        app_config.embedded_tools = EmbeddedToolsConfig {
-            shell: ShellToolConfig {
-                enabled: false,
-                ..ShellToolConfig::default()
+        let mut app_config = AppConfig {
+            embedded_tools: EmbeddedToolsConfig {
+                shell: ShellToolConfig {
+                    enabled: false,
+                    ..ShellToolConfig::default()
+                },
+                time: TimeToolConfig {
+                    enabled: false,
+                    ..TimeToolConfig::default()
+                },
             },
-            time: TimeToolConfig {
-                enabled: false,
-                ..TimeToolConfig::default()
-            },
+            ..Default::default()
         };
         app_config.tools_policies.insert(
             "p".to_string(),
@@ -209,10 +213,12 @@ mod tests {
     #[tokio::test]
     async fn disabled_tools_glob_removes_embedded() {
         let registry = RwLock::new(MCPServerRegistry::new());
-        let mut app_config = AppConfig::default();
-        app_config.embedded_tools = EmbeddedToolsConfig {
-            shell: ShellToolConfig::default(),
-            time: TimeToolConfig::default(),
+        let mut app_config = AppConfig {
+            embedded_tools: EmbeddedToolsConfig {
+                shell: ShellToolConfig::default(),
+                time: TimeToolConfig::default(),
+            },
+            ..Default::default()
         };
         app_config.tools_policies.insert(
             "p".to_string(),

@@ -64,9 +64,7 @@ impl ServerHandler {
 
             let recalls = recalls_map_for_conversation(&storage, &conv)?;
             let view = to_conversation_view(&conv, &recalls);
-            let _ = self
-                .outbound
-                .send(ServerEvent::ConversationLoaded { conversation: view });
+            self.send_event(ServerEvent::ConversationLoaded { conversation: view })?;
         } else {
             return Err(anyhow::anyhow!("Conversation {} not found", conversation_id)
                 .context("Failed to load conversation"));
@@ -114,9 +112,7 @@ impl ServerHandler {
                     rank: snippet.rank,
                 })
                 .collect();
-            let _ = self
-                .outbound
-                .send(ServerEvent::SearchResults { results: mapped });
+            self.send_event(ServerEvent::SearchResults { results: mapped })?;
         } else {
             let conversations = storage
                 .list_conversations_paginated(
@@ -154,7 +150,8 @@ impl ServerHandler {
         if title.is_empty() {
             return Err(anyhow!("Title cannot be empty"));
         }
-        if title.len() > MAX_TITLE_LEN {
+        // Character count, not bytes: CJK/accented titles are 2-4 bytes per char.
+        if title.chars().count() > MAX_TITLE_LEN {
             return Err(anyhow!(
                 "Title too long (max {} characters)",
                 MAX_TITLE_LEN
@@ -197,20 +194,59 @@ impl ServerHandler {
     }
     pub(super) async fn handle_delete_conversation(&mut self, conversation_id: String) -> Result<()> {
         let uuid = Uuid::parse_str(&conversation_id).context("invalid conversation id format")?;
-        let storage = self.ctx.storage.lock().await;
-        let deleted = storage
-            .delete_conversation(&uuid)
-            .context("failed to delete conversation")?;
-        if deleted {
-            // Clear active conversation if it was deleted
-            if self.session.active_conversation_id == Some(uuid) {
-                self.session.active_conversation_id = None;
-            }
-            self.send_event(ServerEvent::ConversationDeleted {
-                conversation_id,
-            })?;
-        } else {
+
+        // Abort any agent still running for this conversation so it cannot keep
+        // persisting messages into a deleted conversation.
+        if let Some(abort) = self.ctx.active_agent_runs.write().await.remove(&uuid) {
+            abort.abort();
+            tracing::info!(conversation_id = %uuid, "Aborted active agent run for deleted conversation");
+        }
+
+        let deleted = {
+            let storage = self.ctx.storage.lock().await;
+            storage
+                .delete_conversation(&uuid)
+                .context("failed to delete conversation")?
+        };
+        if !deleted {
             return Err(anyhow!("Conversation not found"));
+        }
+
+        // Clear active conversation if it was deleted
+        if self.session.active_conversation_id == Some(uuid) {
+            self.session.active_conversation_id = None;
+        }
+
+        self.send_event(ServerEvent::ConversationDeleted {
+            conversation_id: conversation_id.clone(),
+        })?;
+        // Notify other clients viewing this conversation, then drop all of its
+        // subscriptions so no further events are routed to a dead conversation.
+        self.ctx
+            .subscriptions
+            .broadcast_excluding(
+                uuid,
+                ServerEvent::ConversationDeleted { conversation_id },
+                self.connection_id,
+            )
+            .await;
+        self.ctx.subscriptions.clear_conversation(uuid).await;
+
+        // Best-effort cleanup of files owned by this conversation (uploads and
+        // published static images); without this they are orphaned forever.
+        for dir in [
+            self.ctx.config.uploads_dir().join(uuid.to_string()),
+            self.ctx.config.static_dir().join(uuid.to_string()),
+        ] {
+            if let Err(e) = tokio::fs::remove_dir_all(&dir).await {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        dir = %dir.display(),
+                        error = %e,
+                        "Failed to remove conversation files after delete"
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -229,6 +265,13 @@ impl ServerHandler {
             .context("invalid conversation id format")?;
         let msg_uuid = Uuid::parse_str(&message_id)
             .context("invalid message id format")?;
+
+        // A running agent would keep appending turns based on the pre-truncation
+        // history; abort it so the truncated transcript is authoritative.
+        if let Some(abort) = self.ctx.active_agent_runs.write().await.remove(&conv_uuid) {
+            abort.abort();
+            tracing::info!(conversation_id = %conv_uuid, "Aborted active agent run before truncation");
+        }
 
         // Delete messages up to and including the specified message
         let storage = self.ctx.storage.lock().await;
@@ -254,9 +297,19 @@ impl ServerHandler {
             );
             let recalls = recalls_map_for_conversation(&storage, &conv)?;
             let view = to_conversation_view(&conv, &recalls);
+            drop(storage);
             self.send_event(ServerEvent::ConversationLoaded {
-                conversation: view,
+                conversation: view.clone(),
             })?;
+            // Keep other viewers of this conversation in sync.
+            self.ctx
+                .subscriptions
+                .broadcast_excluding(
+                    conv_uuid,
+                    ServerEvent::ConversationLoaded { conversation: view },
+                    self.connection_id,
+                )
+                .await;
         } else {
             return Err(anyhow!("Conversation not found after truncation"));
         }

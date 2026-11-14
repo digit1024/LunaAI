@@ -20,6 +20,8 @@ jobs:
         run: unset ARGV0 && cargo check --workspace
       - name: cargo clippy
         run: unset ARGV0 && cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo test (server crates)
+        run: unset ARGV0 && cargo test -p cosmic_llm -p agentic-loop
       - name: install cargo-audit
         run: cargo install cargo-audit --locked
       - name: cargo audit

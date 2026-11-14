@@ -153,26 +153,30 @@ impl ServerHandler {
         conversation_uuid: Uuid,
         agent_messages: Vec<LlmMessage>,
     ) -> Result<()> {
-        {
-            let map = self.ctx.active_agent_runs.read().await;
-            if map.contains_key(&conversation_uuid) {
-                return Err(anyhow!("Agent already running for this conversation"));
-            }
-        }
+        // Clone the handles we need up front so we can hold ONE write lock
+        // across check + spawn + insert. Doing the existence check and the
+        // insert under separate lock acquisitions is a TOCTOU race: two
+        // concurrent SendMessage commands could both pass the check and both
+        // spawn an agent for the same conversation.
+        let runs = self.ctx.active_agent_runs.clone();
+        let ctx = self.ctx.clone();
+        let profile_name = self.session.profile_name.clone();
+        let llm_client = self.session.llm_client.clone();
+        let allowed_tool_names = self.session.allowed_tool_names.clone();
 
+        let mut map = runs.write().await;
+        if map.contains_key(&conversation_uuid) {
+            return Err(anyhow!("Agent already running for this conversation"));
+        }
         let handle = spawn_agent_task(
-            self.ctx.clone(),
+            ctx,
             conversation_uuid,
             agent_messages,
-            self.session.profile_name.clone(),
-            self.session.llm_client.clone(),
-            self.session.allowed_tool_names.clone(),
+            profile_name,
+            llm_client,
+            allowed_tool_names,
         );
-        let abort = handle.abort_handle();
-        {
-            let mut map = self.ctx.active_agent_runs.write().await;
-            map.insert(conversation_uuid, abort);
-        }
+        map.insert(conversation_uuid, handle.abort_handle());
         Ok(())
     }
     pub(super) async fn run_agent_for_conversation(
@@ -221,22 +225,29 @@ impl ServerHandler {
         }
 
         let storage = self.ctx.storage.lock().await;
+        let mut pending_profile_switch: Option<String> = None;
         let conversation_uuid = if let Some(existing) = conversation_id {
             let uuid = Uuid::parse_str(&existing).context("invalid conversation id")?;
-            
-            // Check if conversation's stored profile differs from current session profile
-            // If so, update the conversation's stored profile to match session profile
+
+            // The conversation is the source of truth for its profile. If it
+            // differs from this session, adopt it into the session (same
+            // semantics as LoadConversation) instead of silently rewriting the
+            // conversation — two devices on different profiles used to flip the
+            // conversation's profile back and forth on every send.
             if let Some(conv) = storage.get_conversation(&uuid).context("failed to get conversation")? {
-                let conv_profile = conv.profile_name.as_deref();
-                let session_profile = Some(self.session.profile_name.as_str());
-                
-                // Update conversation's profile if it differs
-                if conv_profile != session_profile {
-                    let _ = storage.update_conversation_profile(&uuid, session_profile)
-                        .context("failed to update conversation profile");
+                match &conv.profile_name {
+                    Some(conv_profile) if conv_profile != &self.session.profile_name => {
+                        pending_profile_switch = Some(conv_profile.clone());
+                    }
+                    None => {
+                        // Legacy conversation with no stored profile: adopt the session's.
+                        let _ = storage.update_conversation_profile(&uuid, Some(self.session.profile_name.as_str()))
+                            .context("failed to update conversation profile");
+                    }
+                    _ => {}
                 }
             }
-            
+
             uuid
         } else {
             // Store current profile when creating new conversation
@@ -260,12 +271,22 @@ impl ServerHandler {
         // describing and RAG indexing below take their own locks / do I/O.
         drop(storage);
 
+        // Adopt the conversation's profile into this session if it differed
+        // (cannot run under the storage lock: update_profile awaits the MCP
+        // registry and recomputes the tools policy).
+        if let Some(profile) = pending_profile_switch {
+            self.session
+                .update_profile(&profile, &self.ctx.config, &self.ctx.mcp_registry)
+                .await
+                .with_context(|| format!("switch to conversation profile '{profile}'"))?;
+            self.send_event(ServerEvent::ProfileChanged { profile })?;
+        }
+
         let uploads_base = self.ctx.config.uploads_dir();
         let rag_cfg = self.ctx.config.attachment_rag.clone();
         let emb = self.ctx.embedding_provider.as_deref();
-        let main_preset = self.session.active_resolved(&self.ctx.config)?.preset().clone();
-        let vision_client = self.ctx.config.vision_client();
 
+        // 1) Resolve + validate attachments (local I/O only — no network yet).
         let mut resolved_attachments: Vec<crate::llm::Attachment> = Vec::new();
         let mut resolved_uids: Vec<String> = Vec::new();
         if let Some(ids) = attachment_ids.as_ref() {
@@ -290,36 +311,6 @@ impl ServerHandler {
                     crate::llm::file_utils::create_attachment(&path_str).context("create_attachment")?;
                 crate::llm::file_utils::validate_file_for_llm(&att)?;
 
-                // Route images to the auxiliary vision model (describe-once) so
-                // base64 bytes never reach the main model.
-                if let Some(client) = &vision_client {
-                    if crate::services::vision::should_describe(
-                        &self.ctx.config,
-                        &main_preset,
-                        &att.mime_type,
-                    ) {
-                        match crate::services::vision::describe_cached(
-                            &self.ctx.storage,
-                            client,
-                            &self.ctx.config,
-                            &att,
-                            None,
-                        )
-                        .await
-                        {
-                            Ok(description) => {
-                                att.description = Some(description);
-                                att.content = None;
-                            }
-                            Err(e) => tracing::warn!(
-                                error = %e,
-                                uid = %stem_uid,
-                                "Vision describe failed; embedding image instead"
-                            ),
-                        }
-                    }
-                }
-
                 if att.mime_type.starts_with("text/") || att.mime_type == "text/markdown" {
                     att.content = crate::services::attachment_rag::trim_extracted_text_for_inline(
                         att.content.take(),
@@ -331,24 +322,12 @@ impl ServerHandler {
             }
         }
 
-        let storage_arc = self.ctx.storage.clone();
-        for (att, uid) in resolved_attachments.iter().zip(resolved_uids.iter()) {
-            if let Err(e) = crate::services::attachment_rag::index_large_attachment_if_needed(
-                storage_arc.clone(),
-                emb,
-                &rag_cfg,
-                &conversation_uuid.to_string(),
-                uid,
-                &att.file_name,
-                &att.file_path,
-            )
-            .await
-            {
-                tracing::warn!(error = %e, attachment_uid = %uid, "Attachment RAG indexing failed");
-            }
-        }
-
-        let to_store = crate::llm::file_utils::strip_attachments_for_storage(resolved_attachments);
+        // 2) Persist the user message and ack IMMEDIATELY. The slow network
+        //    work (vision describe, RAG embedding) happens after the ack so
+        //    clients are never left waiting for it before their message is
+        //    durably stored and acknowledged.
+        let to_store =
+            crate::llm::file_utils::strip_attachments_for_storage(resolved_attachments.clone());
         let metadata = MessageMetadata {
             attachments: if to_store.is_empty() {
                 None
@@ -386,6 +365,77 @@ impl ServerHandler {
             )
             .await;
 
+        // 3) Vision pass (network): route images through the auxiliary vision
+        //    model (describe-once) so base64 bytes never reach the main model.
+        //    Descriptions are patched into the persisted message metadata.
+        let main_preset = self.session.active_resolved(&self.ctx.config)?.preset().clone();
+        let vision_client = self.ctx.config.vision_client();
+        let mut described_any = false;
+        if let Some(client) = &vision_client {
+            for (att, stem_uid) in resolved_attachments.iter_mut().zip(resolved_uids.iter()) {
+                if !crate::services::vision::should_describe(
+                    &self.ctx.config,
+                    &main_preset,
+                    &att.mime_type,
+                ) {
+                    continue;
+                }
+                match crate::services::vision::describe_cached(
+                    &self.ctx.storage,
+                    client,
+                    &self.ctx.config,
+                    att,
+                    None,
+                )
+                .await
+                {
+                    Ok(description) => {
+                        att.description = Some(description);
+                        att.content = None;
+                        described_any = true;
+                    }
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        uid = %stem_uid,
+                        "Vision describe failed; embedding image instead"
+                    ),
+                }
+            }
+        }
+        if described_any {
+            let updated = crate::llm::file_utils::strip_attachments_for_storage(
+                resolved_attachments.clone(),
+            );
+            if let Some(rowid) = message_uuid_to_rowid(&message_id) {
+                let storage = self.ctx.storage.lock().await;
+                if let Err(e) = storage.update_message_attachments(rowid, &updated) {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to persist vision descriptions on message; images will be embedded instead"
+                    );
+                }
+            }
+        }
+
+        // 4) RAG indexing (network): auxiliary, failures are non-fatal.
+        let storage_arc = self.ctx.storage.clone();
+        for (att, uid) in resolved_attachments.iter().zip(resolved_uids.iter()) {
+            if let Err(e) = crate::services::attachment_rag::index_large_attachment_if_needed(
+                storage_arc.clone(),
+                emb,
+                &rag_cfg,
+                &conversation_uuid.to_string(),
+                uid,
+                &att.file_name,
+                &att.file_path,
+            )
+            .await
+            {
+                tracing::warn!(error = %e, attachment_uid = %uid, "Attachment RAG indexing failed");
+            }
+        }
+
+        // 5) Run the agent.
         self.run_agent_for_conversation(
             conversation_uuid,
             RunAgentOptions {
@@ -396,23 +446,31 @@ impl ServerHandler {
         .await
     }
     pub(super) async fn handle_stop_streaming(&mut self, conversation_id: Option<String>) -> Result<()> {
-        if let Some(ref conv_id_str) = conversation_id {
-            if let Ok(uuid) = Uuid::parse_str(conv_id_str) {
-                let mut map = self.ctx.active_agent_runs.write().await;
-                if let Some(abort) = map.remove(&uuid) {
-                    abort.abort();
-                }
-            }
+        // None means "stop whatever this session is currently working on".
+        let conv_id_str = match conversation_id {
+            Some(s) => s,
+            None => self
+                .session
+                .active_conversation_id
+                .map(|u| u.to_string())
+                .ok_or_else(|| {
+                    anyhow!("No conversation specified and this session has no active conversation to stop")
+                })?,
+        };
+        let uuid = Uuid::parse_str(&conv_id_str).context("invalid conversation id format")?;
+
+        if let Some(abort) = self.ctx.active_agent_runs.write().await.remove(&uuid) {
+            abort.abort();
         }
 
-        let conv_id_str = conversation_id.unwrap_or_else(|| "unknown".to_string());
         let event = ServerEvent::StreamingStopped {
-            conversation_id: conv_id_str.clone(),
+            conversation_id: conv_id_str,
         };
         self.send_event(event.clone())?;
-        if let Ok(uuid) = Uuid::parse_str(&conv_id_str) {
-            self.ctx.subscriptions.broadcast(uuid, event).await;
-        }
+        self.ctx
+            .subscriptions
+            .broadcast_excluding(uuid, event, self.connection_id)
+            .await;
 
         Ok(())
     }

@@ -1,0 +1,33 @@
+# cargo-audit configuration for the LunaAI workspace.
+#
+# NOTE: cargo-audit only supports a plain list of IDs here; reasons/expiry are
+# tracked in the comments below and in audits/server-code-review-2026-11.md
+# (SEC-1). Remove entries once fixed upstream — revisit before the dates given.
+
+[advisories]
+ignore = [
+    # ── zip 8.6.0 — revisit by 2027-02-13 ────────────────────────────────
+    # Pulled in transitively by `markdownify` (document->markdown conversion
+    # for uploaded attachments). markdownify 0.3.9 (latest at time of writing)
+    # still pins `zip = "^8.6.0"`, so no compatible update can clear these.
+    # markdownify's conversion path reads archive entries in memory
+    # (docx/xlsx XML parsing) and never calls the vulnerable
+    # `ZipArchive::extract()` / `ZipStreamReader::extract()` filesystem APIs
+    # these advisories describe, so the symlink/permissions/process-abort
+    # vectors are not reachable from this codebase.
+    # Upstream: PR against https://github.com/Skardyy/mcat bumping zip -> 9.
+    # Fallback if upstream stalls: vendor a patched markdownify fork.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
+    "RUSTSEC-2026-0429",
+
+    # ── calamine 0.36.1 — revisit by 2027-02-13 ──────────────────────────
+    # XLS/XLSX parser, also pinned by markdownify (^0.36.1).
+    # RUSTSEC-2026-0436: panic / unbounded allocation on malformed CFB/OLE2
+    # input. Reachable in principle via crafted `.xls` uploads, but uploads
+    # are API-key authenticated and content-classified before conversion, and
+    # conversion runs inside a spawned tokio task — a panic aborts only that
+    # task, not the server. Accepted risk until markdownify bumps calamine.
+    "RUSTSEC-2026-0436",
+]

@@ -31,9 +31,7 @@ impl ServerHandler {
                 .context("failed to list memories")?
         };
         let memories: Vec<MemoryView> = entries.iter().map(memory_entry_to_view).collect();
-        let _ = self
-            .outbound
-            .send(ServerEvent::MemoriesList { memories });
+        self.send_event(ServerEvent::MemoriesList { memories })?;
         Ok(())
     }
     pub(super) async fn handle_update_memory(

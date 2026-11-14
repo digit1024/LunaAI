@@ -74,7 +74,7 @@ rand = "0.10"
 
 # HTTP server for file attachments (async)
 axum = { version = "0.8", features = ["ws"] }
-tower = "0.5"
+tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "fs", "timeout", "limit"] }
 multer = "3.0"
 
@@ -82,7 +82,7 @@ multer = "3.0"
 url = "2.5.4"
 
 # SQLite for storage
-rusqlite = { version = "0.39", features = ["bundled", "chrono", "uuid", "load_extension"] }
+rusqlite = { version = "0.42", features = ["bundled", "chrono", "uuid", "load_extension"] }
 # Vector search for long-term memory (sqlite-vec extension)
 sqlite-vec = "0.1.6"
 tokio-stream = "0.1"

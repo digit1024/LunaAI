@@ -9,7 +9,7 @@ use crate::{
 };
 use anyhow::Result;
 use std::{future::Future, sync::Arc};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 
 pub struct RunAgentOptions {
@@ -19,7 +19,7 @@ pub struct RunAgentOptions {
 pub struct ContextPipeline<'a> {
     ctx: &'a Arc<ServerContext>,
     session: &'a SessionState,
-    outbound: &'a UnboundedSender<ServerEvent>,
+    outbound: &'a Sender<ServerEvent>,
     conversation_id: Uuid,
     triggering_message_rowid: Option<i64>,
 }
@@ -34,7 +34,7 @@ impl<'a> ContextPipeline<'a> {
     pub fn new(
         ctx: &'a Arc<ServerContext>,
         session: &'a SessionState,
-        outbound: &'a UnboundedSender<ServerEvent>,
+        outbound: &'a Sender<ServerEvent>,
         conversation_id: Uuid,
         triggering_message_rowid: Option<i64>,
     ) -> Self {
@@ -209,7 +209,9 @@ impl<'a> ContextPipeline<'a> {
                 &outcome,
             ) {
                 Ok(event) => {
-                    let _ = self.outbound.send(event);
+                    if let Err(e) = self.outbound.try_send(event) {
+                        tracing::debug!(error = %e, "Dropping memories-recalled event (outbound full/closed)");
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "Failed to record memory recalls");
@@ -255,7 +257,7 @@ impl<'a> ContextPipeline<'a> {
                 context_limit,
             );
             let after = count_tokens(&selected, &token_counter);
-            let _ = self.outbound.send(ServerEvent::Info {
+            let _ = self.outbound.try_send(ServerEvent::Info {
                 message: format!(
                     "Context compacted: {} -> {} tokens ({} messages)",
                     before,

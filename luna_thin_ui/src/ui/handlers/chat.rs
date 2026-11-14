@@ -399,8 +399,8 @@ fn suggest_image_save_name(url: &str, title: &str, bytes: &[u8], is_svg: bool) -
     }
 
     if let Ok(parsed) = url::Url::parse(url) {
-        if let Some(segments) = parsed.path_segments() {
-            if let Some(name) = segments.filter(|s| !s.is_empty()).next_back() {
+        if let Some(mut segments) = parsed.path_segments() {
+            if let Some(name) = segments.rfind(|s| !s.is_empty()) {
                 if name.contains('.') {
                     return sanitize_filename(name);
                 }

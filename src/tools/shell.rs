@@ -18,6 +18,9 @@ use tokio::process::{Child, Command};
 
 const READ_CHUNK: usize = 8192;
 
+/// Parsed `shell_execute` arguments: argv, stdin, working directory, timeout.
+type ParsedArgs = (Vec<String>, Option<String>, Option<String>, Option<u64>);
+
 pub struct ShellTool {
     config: ShellToolConfig,
     validator: CommandValidator,
@@ -79,10 +82,7 @@ impl ShellTool {
     }
 
     /// Parse the argv, stdin, directory and timeout from a tool call.
-    fn parse_args(
-        &self,
-        call: &ToolCall,
-    ) -> Result<(Vec<String>, Option<String>, Option<String>, Option<u64>), String> {
+    fn parse_args(&self, call: &ToolCall) -> Result<ParsedArgs, String> {
         let params = &call.parameters;
 
         let command_val = params.get("command").ok_or("No command provided")?;
