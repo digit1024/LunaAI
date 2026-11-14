@@ -15,8 +15,9 @@ ignore = [
     # `ZipArchive::extract()` / `ZipStreamReader::extract()` filesystem APIs
     # these advisories describe, so the symlink/permissions/process-abort
     # vectors are not reachable from this codebase.
-    # Upstream: PR against https://github.com/Skardyy/mcat bumping zip -> 9.
-    # Fallback if upstream stalls: vendor a patched markdownify fork.
+    # Upstream: zip 8->9 already merged on `main` (Skardyy/mcat#112) but not
+    # yet in a published markdownify release; 0.3.9 still pins zip ^8.6.0.
+    # These clear once a new markdownify version ships.
     "RUSTSEC-2026-0367",
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",
@@ -29,5 +30,7 @@ ignore = [
     # are API-key authenticated and content-classified before conversion, and
     # conversion runs inside a spawned tokio task — a panic aborts only that
     # task, not the server. Accepted risk until markdownify bumps calamine.
+    # Upstream: PR opened — Skardyy/mcat#115 (bump calamine 0.36.1 -> 0.38).
+    # Fallback if upstream stalls: vendor a patched markdownify fork.
     "RUSTSEC-2026-0436",
 ]
