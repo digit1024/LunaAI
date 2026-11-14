@@ -1,17 +1,14 @@
 //! Internal `spawn_worker` tool: run an isolated sub-agent and return its final text.
 
 use super::loop_engine::AgenticLoop;
+use super::persistence::AgentPersistence;
 use super::protocol::{AgentUpdate, RunContext};
 use crate::config::{AppConfig, AttachmentRagConfig};
-use crate::llm::{LlmClient, Message, Role, ToolCall, ToolResult};
-use crate::storage::sqlite_storage_simple::MessageMetadata;
+use crate::llm::{LlmClient, Message, Role, ToolResult};
 use agentic_loop::mcp_servers_registry::MCPServerRegistry;
 use anyhow::{Context, Result};
-use serde_json::Value;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use uuid::Uuid;
 
 /// Run a worker sub-agent. Takes only owned `Send` data so nested workers are safe to spawn.
 /// `depth` is this worker's nesting depth (parent depth + 1); the caller has
@@ -99,9 +96,9 @@ pub async fn execute_spawn_worker(
     let storage_clone = storage.clone();
     let persist_conv_id = conv_id;
     let persist_task = tokio::spawn(async move {
-        let mut persistence = WorkerPersistence::new(storage_clone, persist_conv_id);
+        let mut persistence = AgentPersistence::new(storage_clone, persist_conv_id);
         while let Some(update) = agent_rx.recv().await {
-            if let Err(e) = persistence.handle_update(update).await {
+            if let Err(e) = persistence.persist(&update).await {
                 tracing::warn!(error = %e, "Worker persistence failed");
             }
         }
@@ -168,126 +165,4 @@ async fn run_worker_agent(
             Some(worker_run_context),
         )
         .await
-}
-
-/// Persists worker agent updates to an internal conversation without WebSocket broadcast.
-struct WorkerPersistence {
-    storage: Arc<crate::storage::Storage>,
-    conversation_id: Uuid,
-    pending_tool_calls: Vec<ToolCall>,
-    tool_params: HashMap<String, Value>,
-}
-
-impl WorkerPersistence {
-    fn new(storage: Arc<crate::storage::Storage>, conversation_id: Uuid) -> Self {
-        Self {
-            storage,
-            conversation_id,
-            pending_tool_calls: Vec::new(),
-            tool_params: HashMap::new(),
-        }
-    }
-
-    async fn handle_update(&mut self, update: AgentUpdate) -> Result<()> {
-        match update {
-            AgentUpdate::ToolPlanned { plan_items } => {
-                for plan in &plan_items {
-                    if let Ok(params) = serde_json::from_str::<Value>(&plan.params_json) {
-                        self.tool_params.insert(plan.id.clone(), params.clone());
-                        self.pending_tool_calls.push(ToolCall {
-                            id: plan.id.clone(),
-                            name: plan.name.clone(),
-                            parameters: params,
-                        });
-                    }
-                }
-            }
-            AgentUpdate::ToolStarted {
-                tool_call_id,
-                params_json,
-                ..
-            } => {
-                if let Ok(value) = serde_json::from_str::<Value>(&params_json) {
-                    self.tool_params.entry(tool_call_id).or_insert(value);
-                }
-            }
-            AgentUpdate::AssistantComplete {
-                full_text,
-                reasoning_content,
-            } => {
-                let tool_calls_slice = if self.pending_tool_calls.is_empty() {
-                    None
-                } else {
-                    Some(self.pending_tool_calls.as_slice())
-                };
-                let metadata = MessageMetadata {
-                    tool_calls: tool_calls_slice,
-                    reasoning_content: reasoning_content.as_deref(),
-                    attachments: None,
-                    ..MessageMetadata::default()
-                };
-                self.storage
-                    .add_message_with_metadata(
-                        &self.conversation_id,
-                        "assistant".to_string(),
-                        full_text,
-                        None,
-                        metadata,
-                    )
-                    .context("failed to persist worker assistant response")?;
-                self.pending_tool_calls.clear();
-            }
-            AgentUpdate::ToolResult {
-                tool_call_id,
-                name,
-                result_json,
-            } => {
-                self.persist_tool_result(&tool_call_id, &name, &result_json, "success")
-                    .await?;
-            }
-            AgentUpdate::ToolError {
-                tool_call_id,
-                name,
-                error,
-                ..
-            } => {
-                self.persist_tool_result(&tool_call_id, &name, &error, "error")
-                    .await?;
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    async fn persist_tool_result(
-        &mut self,
-        tool_call_id: &str,
-        name: &str,
-        payload: &str,
-        status: &str,
-    ) -> Result<()> {
-        let params = self.tool_params.get(tool_call_id);
-        let result_value =
-            serde_json::from_str::<Value>(payload).unwrap_or(Value::String(payload.to_string()));
-        let metadata = MessageMetadata {
-            tool_calls: None,
-            tool_call_id: Some(tool_call_id),
-            tool_name: Some(name),
-            tool_status: Some(status),
-            tool_params_json: params,
-            tool_result_json: Some(&result_value),
-            reasoning_content: None,
-            attachments: None,
-        };
-        self.storage
-            .add_message_with_metadata(
-                &self.conversation_id,
-                "tool".to_string(),
-                String::new(),
-                None,
-                metadata,
-            )
-            .context("failed to persist worker tool result")?;
-        Ok(())
-    }
 }

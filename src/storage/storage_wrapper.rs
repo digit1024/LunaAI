@@ -7,6 +7,28 @@ use uuid::Uuid;
 use super::conversation_storage::{Conversation as FileConversation, StoredMessage};
 use super::sqlite_storage_simple::{MessageMetadata, ScheduledJob, SqliteSettings, SqliteStorage};
 
+/// Deterministic pseudo-UUID for a message rowid:
+/// `00000000-0000-0000-0000-{rowid:012x}`. Single canonical rowid<->UUID
+/// mapping shared by storage and server code (previously duplicated inline
+/// in four places).
+pub fn rowid_to_message_uuid(rowid: i64) -> Uuid {
+    let hex_id = format!("{:012x}", rowid.min(0xffffffffffff));
+    let uuid_str = format!("00000000-0000-0000-0000-{hex_id}");
+    Uuid::parse_str(&uuid_str).unwrap_or_else(|_| Uuid::new_v4())
+}
+
+/// Inverse of [`rowid_to_message_uuid`]: extract the rowid from the last UUID
+/// group. Returns None when the last group is not 12 hex digits.
+pub fn message_uuid_to_rowid(id: &Uuid) -> Option<i64> {
+    let s = id.to_string();
+    let suffix = s.rsplit('-').next()?;
+    if suffix.len() == 12 {
+        i64::from_str_radix(suffix, 16).ok()
+    } else {
+        None
+    }
+}
+
 /// Wrapper that provides compatibility with the existing file-based storage API
 pub struct Storage {
     sqlite: SqliteStorage,
@@ -67,16 +89,8 @@ impl Storage {
             let stored_messages: Vec<StoredMessage> = messages
                 .into_iter()
                 .map(|msg| StoredMessage {
-                    // Generate deterministic UUID from rowid to ensure stable IDs across loads
-                    id: {
-                        let id_str = msg.id.to_string();
-                        Uuid::parse_str(&id_str).unwrap_or_else(|_| {
-                            // Format: 00000000-0000-0000-0000-{rowid:012x} (12 hex digits)
-                            let hex_id = format!("{:012x}", msg.id.min(0xffffffffffff));
-                            let uuid_str = format!("00000000-0000-0000-0000-{}", hex_id);
-                            uuid_str.parse().unwrap_or_else(|_| Uuid::new_v4())
-                        })
-                    },
+                    // Deterministic UUID from rowid ensures stable IDs across loads
+                    id: rowid_to_message_uuid(msg.id),
                     role: msg.role,
                     content: msg.content,
                     timestamp: DateTime::from_timestamp(msg.created_at, 0).unwrap_or_else(Utc::now),
@@ -134,16 +148,8 @@ impl Storage {
             let stored_messages: Vec<StoredMessage> = messages
                 .into_iter()
                 .map(|msg| StoredMessage {
-                    // Generate deterministic UUID from rowid to ensure stable IDs across loads
-                    id: {
-                        let id_str = msg.id.to_string();
-                        Uuid::parse_str(&id_str).unwrap_or_else(|_| {
-                            // Format: 00000000-0000-0000-0000-{rowid:012x} (12 hex digits)
-                            let hex_id = format!("{:012x}", msg.id.min(0xffffffffffff));
-                            let uuid_str = format!("00000000-0000-0000-0000-{}", hex_id);
-                            uuid_str.parse().unwrap_or_else(|_| Uuid::new_v4())
-                        })
-                    },
+                    // Deterministic UUID from rowid ensures stable IDs across loads
+                    id: rowid_to_message_uuid(msg.id),
                     role: msg.role,
                     content: msg.content,
                     timestamp: DateTime::from_timestamp(msg.created_at, 0).unwrap_or_else(Utc::now),
@@ -231,11 +237,7 @@ impl Storage {
         let rowid = self
             .sqlite
             .insert_message_with_metadata(&id_str, &role, &content, embedding, &metadata)?;
-        // Same deterministic UUID format as in get_conversation / truncate
-        let hex_id = format!("{:012x}", rowid.min(0xffffffffffff));
-        let uuid_str = format!("00000000-0000-0000-0000-{}", hex_id);
-        Uuid::parse_str(&uuid_str)
-            .map_err(|e| rusqlite::Error::InvalidParameterName(format!("Invalid UUID: {}", e)))
+        Ok(rowid_to_message_uuid(rowid))
     }
 
     /// Delete a conversation
@@ -284,17 +286,9 @@ impl Storage {
         // Find the target message by matching UUID
         // Since UUIDs are generated from i64 rowid, we need to convert each message's rowid to UUID
         // and compare with the target message_id
-        let target_msg = messages.iter().find(|msg| {
-            // Convert rowid to UUID using the same logic as in get_conversation
-            let id_str = msg.id.to_string();
-            let msg_uuid = Uuid::parse_str(&id_str).unwrap_or_else(|_| {
-                // Generate deterministic UUID from rowid (format: 00000000-0000-0000-0000-{rowid:012x})
-                let hex_id = format!("{:012x}", msg.id.min(0xffffffffffff));
-                let uuid_str = format!("00000000-0000-0000-0000-{}", hex_id);
-                uuid_str.parse().unwrap_or_else(|_| Uuid::new_v4())
-            });
-            msg_uuid == *message_id
-        });
+        let target_msg = messages
+            .iter()
+            .find(|msg| rowid_to_message_uuid(msg.id) == *message_id);
 
         if let Some(target) = target_msg {
             // Use the rowid directly for deletion

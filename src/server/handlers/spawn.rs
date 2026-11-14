@@ -2,21 +2,19 @@ use super::{helpers::{record_and_build_memories_recalled_event, truncate_preview
 use crate::{
     agentic::{
         loop_engine::AgenticLoop,
-        protocol::{AgentUpdate, PlannedTool},
+        persistence::AgentPersistence,
+        protocol::AgentUpdate,
         RunContext,
     },
     llm::{self, Message as LlmMessage, Role},
     llm::tokenizer::TokenCounter,
     server::dto::{PlannedToolView, ServerEvent},
     services::{ContextService, MessageConverter},
-    storage::{
-        sqlite_storage_simple::{Message as StorageMessage, MessageMetadata},
-        ScheduledJob, Storage,
-    },
+    storage::{sqlite_storage_simple::Message as StorageMessage, ScheduledJob},
 };
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
-use std::{collections::HashMap, collections::HashSet, sync::Arc, time::Duration};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -59,7 +57,7 @@ pub fn spawn_agent_task(
         .with_app_config(ctx.config.clone());
         let subs = subscriptions.clone();
         let stream_task = tokio::spawn(async move {
-            let mut persistence = PersistenceContext::new(storage, conversation_id);
+            let mut persistence = AgentPersistence::new(storage, conversation_id);
             while let Some(update) = agent_rx.recv().await {
                 if let Err(err) = process_agent_update(
                     &subs,
@@ -394,111 +392,19 @@ pub async fn run_scheduled_task(ctx: Arc<ServerContext>, job: ScheduledJob) -> R
     Ok(())
 }
 
-struct PersistenceContext {
-    storage: Arc<Storage>,
-    conversation_id: Uuid,
-    pending_tool_calls: Vec<crate::llm::ToolCall>,
-    tool_params: HashMap<String, Value>,
-}
-
-impl PersistenceContext {
-    fn new(storage: Arc<Storage>, conversation_id: Uuid) -> Self {
-        Self {
-            storage,
-            conversation_id,
-            pending_tool_calls: Vec::new(),
-            tool_params: HashMap::new(),
-        }
-    }
-
-    async fn persist_assistant(&mut self, content: &str, reasoning_content: Option<&str>) -> Result<()> {
-        let tool_calls_slice = if self.pending_tool_calls.is_empty() {
-            None
-        } else {
-            Some(self.pending_tool_calls.as_slice())
-        };
-        let metadata = MessageMetadata {
-            tool_calls: tool_calls_slice,
-            reasoning_content,
-            attachments: None,
-            ..MessageMetadata::default()
-        };
-        self.storage
-            .add_message_with_metadata(
-                &self.conversation_id,
-                "assistant".to_string(),
-                content.to_string(),
-                None,
-                metadata,
-            )
-            .context("failed to persist assistant response")?;
-        self.pending_tool_calls.clear();
-        Ok(())
-    }
-
-    fn register_tools(&mut self, plans: &[PlannedTool]) {
-        for plan in plans {
-            if let Ok(params) = serde_json::from_str::<Value>(&plan.params_json) {
-                self.tool_params.insert(plan.id.clone(), params.clone());
-                self.pending_tool_calls.push(crate::llm::ToolCall {
-                    id: plan.id.clone(),
-                    name: plan.name.clone(),
-                    parameters: params,
-                });
-            }
-        }
-    }
-
-    fn mark_tool_started(&mut self, tool_call_id: &str, params_json: &str) {
-        if let Ok(value) = serde_json::from_str::<Value>(params_json) {
-            self.tool_params
-                .entry(tool_call_id.to_string())
-                .or_insert(value);
-        }
-    }
-
-    async fn persist_tool_result(
-        &mut self,
-        tool_call_id: &str,
-        name: &str,
-        payload: &str,
-        status: &str,
-    ) -> Result<()> {
-        let params = self.tool_params.get(tool_call_id);
-        let result_value =
-            serde_json::from_str::<Value>(payload).unwrap_or(Value::String(payload.to_string()));
-        let metadata = MessageMetadata {
-            tool_calls: None,
-            tool_call_id: Some(tool_call_id),
-            tool_name: Some(name),
-            tool_status: Some(status),
-            tool_params_json: params,
-            tool_result_json: Some(&result_value),
-            reasoning_content: None,
-            attachments: None,
-        };
-        // Use empty content - tool_result_json holds the actual data
-        self.storage
-            .add_message_with_metadata(
-                &self.conversation_id,
-                "tool".to_string(),
-                String::new(),
-                None,
-                metadata,
-            )
-            .context("failed to persist tool result")?;
-        Ok(())
-    }
-}
-
 async fn process_agent_update(
     subscriptions: &std::sync::Arc<
         crate::server::conversation_subscriptions::ConversationSubscriptions,
     >,
     conversation_id: Uuid,
-    persistence: &mut PersistenceContext,
+    persistence: &mut AgentPersistence,
     update: AgentUpdate,
 ) -> Result<()> {
+    // Durable side effects first; on failure the stream task broadcasts an
+    // Error and the event below is skipped (same behavior as before the
+    // persistence unification).
+    persistence.persist(&update).await?;
+
     let cid = conversation_id.to_string();
     match update {
         AgentUpdate::AssistantStreamingStarted => {
@@ -506,7 +412,7 @@ async fn process_agent_update(
                 .broadcast(
                     conversation_id,
                     ServerEvent::StreamingStarted {
-                        conversation_id: cid.clone(),
+                        conversation_id: cid,
                     },
                 )
                 .await;
@@ -516,7 +422,7 @@ async fn process_agent_update(
                 .broadcast(
                     conversation_id,
                     ServerEvent::AssistantDelta {
-                        conversation_id: cid.clone(),
+                        conversation_id: cid,
                         chunk: text_chunk,
                         seq,
                     },
@@ -528,27 +434,28 @@ async fn process_agent_update(
                 .broadcast(
                     conversation_id,
                     ServerEvent::ReasoningContentDelta {
-                        conversation_id: cid.clone(),
+                        conversation_id: cid,
                         chunk,
                     },
                 )
                 .await;
         }
-        AgentUpdate::AssistantComplete { full_text, reasoning_content } => {
-            persistence.persist_assistant(&full_text, reasoning_content.as_deref()).await?;
+        AgentUpdate::AssistantComplete {
+            full_text,
+            reasoning_content,
+        } => {
             subscriptions
                 .broadcast(
                     conversation_id,
                     ServerEvent::AssistantComplete {
-                        conversation_id: cid.clone(),
+                        conversation_id: cid,
                         content: full_text,
-                        reasoning_content: reasoning_content.clone(),
+                        reasoning_content,
                     },
                 )
                 .await;
         }
         AgentUpdate::ToolPlanned { plan_items } => {
-            persistence.register_tools(&plan_items);
             let converted = plan_items
                 .into_iter()
                 .filter_map(|plan| {
@@ -565,7 +472,7 @@ async fn process_agent_update(
                 .broadcast(
                     conversation_id,
                     ServerEvent::ToolPlanned {
-                        conversation_id: cid.clone(),
+                        conversation_id: cid,
                         tools: converted,
                     },
                 )
@@ -576,14 +483,13 @@ async fn process_agent_update(
             name,
             params_json,
         } => {
-            persistence.mark_tool_started(&tool_call_id, &params_json);
             let params_value =
                 serde_json::from_str::<Value>(&params_json).unwrap_or(Value::String(params_json));
             subscriptions
                 .broadcast(
                     conversation_id,
                     ServerEvent::ToolStarted {
-                        conversation_id: cid.clone(),
+                        conversation_id: cid,
                         tool_call_id,
                         name,
                         params_json: params_value,
@@ -596,16 +502,13 @@ async fn process_agent_update(
             name,
             result_json,
         } => {
-            persistence
-                .persist_tool_result(&tool_call_id, &name, &result_json, "success")
-                .await?;
             let result_value = serde_json::from_str::<Value>(&result_json)
                 .unwrap_or(Value::String(result_json.clone()));
             subscriptions
                 .broadcast(
                     conversation_id,
                     ServerEvent::ToolResult {
-                        conversation_id: cid.clone(),
+                        conversation_id: cid,
                         tool_call_id,
                         name,
                         result_json: result_value,
@@ -619,14 +522,11 @@ async fn process_agent_update(
             error,
             ..
         } => {
-            persistence
-                .persist_tool_result(&tool_call_id, &name, &error, "error")
-                .await?;
             subscriptions
                 .broadcast(
                     conversation_id,
                     ServerEvent::ToolError {
-                        conversation_id: cid.clone(),
+                        conversation_id: cid,
                         tool_call_id,
                         name,
                         error,
@@ -639,7 +539,7 @@ async fn process_agent_update(
                 .broadcast(
                     conversation_id,
                     ServerEvent::ConversationComplete {
-                        conversation_id: cid.clone(),
+                        conversation_id: cid,
                     },
                 )
                 .await;

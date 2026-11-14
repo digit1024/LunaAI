@@ -139,18 +139,11 @@ pub(super) fn truncate_preview(text: &str) -> String {
 }
 
 pub(super) fn message_rowid_to_uuid_string(rowid: i64) -> String {
-    let hex_id = format!("{:012x}", rowid.min(0xffffffffffff));
-    format!("00000000-0000-0000-0000-{}", hex_id)
+    crate::storage::rowid_to_message_uuid(rowid).to_string()
 }
 
 pub(super) fn message_uuid_to_rowid(id: &Uuid) -> Option<i64> {
-    let s = id.to_string();
-    let suffix = s.rsplit('-').next()?;
-    if suffix.len() == 12 {
-        i64::from_str_radix(suffix, 16).ok()
-    } else {
-        None
-    }
+    crate::storage::message_uuid_to_rowid(id)
 }
 
 pub(super) fn memory_entries_to_views(entries: &[MemoryEntry]) -> Vec<MemoryView> {
