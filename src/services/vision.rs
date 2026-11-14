@@ -3,7 +3,7 @@
 //! cached by image content hash and computed once.
 
 use crate::config::{AppConfig, ModelPreset, VisionMode};
-use crate::llm::{Attachment, LlmClient, Message, Role};
+use crate::llm::{Attachment, LlmClient, LlmError, Message, Role};
 use crate::storage::Storage;
 use anyhow::Result;
 use sha2::{Digest, Sha256};
@@ -88,10 +88,45 @@ pub async fn describe_cached(
         },
     ];
 
-    let response = client
-        .send_message_with_tools(request, vec![], Some(0.2), Some(config.vision.max_tokens))
-        .await
-        .map_err(|e| anyhow::anyhow!("vision describe failed: {e}"))?;
+    // Give the model a sane output budget, and escalate once or twice if it hits
+    // the cap before producing content (common with reasoning/thinking models,
+    // whose reasoning tokens eat the budget first).
+    let mut max_tokens = config.vision.max_tokens.max(256);
+    let mut response = None;
+    for attempt in 0..3 {
+        match client
+            .send_message_with_tools(
+                request.clone(),
+                vec![],
+                Some(0.2),
+                Some(max_tokens),
+            )
+            .await
+        {
+            Ok(r) => {
+                response = Some(r);
+                break;
+            }
+            Err(LlmError::LengthTruncated { .. }) => {
+                if attempt == 2 || max_tokens >= 4096 {
+                    return Err(anyhow::anyhow!(
+                        "vision model hit its output token limit before producing a description \
+                         (max_tokens={max_tokens}). Raise [vision].max_tokens, or use a \
+                         non-reasoning vision model (e.g. google/gemini-2.0-flash-001, \
+                         openai/gpt-4o-mini)."
+                    ));
+                }
+                max_tokens = (max_tokens * 2).min(4096);
+                tracing::warn!(
+                    attempt,
+                    next_max_tokens = max_tokens,
+                    "Vision model truncated before output; retrying with a larger budget"
+                );
+            }
+            Err(e) => return Err(anyhow::anyhow!("vision describe failed: {e}")),
+        }
+    }
+    let response = response.ok_or_else(|| anyhow::anyhow!("vision describe produced no response"))?;
 
     let description = response.content.trim().to_string();
     if description.is_empty() {
