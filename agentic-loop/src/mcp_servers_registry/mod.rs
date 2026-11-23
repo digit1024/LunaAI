@@ -23,6 +23,21 @@ enum ServerInitResult {
     },
 }
 
+/// Outcome of probing (trying to connect) one MCP server, captured *without*
+/// mutating registry state. Lets a background retry run the (potentially slow
+/// or hanging) connect/handshake outside the registry lock, then commit the
+/// result in a short critical section.
+pub enum ServerProbe {
+    Connected {
+        name: String,
+        connection: MCPConnection,
+    },
+    Failed {
+        name: String,
+        error: String,
+    },
+}
+
 async fn init_server(name: String, config: MCPServerConfig) -> ServerInitResult {
     let mut conn = MCPConnection::new(name.clone(), config);
     match conn.connect().await {
@@ -92,6 +107,62 @@ impl MCPServerRegistry {
             }
         }
         Ok(self)
+    }
+
+    /// Servers recorded as failed during initialization that still have a
+    /// matching entry in `config`, so they can be retried. Returns
+    /// `(server_name, server_config)` pairs.
+    pub fn retryable_failed(
+        &self,
+        config: &crate::mcp_config::MCPConfig,
+    ) -> Vec<(String, MCPServerConfig)> {
+        self.failed_servers
+            .iter()
+            .filter_map(|(name, _)| config.servers.get(name).cloned().map(|cfg| (name.clone(), cfg)))
+            .collect()
+    }
+
+    /// Attempt to connect the given servers concurrently **without** mutating
+    /// registry state, so a slow or hanging server cannot block concurrent
+    /// readers (tool calls, status endpoint) while holding the registry lock.
+    /// Pair the result with [`commit_probe_results`] under a short write lock.
+    pub async fn probe_servers(entries: Vec<(String, MCPServerConfig)>) -> Vec<ServerProbe> {
+        let results =
+            futures::future::join_all(entries.into_iter().map(|(name, cfg)| init_server(name, cfg)))
+                .await;
+        results
+            .into_iter()
+            .map(|r| match r {
+                ServerInitResult::Connected { name, connection } => {
+                    ServerProbe::Connected { name, connection }
+                }
+                ServerInitResult::Failed { name, error } => ServerProbe::Failed { name, error },
+            })
+            .collect()
+    }
+
+    /// Commit probe results produced by [`probe_servers`]: recovered servers are
+    /// moved from `failed_servers` into `servers`; still-failing servers keep
+    /// their entry with a refreshed error message. Returns the recovered names.
+    pub fn commit_probe_results(&mut self, probes: Vec<ServerProbe>) -> Vec<String> {
+        let mut recovered = Vec::new();
+        for probe in probes {
+            match probe {
+                ServerProbe::Connected { name, connection } => {
+                    self.failed_servers.remove(&name);
+                    self.servers.insert(name.clone(), Arc::new(RwLock::new(connection)));
+                    recovered.push(name);
+                }
+                ServerProbe::Failed { name, error } => {
+                    // Only refresh the message if the server is still tracked
+                    // as failed (it may have been enabled/removed meanwhile).
+                    if self.failed_servers.contains_key(&name) {
+                        self.failed_servers.insert(name, error);
+                    }
+                }
+            }
+        }
+        recovered
     }
 
     /// Get the tools list from the MCP servers

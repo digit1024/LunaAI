@@ -19,6 +19,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub struct ServerOptions {
@@ -47,6 +48,11 @@ async fn launch(options: ServerOptions) -> Result<()> {
     let default_allowed_tool_names =
         initialize_mcp_registry(&mcp_registry, &mcp_config, &config).await;
 
+    // Token used to stop background work that spawns child processes (the MCP
+    // retry loop) as soon as shutdown begins, so we never launch a fresh child
+    // mid-teardown that would then be orphaned when the runtime drops.
+    let mcp_shutdown = CancellationToken::new();
+
     let ctx = build_server_context(
         config,
         prompt_manager,
@@ -58,6 +64,23 @@ async fn launch(options: ServerOptions) -> Result<()> {
     )?;
 
     spawn_background_workers(ctx.clone());
+
+    // If some MCP servers failed at startup the server still runs (see
+    // initialize_mcp_registry); schedule a background loop to retry those
+    // failed servers every MCP_RETRY_INTERVAL_SECS until they all come back.
+    let mcp_failed_count = { ctx.mcp_registry.read().await.failed_servers.len() };
+    if mcp_failed_count > 0 {
+        tracing::info!(
+            count = mcp_failed_count,
+            interval_secs = MCP_RETRY_INTERVAL_SECS,
+            "Some MCP servers failed at startup; background retry loop scheduled"
+        );
+        spawn_mcp_retry_loop(
+            ctx.mcp_registry.clone(),
+            convert_mcp_config(&mcp_config),
+            mcp_shutdown.clone(),
+        );
+    }
 
     let bind_addr = format!("{}:{}", ctx.config.server.host, ctx.config.server.port);
     if ctx.config.server.host.trim() == "0.0.0.0" || ctx.config.server.host.trim() == "::" {
@@ -78,7 +101,12 @@ async fn launch(options: ServerOptions) -> Result<()> {
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        // Shutdown requested: stop the MCP retry loop before draining so it
+        // cannot spawn a fresh child process mid-teardown.
+        mcp_shutdown.cancel();
+    })
     .await
     .context("server error")?;
 
@@ -476,6 +504,94 @@ fn spawn_scheduler_loop(ctx: Arc<ServerContext>) {
                         );
                     }
                 }
+            }
+        }
+    });
+}
+
+/// How often the background loop retries MCP servers that failed at startup.
+/// Retries run until every retryable failed server connects (or shutdown).
+const MCP_RETRY_INTERVAL_SECS: u64 = 600; // 10 minutes
+
+/// Background task that periodically reconnects MCP servers which failed during
+/// startup, until all of them are available again. Started only when at least
+/// one MCP server failed at init, so a healthy startup pays no cost here.
+///
+/// The (potentially slow) connect/handshake runs *outside* the registry lock via
+/// `MCPServerRegistry::probe_servers`, so a hanging server cannot block tool
+/// calls or the status endpoint; only the result commit takes a short write lock.
+fn spawn_mcp_retry_loop(
+    registry: Arc<RwLock<MCPServerRegistry>>,
+    mcp_config: agentic_loop::mcp_config::MCPConfig,
+    shutdown: CancellationToken,
+) {
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(MCP_RETRY_INTERVAL_SECS));
+        interval.tick().await; // consume the immediate first tick
+
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    tracing::debug!("MCP retry loop: shutdown requested; stopping retries");
+                    return;
+                }
+                _ = interval.tick() => {}
+            }
+
+            // Collect the failed-but-retryable servers under a short read lock.
+            let entries = {
+                let guard = registry.read().await;
+                guard.retryable_failed(&mcp_config)
+            };
+            if entries.is_empty() {
+                tracing::info!(
+                    "MCP retry loop: no retryable failed MCP servers left; stopping retries"
+                );
+                return;
+            }
+
+            let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+            tracing::info!(
+                count = entries.len(),
+                servers = %names.join(", "),
+                "MCP retry loop: retrying failed MCP servers"
+            );
+
+            // Probe outside the lock; isolate panics so one bad child spawn
+            // cannot kill the loop.
+            use futures::FutureExt;
+            let probes = match std::panic::AssertUnwindSafe(MCPServerRegistry::probe_servers(
+                entries,
+            ))
+            .catch_unwind()
+            .await
+            {
+                Ok(p) => p,
+                Err(_) => {
+                    tracing::error!("MCP retry loop: probe panicked; will retry next interval");
+                    continue;
+                }
+            };
+
+            // Commit results under a short write lock (map updates only).
+            let recovered = {
+                let mut guard = registry.write().await;
+                guard.commit_probe_results(probes)
+            };
+            for name in &recovered {
+                tracing::info!(server = %name, "MCP retry loop: recovered MCP server");
+            }
+
+            let remaining = {
+                let guard = registry.read().await;
+                guard.retryable_failed(&mcp_config).len()
+            };
+            if remaining == 0 {
+                tracing::info!(
+                    "MCP retry loop: all failed MCP servers recovered; stopping retries"
+                );
+                return;
             }
         }
     });
