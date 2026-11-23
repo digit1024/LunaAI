@@ -13,7 +13,7 @@ final ttsProviderResolver = Provider<TtsProvider>((ref) {
 
   if (prefs.tts.providerId == 'builtin') {
     return BuiltInTtsProvider(
-      ttsService: ttsService,
+      engine: ttsService,
       getLanguage: () => ref.read(voicePreferencesProvider).language,
     );
   }

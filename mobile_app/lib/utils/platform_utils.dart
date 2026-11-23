@@ -4,6 +4,9 @@ import 'package:flutter/foundation.dart';
 /// Check if running on mobile platforms (Android/iOS)
 bool get isMobile => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
+/// Check if running on Android
+bool get isAndroid => !kIsWeb && Platform.isAndroid;
+
 /// Check if running on desktop platforms (Linux/Windows/macOS)
 bool get isDesktop => !kIsWeb && (Platform.isLinux || Platform.isWindows || Platform.isMacOS);
 

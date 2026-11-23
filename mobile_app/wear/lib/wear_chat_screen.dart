@@ -91,7 +91,9 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
     List<ChatMessage> next,
   ) {
     final ttsPrefs = ref.read(ttsPreferencesProvider);
-    if (!ttsPrefs.enabled) return;
+    // Dialog mode answers out loud, so the TTS toggle only gates the automatic
+    // read-aloud of ordinary chat replies.
+    if (!ttsPrefs.enabled && !_isDialogMode) return;
 
     final completedMessages = next.where(
       (m) => m.bubbleType == BubbleType.assistant && !m.isStreaming,
@@ -108,23 +110,24 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
   }
 
   Future<void> _playTtsForMessage(ChatMessage message) async {
-    if (message.content.isEmpty) return;
+    if (message.content.isEmpty) {
+      _resumeDialogListening();
+      return;
+    }
 
     final ttsPrefs = ref.read(ttsPreferencesProvider);
     final cleanText = prepareMessageForTts(message.content);
-    if (cleanText.trim().isEmpty) return;
+    if (cleanText.trim().isEmpty) {
+      _resumeDialogListening();
+      return;
+    }
 
     final ttsService = ref.read(ttsServiceProvider);
     await ttsService.setLanguage(ttsPrefs.language);
     await ttsService.stop();
 
     if (_isDialogMode) {
-      await ttsService.speak(cleanText, onComplete: () {
-        if (mounted && _isDialogMode) {
-          setState(() => _dialogModeState = DialogModeState.listening);
-          _startVoiceInput(dialogMode: true);
-        }
-      });
+      await ttsService.speak(cleanText, onComplete: _resumeDialogListening);
     } else {
       await ttsService.speak(cleanText);
     }
@@ -134,22 +137,29 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
     final state = ref.read(appControllerProvider);
     final ttsPrefs = ref.read(ttsPreferencesProvider);
 
-    if (!ttsPrefs.enabled) return;
-    if (state.chatMessages.isEmpty) return;
+    // Dialog mode always answers out loud; the toggle only gates the automatic
+    // read-aloud of ordinary chat replies.
+    if (!ttsPrefs.enabled && !_isDialogMode) return;
 
-    final lastAssistant = state.chatMessages.lastWhere(
-      (m) => m.bubbleType == BubbleType.assistant && !m.isStreaming,
-      orElse: () => ChatMessage(
-        id: '',
-        role: 'assistant',
-        content: '',
-        timestamp: DateTime.now(),
-        bubbleType: BubbleType.assistant,
-      ),
-    );
+    final lastAssistant = state.chatMessages.isEmpty
+        ? null
+        : state.chatMessages.lastWhere(
+            (m) => m.bubbleType == BubbleType.assistant && !m.isStreaming,
+            orElse: () => ChatMessage(
+              id: '',
+              role: 'assistant',
+              content: '',
+              timestamp: DateTime.now(),
+              bubbleType: BubbleType.assistant,
+            ),
+          );
 
-    if (lastAssistant.content.isEmpty) return;
-    if (_processedMessageIds.contains(lastAssistant.id)) return;
+    if (lastAssistant == null ||
+        lastAssistant.content.isEmpty ||
+        _processedMessageIds.contains(lastAssistant.id)) {
+      _resumeDialogListening();
+      return;
+    }
     _processedMessageIds.add(lastAssistant.id);
 
     await _playTtsForMessage(lastAssistant);
@@ -157,12 +167,56 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
 
   // ── Dialog Mode ────────────────────────────────────────────────────────────
 
-  void _enterDialogMode() {
+  Future<void> _enterDialogMode() async {
+    await ref.read(ttsPreferencesProvider.notifier).ensureLoaded();
+    if (!mounted) return;
+
+    if (!ref.read(ttsPreferencesProvider).enabled) {
+      await _showTtsRequiredDialog();
+      return;
+    }
+
     setState(() {
       _isDialogMode = true;
       _dialogModeState = DialogModeState.listening;
     });
-    _startVoiceInput(dialogMode: true);
+    unawaited(_startVoiceInput(dialogMode: true));
+  }
+
+  Future<void> _showTtsRequiredDialog() {
+    return showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('TTS is off', style: TextStyle(fontSize: 14)),
+        content: const Text(
+          'Dialog mode answers out loud. Turn on TTS first.',
+          style: TextStyle(fontSize: 12),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(fontSize: 12)),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _showOptionsMenu();
+            },
+            child: const Text('Set up', style: TextStyle(fontSize: 12)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// The dialog loop is re-armed from the TTS completion callback, so any path
+  /// that ends up not speaking has to hand the microphone back itself —
+  /// otherwise the overlay stays stuck on "speaking" forever.
+  void _resumeDialogListening() {
+    if (!mounted || !_isDialogMode) return;
+    if (_dialogModeState == DialogModeState.listening) return;
+    setState(() => _dialogModeState = DialogModeState.listening);
+    unawaited(_startVoiceInput(dialogMode: true));
   }
 
   void _exitDialogMode() {
@@ -518,7 +572,9 @@ class _WearChatScreenState extends ConsumerState<WearChatScreen> {
                         width: 56,
                         height: 56,
                         child: GestureDetector(
-                          onLongPress: _isRecognizing ? null : _enterDialogMode,
+                          onLongPress: _isRecognizing
+                              ? null
+                              : () => unawaited(_enterDialogMode()),
                           child: FloatingActionButton(
                             onPressed: _isRecognizing
                                 ? null

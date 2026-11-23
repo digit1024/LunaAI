@@ -23,6 +23,7 @@ import '../../services/tts_provider_resolver.dart';
 import '../../tts/message_speech.dart';
 import '../../utils/platform_utils.dart';
 import '../../voice/stt_service.dart';
+import '../../voice/tts_readiness.dart';
 import '../../voice/voice_catalog.dart';
 import '../../voice/voice_preferences.dart';
 import '../../voice/voice_recorder.dart';
@@ -30,6 +31,7 @@ import '../widgets/chat_bubble.dart';
 import '../widgets/typing_bubble.dart';
 import '../widgets/voice_mode_overlay.dart';
 import 'settings_screen.dart';
+import 'voice_settings_screen.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -256,6 +258,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void _startTypingFeedback() {
     if (_typingActive) return;
     _typingActive = true;
+    // A new turn supersedes any speech left over from the previous one.
+    // Releasing TTS first also stops the typing loop from taking audio focus
+    // away from a clip that is still playing, which would pause it silently.
+    unawaited(ref.read(ttsProviderResolver).stop());
     _typingPlayer.stop();
     _typingPlayer.play(AssetSource('audio/typing.mp3'));
   }
@@ -320,7 +326,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     final cleanText = prepareMessageForTts(lastAssistant.content);
     final voicePrefs = ref.read(voicePreferencesProvider);
-    if (!voicePrefs.ttsEnabled ||
+    // Voice mode always answers out loud — the "read replies aloud" toggle
+    // only governs automatic speech for ordinary chat turns.
+    final voiceModeSpeaks = state.isVoiceModeActive;
+    if ((!voicePrefs.ttsEnabled && !voiceModeSpeaks) ||
         lastAssistant.content.isEmpty ||
         cleanText.trim().isEmpty) {
       if (state.isVoiceModeActive &&
@@ -424,6 +433,52 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         controller.setVoiceModeState(VoiceModeState.idle);
       }
     });
+  }
+
+  /// Gates the voice loop on a working TTS provider: it answers out loud, so
+  /// without one the conversation would be silent.
+  Future<void> _requestVoiceMode() async {
+    final notifier = ref.read(voicePreferencesProvider.notifier);
+    await notifier.ensureLoaded();
+    if (!mounted) return;
+
+    final problem = await ttsSetupProblem(
+      ref.read(voicePreferencesProvider).tts,
+      readApiKey: notifier.getApiKey,
+    );
+    if (!mounted) return;
+
+    if (problem == null) {
+      ref.read(appControllerProvider.notifier).startVoiceMode();
+      return;
+    }
+    await _showTtsSetupDialog(problem);
+  }
+
+  Future<void> _showTtsSetupDialog(String problem) {
+    return showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Voice replies need TTS'),
+        content: Text(
+          '$problem Voice mode answers out loud, so it needs a working '
+          'text-to-speech provider before it can start.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              _openVoiceSettings();
+            },
+            child: const Text('Set up'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _enterVoiceMode() async {
@@ -570,7 +625,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
-  void _openVoiceSettings() => _openSettings();
+  /// Voice settings hold the TTS/STT provider, model and API key, so both the
+  /// setup dialog and the overlay error panel land directly there.
+  void _openVoiceSettings() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const VoiceSettingsScreen()),
+    );
+  }
 
   /// Full attach flow: pick file → size check → optional downscale → stage.
   Future<void> _pickAndAttachFile() async {
@@ -818,15 +879,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             final hasFiles = state.attachedFiles.isNotEmpty;
             if (text.trim().isNotEmpty || hasFiles) {
               _focusNode.unfocus();
+              // Silence any in-progress reading before the send chime takes
+              // audio focus.
+              unawaited(ref.read(ttsProviderResolver).stop());
               _sentPlayer.stop();
               unawaited(_sentPlayer.play(AssetSource('audio/sent.mp3')));
               controller.sendPrompt(text);
               _controller.clear();
             }
           },
-          onVoiceMode: () {
-            controller.startVoiceMode();
-          },
+          onVoiceMode: _requestVoiceMode,
           onAttachFile: _pickAndAttachFile,
           onRemoveFile: (fileId) {
             controller.removeAttachedFile(fileId);

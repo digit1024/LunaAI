@@ -1,29 +1,41 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
-import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
 
 import '../services/tts_provider.dart';
+import '../tts/tts_audio_sink.dart';
+import '../tts/tts_playback_pipeline.dart';
 import '../tts/tts_text_chunker.dart';
 import 'voice_catalog.dart';
 import 'voice_models.dart';
 import 'voice_preferences.dart';
 
+/// Upper bound for a single synthesis request. Synthesis of chunk N+1 overlaps
+/// playback of chunk N, so this only needs to cover a badly stalled provider.
+const Duration kTtsRequestTimeout = Duration(seconds: 60);
+
 /// TTS adapter for OpenAI-compatible `/audio/speech` and DashScope TTS.
+///
+/// Long messages are split into chunks that are synthesised ahead of time and
+/// handed to a [GaplessAudioSink], which keeps one clip prepared while the
+/// previous one is still audible.
 class RemoteTtsProvider implements TtsProvider {
   RemoteTtsProvider(this._ref);
 
   final Ref _ref;
-  AudioPlayer? _player;
-  StreamSubscription<void>? _completeSub;
-  Completer<void>? _playbackDone;
+
+  /// Remembered `response_format` per model, so a provider that rejects the
+  /// preferred format is not probed again for every chunk.
+  final Map<String, String> _formatCache = {};
+
+  http.Client? _client;
+  TtsAudioSink? _sink;
+  TtsPlaybackPipeline? _pipeline;
   VoidCallback? _pendingOnComplete;
-  bool _stopped = false;
+  int _generation = 0;
 
   @override
   Future<void> speak(String text, {VoidCallback? onComplete}) async {
@@ -33,7 +45,8 @@ class RemoteTtsProvider implements TtsProvider {
       return;
     }
 
-    _stopped = false;
+    final generation = ++_generation;
+    await _cancelCurrent();
     _pendingOnComplete = onComplete;
 
     final prefs = _ref.read(voicePreferencesProvider);
@@ -65,37 +78,105 @@ class RemoteTtsProvider implements TtsProvider {
         return;
       }
     }
+    if (generation != _generation) return;
 
-    final chunks = chunkTextForTts(trimmed, maxLen: preset.maxChars);
+    final chunks = chunkTextForTts(
+      trimmed,
+      maxLen: preset.maxChars,
+      firstMaxLen: kDefaultTtsFirstChunkLength,
+    );
     if (chunks.isEmpty) {
       _callComplete();
       return;
     }
 
+    final client = http.Client();
+    final sink = GaplessAudioSink();
+    final protocol = provider.ttsProtocol ?? VoiceApiProtocol.openAiSpeech;
+    final pipeline = TtsPlaybackPipeline(
+      synthesize: (chunk, index) => _synthesize(
+        text: chunk,
+        protocol: protocol,
+        endpoint: endpoint,
+        model: model,
+        voice: voice,
+        language: prefs.language,
+        apiKey: apiKey,
+        extraParams: config.extraParamsJson,
+        responseFormat: preset.responseFormat,
+        client: client,
+      ),
+      sink: sink,
+      onChunkFailed: (index) => debugPrint(
+        'TTS: no audio for chunk ${index + 1}/${chunks.length}, skipping',
+      ),
+    );
+
+    _client = client;
+    _sink = sink;
+    _pipeline = pipeline;
+
     try {
-      for (var i = 0; i < chunks.length && !_stopped; i++) {
-        final audio = await _synthesize(
-          text: chunks[i],
-          protocol: provider.ttsProtocol ?? VoiceApiProtocol.openAiSpeech,
-          endpoint: endpoint,
-          model: model,
-          voice: voice,
-          language: prefs.language,
-          apiKey: apiKey,
-          extraParams: config.extraParamsJson,
-          responseFormat: preset.responseFormat,
-        );
-        if (_stopped || audio == null) continue;
-        await _play(audio.bytes, audio.extension);
-      }
+      await pipeline.run(chunks);
     } catch (e, st) {
       debugPrint('TTS: synthesis/playback failed: $e\n$st');
     } finally {
-      if (!_stopped) _callComplete();
+      await _teardown(pipeline, sink, client);
+      // A newer speak()/stop() already reported completion for this session.
+      if (generation == _generation) _callComplete();
     }
   }
 
-  Future<_AudioBytes?> _synthesize({
+  @override
+  Future<void> stop() async {
+    _generation++;
+    await _cancelCurrent();
+    _callComplete();
+  }
+
+  Future<void> dispose() async {
+    _generation++;
+    await _cancelCurrent();
+    _pendingOnComplete = null;
+    _formatCache.clear();
+  }
+
+  /// Aborts and releases the session currently held in the fields, if any.
+  Future<void> _cancelCurrent() async {
+    final pipeline = _pipeline;
+    final sink = _sink;
+    final client = _client;
+    _pipeline = null;
+    _sink = null;
+    _client = null;
+    await _teardown(pipeline, sink, client);
+  }
+
+  Future<void> _teardown(
+    TtsPlaybackPipeline? pipeline,
+    TtsAudioSink? sink,
+    http.Client? client,
+  ) async {
+    if (pipeline != null) {
+      try {
+        await pipeline.cancel();
+      } catch (_) {}
+    }
+    if (sink != null) {
+      try {
+        await sink.dispose();
+      } catch (_) {}
+    }
+    client?.close();
+  }
+
+  void _callComplete() {
+    final callback = _pendingOnComplete;
+    _pendingOnComplete = null;
+    callback?.call();
+  }
+
+  Future<TtsAudioClip?> _synthesize({
     required String text,
     required VoiceApiProtocol protocol,
     required String endpoint,
@@ -105,30 +186,39 @@ class RemoteTtsProvider implements TtsProvider {
     required String? apiKey,
     required String extraParams,
     required String responseFormat,
+    required http.Client client,
   }) async {
-    if (protocol == VoiceApiProtocol.dashScopeTts) {
-      return _synthesizeDashScope(
+    final stopwatch = Stopwatch()..start();
+    try {
+      if (protocol == VoiceApiProtocol.dashScopeTts) {
+        return await _synthesizeDashScope(
+          text: text,
+          endpoint: endpoint,
+          model: model,
+          voice: voice,
+          language: language,
+          apiKey: apiKey,
+          extraParams: extraParams,
+          client: client,
+        );
+      }
+      return await _synthesizeOpenAi(
         text: text,
         endpoint: endpoint,
         model: model,
         voice: voice,
-        language: language,
         apiKey: apiKey,
         extraParams: extraParams,
+        responseFormat: responseFormat,
+        client: client,
       );
+    } finally {
+      debugPrint('TTS: synthesised ${text.length} chars in '
+          '${stopwatch.elapsedMilliseconds}ms');
     }
-    return _synthesizeOpenAi(
-      text: text,
-      endpoint: endpoint,
-      model: model,
-      voice: voice,
-      apiKey: apiKey,
-      extraParams: extraParams,
-      responseFormat: responseFormat,
-    );
   }
 
-  Future<_AudioBytes?> _synthesizeOpenAi({
+  Future<TtsAudioClip?> _synthesizeOpenAi({
     required String text,
     required String endpoint,
     required String model,
@@ -136,61 +226,36 @@ class RemoteTtsProvider implements TtsProvider {
     required String? apiKey,
     required String extraParams,
     required String responseFormat,
+    required http.Client client,
   }) async {
     final extra = _parseExtraParams(extraParams);
     final extraFormat = extra['response_format'];
-    final baseFormat =
-        extraFormat is String ? extraFormat : responseFormat;
-    final formats = <String>[
-      baseFormat,
-      if (baseFormat != 'pcm') 'pcm',
-    ];
+    final cacheKey = '$endpoint|$model';
+    final preferred = extraFormat is String
+        ? extraFormat
+        : (_formatCache[cacheKey] ?? responseFormat);
 
-    http.Response? response;
-    var requestedFormat = responseFormat;
-    for (final format in formats) {
-      final body = <String, dynamic>{
-        'model': model,
-        'input': text,
-        'voice': voice,
-        ...extra,
-        'response_format': format,
-      };
-      response = await http.post(
-        Uri.parse(endpoint),
-        headers: {
-          if (apiKey != null && apiKey.isNotEmpty)
-            'Authorization': 'Bearer $apiKey',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode(body),
-      );
-      requestedFormat = format;
-      if (_stopped) return null;
-      if (response.statusCode == 200) break;
-      final bodyText = response.body;
-      debugPrint(
-        'TTS: error ${response.statusCode} format=$format - ${_short(bodyText)}',
-      );
-      final isFormatError = response.statusCode == 400 &&
-          (bodyText.toLowerCase().contains('response_format') ||
-              bodyText.toLowerCase().contains('format') ||
-              bodyText.toLowerCase().contains('pcm') ||
-              bodyText.toLowerCase().contains('mp3'));
-      if (!isFormatError || format == 'pcm') {
-        return null;
-      }
-    }
+    final negotiated = await _postWithFormatFallback(
+      client: client,
+      endpoint: endpoint,
+      apiKey: apiKey,
+      text: text,
+      model: model,
+      voice: voice,
+      extra: extra,
+      preferredFormat: preferred,
+    );
+    final response = negotiated.response;
+    _formatCache[cacheKey] = negotiated.format;
 
-    if (response == null || response.statusCode != 200) return null;
-
-    final contentType =
-        (response.headers['content-type'] ?? '').toLowerCase();
+    final contentType = (response.headers['content-type'] ?? '').toLowerCase();
     if (contentType.contains('json')) {
-      debugPrint('TTS: non-audio response - ${_short(response.body)}');
-      return null;
+      throw TtsSynthesisFailure(
+        'non-audio response - ${_short(response.body)}',
+      );
     }
-    var format = requestedFormat;
+
+    var format = negotiated.format;
     if (contentType.contains('mpeg') || contentType.contains('mp3')) {
       format = 'mp3';
     } else if (contentType.contains('wav')) {
@@ -215,19 +280,134 @@ class RemoteTtsProvider implements TtsProvider {
 
     var bytes = response.bodyBytes;
     if (bytes.isEmpty) {
-      debugPrint(
-        'TTS: empty audio response content-type="$contentType"',
-      );
-      return null;
+      throw TtsSynthesisFailure('empty audio response '
+          'content-type="$contentType"');
     }
     if (format == 'pcm') {
       bytes = _wrapPcmAsWav(bytes);
       format = 'wav';
     }
-    debugPrint(
-      'TTS: ${bytes.length} bytes content-type="$contentType" format=$format',
+    debugPrint('TTS: ${bytes.length} bytes content-type="$contentType" '
+        'format=$format');
+    return TtsAudioClip(bytes, format);
+  }
+
+  /// Posts the synthesis request, falling back to `pcm` once when the provider
+  /// rejects the preferred `response_format`.
+  ///
+  /// Without the remembered format this costs a second round-trip per chunk,
+  /// which used to land in the audible gap between chunks.
+  Future<({http.Response response, String format})> _postWithFormatFallback({
+    required http.Client client,
+    required String endpoint,
+    required String? apiKey,
+    required String text,
+    required String model,
+    required String voice,
+    required Map<String, dynamic> extra,
+    required String preferredFormat,
+  }) async {
+    final formats = <String>[
+      preferredFormat,
+      if (preferredFormat != 'pcm') 'pcm',
+    ];
+
+    var last = await _postSpeech(
+      client: client,
+      endpoint: endpoint,
+      apiKey: apiKey,
+      text: text,
+      model: model,
+      voice: voice,
+      extra: extra,
+      format: formats.first,
     );
-    return _AudioBytes(bytes, format);
+    if (last.statusCode == 200) {
+      return (response: last, format: formats.first);
+    }
+
+    final bodyText = last.body;
+    final lowercase = bodyText.toLowerCase();
+    final isFormatError = last.statusCode == 400 &&
+        (lowercase.contains('response_format') ||
+            lowercase.contains('format') ||
+            lowercase.contains('pcm') ||
+            lowercase.contains('mp3'));
+    if (!isFormatError || formats.length < 2) {
+      throw TtsSynthesisFailure(
+        'error ${last.statusCode} - ${_short(bodyText)}',
+        retryable: _isRetryableStatus(last.statusCode),
+      );
+    }
+
+    debugPrint('TTS: error ${last.statusCode} format=${formats.first} '
+        '- ${_short(bodyText)}; retrying with ${formats.last}');
+    last = await _postSpeech(
+      client: client,
+      endpoint: endpoint,
+      apiKey: apiKey,
+      text: text,
+      model: model,
+      voice: voice,
+      extra: extra,
+      format: formats.last,
+    );
+    if (last.statusCode != 200) {
+      throw TtsSynthesisFailure(
+        'error ${last.statusCode} - ${_short(last.body)}',
+        retryable: _isRetryableStatus(last.statusCode),
+      );
+    }
+    return (response: last, format: formats.last);
+  }
+
+  Future<http.Response> _postSpeech({
+    required http.Client client,
+    required String endpoint,
+    required String? apiKey,
+    required String text,
+    required String model,
+    required String voice,
+    required Map<String, dynamic> extra,
+    required String format,
+  }) {
+    return _post(
+      client: client,
+      endpoint: endpoint,
+      apiKey: apiKey,
+      body: <String, dynamic>{
+        'model': model,
+        'input': text,
+        'voice': voice,
+        ...extra,
+        'response_format': format,
+      },
+    );
+  }
+
+  Future<http.Response> _post({
+    required http.Client client,
+    required String endpoint,
+    required String? apiKey,
+    required Map<String, dynamic> body,
+  }) async {
+    final request = http.Request('POST', Uri.parse(endpoint))
+      ..headers.addAll({
+        if (apiKey != null && apiKey.isNotEmpty)
+          'Authorization': 'Bearer $apiKey',
+        'Content-Type': 'application/json',
+      })
+      ..body = jsonEncode(body);
+
+    try {
+      final streamed = await client.send(request).timeout(kTtsRequestTimeout);
+      return await http.Response.fromStream(streamed);
+    } on TimeoutException {
+      throw TtsSynthesisFailure(
+        'request timed out after ${kTtsRequestTimeout.inSeconds}s',
+        retryable: true,
+      );
+    }
   }
 
   /// OpenRouter returns raw PCM for some providers. Wrap it so the player can
@@ -267,7 +447,7 @@ class RemoteTtsProvider implements TtsProvider {
     return out;
   }
 
-  Future<_AudioBytes?> _synthesizeDashScope({
+  Future<TtsAudioClip?> _synthesizeDashScope({
     required String text,
     required String endpoint,
     required String model,
@@ -275,111 +455,65 @@ class RemoteTtsProvider implements TtsProvider {
     required String language,
     required String? apiKey,
     required String extraParams,
+    required http.Client client,
   }) async {
-    final body = <String, dynamic>{
-      'model': model,
-      'input': {
-        'text': text,
-        'voice': voice,
-        'language_type':
-            VoicePreferencesNotifier.languageToQwenName(language),
-        'format': 'wav',
-        'sample_rate': 24000,
+    final response = await _post(
+      client: client,
+      endpoint: endpoint,
+      apiKey: apiKey,
+      body: <String, dynamic>{
+        'model': model,
+        'input': {
+          'text': text,
+          'voice': voice,
+          'language_type':
+              VoicePreferencesNotifier.languageToQwenName(language),
+          'format': 'wav',
+          'sample_rate': 24000,
+        },
+        ..._parseExtraParams(extraParams),
       },
-      ..._parseExtraParams(extraParams),
-    };
-
-    final response = await http.post(
-      Uri.parse(endpoint),
-      headers: {
-        if (apiKey != null && apiKey.isNotEmpty)
-          'Authorization': 'Bearer $apiKey',
-        'Content-Type': 'application/json',
-      },
-      body: jsonEncode(body),
     );
-    if (_stopped) return null;
     if (response.statusCode != 200) {
-      debugPrint(
-        'TTS: error ${response.statusCode} - ${_short(response.body)}',
+      throw TtsSynthesisFailure(
+        'error ${response.statusCode} - ${_short(response.body)}',
+        retryable: _isRetryableStatus(response.statusCode),
       );
-      return null;
     }
 
     final json = jsonDecode(response.body) as Map<String, dynamic>;
     final output = json['output'];
-    if (output is! Map) return null;
+    if (output is! Map) {
+      throw const TtsSynthesisFailure('DashScope response has no output');
+    }
     final audio = output['audio'];
-    if (audio is! Map) return null;
+    if (audio is! Map) {
+      throw const TtsSynthesisFailure('DashScope output has no audio');
+    }
 
     final data = audio['data'];
     if (data is String && data.isNotEmpty) {
-      return _AudioBytes(base64Decode(data), 'wav');
+      return TtsAudioClip(base64Decode(data), 'wav');
     }
 
     final url = audio['url'];
     if (url is String && url.isNotEmpty) {
-      final download = await http.get(Uri.parse(url));
-      if (download.statusCode != 200) return null;
-      return _AudioBytes(download.bodyBytes, 'wav');
+      final download = await client
+          .get(Uri.parse(url))
+          .timeout(kTtsRequestTimeout);
+      if (download.statusCode != 200) {
+        throw TtsSynthesisFailure(
+          'audio download failed with ${download.statusCode}',
+          retryable: _isRetryableStatus(download.statusCode),
+        );
+      }
+      return TtsAudioClip(download.bodyBytes, 'wav');
     }
     return null;
   }
 
-  Future<void> _play(Uint8List bytes, String extension) async {
-    final player = _player ??= AudioPlayer(playerId: 'luna_remote_tts');
-    final dir = await getTemporaryDirectory();
-    final path =
-        '${dir.path}/luna_tts_${DateTime.now().microsecondsSinceEpoch}.$extension';
-    final file = File(path);
-    await file.writeAsBytes(bytes, flush: true);
-
-    final done = Completer<void>();
-    _playbackDone = done;
-    _completeSub?.cancel();
-    _completeSub = player.onPlayerComplete.listen((_) {
-      if (!done.isCompleted) done.complete();
-    });
-
-    try {
-      await player.play(DeviceFileSource(path));
-      await done.future.timeout(const Duration(seconds: 180), onTimeout: () {});
-    } catch (e) {
-      debugPrint('TTS: playback failed: $e');
-    } finally {
-      await _completeSub?.cancel();
-      _completeSub = null;
-      _playbackDone = null;
-      try {
-        if (await file.exists()) await file.delete();
-      } catch (_) {}
-    }
-  }
-
-  @override
-  Future<void> stop() async {
-    _stopped = true;
-    try {
-      await _player?.stop();
-    } catch (_) {}
-    if (_playbackDone != null && !_playbackDone!.isCompleted) {
-      _playbackDone!.complete();
-    }
-    _callComplete();
-  }
-
-  void _callComplete() {
-    final callback = _pendingOnComplete;
-    _pendingOnComplete = null;
-    callback?.call();
-  }
-
-  Future<void> dispose() async {
-    await stop();
-    _completeSub?.cancel();
-    await _player?.dispose();
-    _player = null;
-  }
+  static bool _isRetryableStatus(int status) =>
+      status == 408 || status == 425 || status == 429 || status >= 500;
 
   static Map<String, dynamic> _parseExtraParams(String raw) {
     if (raw.trim().isEmpty) return const {};
@@ -398,10 +532,4 @@ class RemoteTtsProvider implements TtsProvider {
     if (trimmed.length <= 300) return trimmed;
     return '${trimmed.substring(0, 300)}…';
   }
-}
-
-class _AudioBytes {
-  const _AudioBytes(this.bytes, this.extension);
-  final Uint8List bytes;
-  final String extension;
 }
