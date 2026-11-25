@@ -1230,7 +1230,11 @@ impl AgenticLoop {
                         };
 
                         let body = if m.content.len() > MAX_CONTENT_LEN {
-                            format!("{}… (truncated)", &m.content[..MAX_CONTENT_LEN])
+                            let mut cut = MAX_CONTENT_LEN;
+                            while cut > 0 && !m.content.is_char_boundary(cut) {
+                                cut -= 1;
+                            }
+                            format!("{}… (truncated)", &m.content[..cut])
                         } else {
                             m.content.clone()
                         };
