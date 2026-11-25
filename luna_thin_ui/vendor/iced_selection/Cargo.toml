@@ -18,7 +18,7 @@ unicode-segmentation = "1.0"
 [dependencies.cosmic]
 package = "libcosmic"
 git = "https://github.com/pop-os/libcosmic.git"
-rev = "8cb10bf6e24b86a7d2a9cf8c662d3e0154db1b21"
+rev = "be7937d5c2495d002311709d0e68c3f8f845265a"
 default-features = false
 features = ["winit", "wgpu", "markdown"]
 optional = true

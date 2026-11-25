@@ -2,7 +2,7 @@
 
 use cosmic::{
     iced::{Background, Color, Length},
-    widget::{self, button, container, icon, scrollable, text, text_editor, text_input, Column, Row, Space},
+    widget::{self, button, container, icon, scrollable, text, text_editor::{self, text_editor}, text_input, Column, Row, Space},
     Element,
 };
 
@@ -212,8 +212,7 @@ fn edit_memory_card<'a>(app: &'a LunaThinApp) -> Element<'a, Message> {
             .push(
                 container(
                     text_editor(&draft.content)
-                        .class(cosmic::theme::iced::TextEditor::Custom(Box::new(
-                            |_theme, _status| text_editor::Style {
+                        .style(|_theme, _status| text_editor::Style {
                                 background: Background::Color(Color::TRANSPARENT),
                                 border: cosmic::iced::Border {
                                     color: Color::TRANSPARENT,
@@ -224,7 +223,7 @@ fn edit_memory_card<'a>(app: &'a LunaThinApp) -> Element<'a, Message> {
                                 value: cosmic::theme::active().cosmic().on_bg_color().into(),
                                 selection: Color::from_rgba(1.0, 1.0, 1.0, 0.3),
                             },
-                        )))
+                        )
                         .on_action(Message::MemoryDraftContentAction)
                         .height(Length::Fixed(120.0))
                         .padding(8)

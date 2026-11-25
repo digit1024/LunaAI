@@ -2,7 +2,7 @@
 
 use cosmic::{
     iced::{keyboard, Background, Color, Length},
-    widget::{self, button, container, text_editor, Column, Row, Space},
+    widget::{self, button, container, text_editor::{self, text_editor}, Column, Row, Space},
     Element,
 };
 
@@ -15,8 +15,7 @@ pub fn input_area(app: &LunaThinApp) -> Element<'_, Message> {
                 // Text editor (multi-line)
                 container(
                     text_editor(&app.chat_page.input_content)
-                        .class(cosmic::theme::iced::TextEditor::Custom(Box::new(
-                            |_theme, _status| text_editor::Style {
+                        .style(|_theme, _status| text_editor::Style {
                                 background: Background::Color(Color::TRANSPARENT),
                                 border: cosmic::iced::Border {
                                     color: Color::TRANSPARENT,
@@ -27,7 +26,7 @@ pub fn input_area(app: &LunaThinApp) -> Element<'_, Message> {
                                 value: cosmic::theme::active().cosmic().on_bg_color().into(),
                                 selection: Color::from_rgba(1.0, 1.0, 1.0, 0.3),
                             },
-                        )))
+                        )
                         .on_action(Message::InputActionPerformed)
                         .height(Length::Shrink)
                         .padding(12)

@@ -3,7 +3,7 @@
 //! Matches the mobile app's approach - tool calls are separate bubbles.
 
 use cosmic::{
-    iced::{Length, Padding},
+    iced::{self, Length, Padding},
     widget::{container, popover, scrollable, text, Column, Row, Space},
     Element,
 };
@@ -116,8 +116,9 @@ pub fn message_list<'a>(app: &'a LunaThinApp) -> Element<'a, Message> {
     // Use anchor_bottom() for auto-scroll like original app
     scrollable(col)
         .id(app.chat_page.scrollable_id.clone())
-        .scrollbar_width(8)
-        .scrollbar_padding(4)
+        .direction(iced::widget::scrollable::Direction::Vertical(
+            iced::widget::scrollable::Scrollbar::new().width(8).scroller_width(8).padding(4),
+        ))
         .anchor_bottom()
         .height(Length::Fill)
         .into()
